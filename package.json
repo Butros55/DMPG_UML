@@ -1,0 +1,21 @@
+{
+  "name": "dmpg-uml",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter @dmpg/server dev\" \"pnpm --filter @dmpg/web dev\"",
+    "build": "pnpm --filter @dmpg/shared build && pnpm --filter @dmpg/server build && pnpm --filter @dmpg/web build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

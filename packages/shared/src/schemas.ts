@@ -1,0 +1,136 @@
+import { z } from "zod";
+
+/* ───────────── Symbol (Node) ───────────── */
+
+export const SymbolKindEnum = z.enum([
+  "package",
+  "module",
+  "class",
+  "function",
+  "method",
+  "script",
+  "constant",
+  "external",
+  "group",
+]);
+export type SymbolKind = z.infer<typeof SymbolKindEnum>;
+
+export const SymbolLocationSchema = z.object({
+  file: z.string(),
+  startLine: z.number().int().optional(),
+  endLine: z.number().int().optional(),
+});
+export type SymbolLocation = z.infer<typeof SymbolLocationSchema>;
+
+export const SymbolDocSchema = z.object({
+  summary: z.string().optional(),
+  inputs: z
+    .array(z.object({ name: z.string(), type: z.string().optional(), description: z.string().optional() }))
+    .optional(),
+  outputs: z
+    .array(z.object({ name: z.string(), type: z.string().optional(), description: z.string().optional() }))
+    .optional(),
+  sideEffects: z.array(z.string()).optional(),
+  calls: z.array(z.string()).optional(),
+  calledBy: z.array(z.string()).optional(),
+  links: z.array(z.object({ label: z.string(), symbolId: z.string() })).optional(),
+  raw: z.string().optional(), // raw markdown
+});
+export type SymbolDoc = z.infer<typeof SymbolDocSchema>;
+
+export const SymbolSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: SymbolKindEnum,
+  location: SymbolLocationSchema.optional(),
+  doc: SymbolDocSchema.optional(),
+  tags: z.array(z.string()).optional(),
+  parentId: z.string().optional(),
+  childViewId: z.string().optional(),
+});
+export type Symbol = z.infer<typeof SymbolSchema>;
+
+/* ───────────── Relation (Edge) ───────────── */
+
+export const RelationTypeEnum = z.enum([
+  "imports",
+  "contains",
+  "calls",
+  "reads",
+  "writes",
+  "inherits",
+  "uses_config",
+  "instantiates",
+]);
+export type RelationType = z.infer<typeof RelationTypeEnum>;
+
+export const EvidenceSchema = z.object({
+  file: z.string(),
+  startLine: z.number().int().optional(),
+  endLine: z.number().int().optional(),
+  snippet: z.string().optional(),
+});
+export type Evidence = z.infer<typeof EvidenceSchema>;
+
+export const RelationSchema = z.object({
+  id: z.string(),
+  type: RelationTypeEnum,
+  source: z.string(),
+  target: z.string(),
+  evidence: z.array(EvidenceSchema).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  label: z.string().optional(),
+});
+export type Relation = z.infer<typeof RelationSchema>;
+
+/* ───────────── Diagram View ───────────── */
+
+export const NodePositionSchema = z.object({
+  symbolId: z.string(),
+  x: z.number(),
+  y: z.number(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+});
+export type NodePosition = z.infer<typeof NodePositionSchema>;
+
+export const DiagramViewSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  parentViewId: z.string().nullable().optional(),
+  scope: z.string().optional(),
+  nodeRefs: z.array(z.string()),
+  edgeRefs: z.array(z.string()),
+  nodePositions: z.array(NodePositionSchema).optional(),
+});
+export type DiagramView = z.infer<typeof DiagramViewSchema>;
+
+/* ───────────── Project Graph ───────────── */
+
+export const ProjectGraphSchema = z.object({
+  symbols: z.array(SymbolSchema),
+  relations: z.array(RelationSchema),
+  views: z.array(DiagramViewSchema),
+  rootViewId: z.string(),
+  projectPath: z.string().optional(),
+});
+export type ProjectGraph = z.infer<typeof ProjectGraphSchema>;
+
+/* ───────────── AI Doc Request / Response ───────────── */
+
+export const AiDocRequestSchema = z.object({
+  symbolId: z.string(),
+  codeSnippet: z.string().optional(),
+  context: z.string().optional(),
+});
+export type AiDocRequest = z.infer<typeof AiDocRequestSchema>;
+
+export const AiDocResponseSchema = SymbolDocSchema;
+export type AiDocResponse = z.infer<typeof AiDocResponseSchema>;
+
+/* ───────────── Scan Request ───────────── */
+
+export const ScanRequestSchema = z.object({
+  projectPath: z.string(),
+});
+export type ScanRequest = z.infer<typeof ScanRequestSchema>;
