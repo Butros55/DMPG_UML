@@ -40,8 +40,9 @@ def scan_directory(root: str):
         except SyntaxError:
             continue
 
-        # Extract classes, functions, imports
-        for node in ast.walk(tree):
+        # Collect class-level function names to distinguish top-level vs methods
+        class_method_ids = set()
+        for node in ast.iter_child_nodes(tree):
             if isinstance(node, ast.ClassDef):
                 cls_id = f"{mod_id}:{node.name}"
                 symbols.append({
@@ -59,6 +60,7 @@ def scan_directory(root: str):
                 for item in node.body:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         meth_id = f"{cls_id}.{item.name}"
+                        class_method_ids.add(meth_id)
                         symbols.append({
                             "id": meth_id,
                             "label": f"{node.name}.{item.name}",
@@ -71,24 +73,23 @@ def scan_directory(root: str):
                         edges.append({"source": cls_id, "target": meth_id, "type": "contains"})
 
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # top-level function
-                if not any(isinstance(p, ast.ClassDef) for p in ast.walk(tree)
-                           if hasattr(p, 'body') and node in getattr(p, 'body', [])):
-                    func_id = f"{mod_id}:{node.name}"
-                    # avoid duplicates
-                    if not any(s["id"] == func_id for s in symbols):
-                        symbols.append({
-                            "id": func_id,
-                            "label": node.name,
-                            "kind": "function",
-                            "file": str(rel),
-                            "startLine": node.lineno,
-                            "endLine": node.end_lineno,
-                            "parentId": mod_id,
-                        })
-                        edges.append({"source": mod_id, "target": func_id, "type": "contains"})
+                # top-level function (direct child of module)
+                func_id = f"{mod_id}:{node.name}"
+                if func_id not in class_method_ids and not any(s["id"] == func_id for s in symbols):
+                    symbols.append({
+                        "id": func_id,
+                        "label": node.name,
+                        "kind": "function",
+                        "file": str(rel),
+                        "startLine": node.lineno,
+                        "endLine": node.end_lineno,
+                        "parentId": mod_id,
+                    })
+                    edges.append({"source": mod_id, "target": func_id, "type": "contains"})
 
-            elif isinstance(node, ast.Import):
+        # Extract imports and calls (walk full tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
                 for alias in node.names:
                     target_id = f"mod:{alias.name}"
                     edges.append({"source": mod_id, "target": target_id, "type": "imports"})
