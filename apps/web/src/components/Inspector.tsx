@@ -7,6 +7,69 @@ import type { Relation, RelationType } from "@dmpg/shared";
 const RELATION_TYPES: RelationType[] = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"];
 const SYMBOL_KINDS = ["module", "class", "function", "method", "group", "package", "interface", "variable"] as const;
 
+/* ── Badge metadata mapping (same IDs as UmlNode REL_BADGE_META) ── */
+const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: string }> = {
+  "out:calls":        { iconCls: "bi-telephone-outbound", label: "calls",         cls: "calls" },
+  "in:calls":         { iconCls: "bi-telephone-inbound",  label: "called by",     cls: "calls-in" },
+  "out:reads":        { iconCls: "bi-book",               label: "reads",         cls: "reads" },
+  "in:reads":         { iconCls: "bi-book",               label: "read by",       cls: "reads-in" },
+  "out:writes":       { iconCls: "bi-pencil-square",      label: "writes",        cls: "writes" },
+  "in:writes":        { iconCls: "bi-pencil-square",      label: "written by",    cls: "writes-in" },
+  "out:imports":      { iconCls: "bi-box-arrow-in-down",  label: "imports",       cls: "imports" },
+  "in:imports":       { iconCls: "bi-box-arrow-in-down",  label: "imported by",   cls: "imports-in" },
+  "out:inherits":     { iconCls: "bi-diagram-3",          label: "inherits",      cls: "inherits" },
+  "in:inherits":      { iconCls: "bi-diagram-3",          label: "inherited by",  cls: "inherits-in" },
+  "out:instantiates": { iconCls: "bi-lightning",           label: "creates",       cls: "instantiates" },
+  "in:instantiates":  { iconCls: "bi-lightning",           label: "created by",    cls: "instantiates-in" },
+  "out:uses_config":  { iconCls: "bi-gear",               label: "config",        cls: "uses_config" },
+  "in:uses_config":   { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
+};
+
+/** Small inline badge matching the node relation badges for visual correlation */
+function RelBadgeTag({ badgeKey }: { badgeKey: string }) {
+  const meta = REL_BADGE_META[badgeKey];
+  if (!meta) return null;
+  return (
+    <span className={`rel-badge rel-badge--${meta.cls}`} style={{ fontSize: 10, marginLeft: 6 }}>
+      <i className={`bi ${meta.iconCls}`} /> {meta.label}
+    </span>
+  );
+}
+
+/* ── Collapsible section wrapper ── */
+function CollapsibleSection({
+  title,
+  icon,
+  count,
+  badge,
+  defaultOpen = true,
+  className,
+  children,
+}: {
+  title: string;
+  icon?: string;
+  count?: number;
+  badge?: string;
+  defaultOpen?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={`inspector-card inspector-collapsible${open ? " inspector-collapsible--open" : ""}${className ? ` ${className}` : ""}`}>
+      <div className="field-label inspector-collapse-header" onClick={() => setOpen(!open)}>
+        <span className="inspector-collapse-toggle">
+          <i className={open ? "bi bi-chevron-down" : "bi bi-chevron-right"} />
+        </span>
+        {icon && <i className={`bi ${icon}`} />}
+        {" "}{title}{count != null ? ` (${count})` : ""}
+        {badge && <RelBadgeTag badgeKey={badge} />}
+      </div>
+      {open && children}
+    </div>
+  );
+}
+
 /* ─── AI Badge + Validation Buttons ─── */
 function AiBadge({ field, symbolId, onConfirm, onReject }: {
   field: string;
@@ -54,11 +117,24 @@ function AiRelationBadge({ relationId, onConfirm, onReject }: {
 }
 
 /** Classify whether a symbol is project-defined (not standard library / built-in) */
-function isProjectOwn(sym: { kind: string; label: string } | undefined): boolean {
-  if (!sym) return false;
+function isProjectOwn(
+  sym: { kind: string; label: string } | undefined,
+  symbolId: string,
+  projectPrefixes: Set<string>,
+): boolean {
+  if (!sym) {
+    // No symbol in graph — check if the ID shares a root package with project symbols
+    const bare = symbolId.replace(/^(mod:|cls:|fn:|ext:|meth:)/, "");
+    const first = bare.split(".")[0];
+    if (first && projectPrefixes.has(first)) return true;
+    return false;
+  }
   if (sym.kind !== "external") return true;
   // External symbols representing project data files are project-own
   if (/\.(csv|xlsx?|json|ya?ml|toml|txt|dat|sql|parquet|h5|pkl|pickle|feather|arrow)$/i.test(sym.label)) return true;
+  // External symbol whose root package matches a project package
+  const bare = sym.label.split(".")[0];
+  if (bare && projectPrefixes.has(bare)) return true;
   return false;
 }
 
@@ -84,20 +160,32 @@ function RelationItemList({
 }) {
   const [showStdlib, setShowStdlib] = useState(false);
 
+  /** Collect root package names from non-external symbols → anything sharing a root is project-own */
+  const projectPrefixes = useMemo(() => {
+    const prefixes = new Set<string>();
+    if (!graph) return prefixes;
+    for (const s of graph.symbols) {
+      if (s.kind === "external") continue;
+      const first = s.label.split(".")[0];
+      if (first) prefixes.add(first);
+    }
+    return prefixes;
+  }, [graph]);
+
   const { own, stdlib } = useMemo(() => {
     const ownArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: true }> = [];
     const stdlibArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: false }> = [];
     for (const r of relations) {
       const otherId = direction === "out" ? r.target : r.source;
       const sym = graph?.symbols.find((s) => s.id === otherId);
-      if (isProjectOwn(sym)) {
+      if (isProjectOwn(sym, otherId, projectPrefixes)) {
         ownArr.push({ r, otherId, sym, isOwn: true });
       } else {
         stdlibArr.push({ r, otherId, sym, isOwn: false });
       }
     }
     return { own: ownArr, stdlib: stdlibArr };
-  }, [relations, graph, direction]);
+  }, [relations, graph, direction, projectPrefixes]);
 
   const renderItem = ({ r, otherId, sym, isOwn }: { r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: boolean }) => (
     <li key={r.id} className={`rel-item ${isOwn ? "rel-own" : "rel-stdlib"} ${r.aiGenerated ? "ai-generated-item" : ""}`}>
@@ -189,9 +277,9 @@ function EdgeInspector() {
 
       <div className="inspector-card">
         <h3 style={{ fontSize: 13 }}>
-          <SymbolLink symbolId={srcSym?.id ?? ""} label={srcSym?.label ?? rel?.source ?? projSrc} onClick={() => srcSym && handleSymbolClick(srcSym.id)} />
+          <SymbolLink symbolId={srcSym?.id ?? ""} label={srcSym?.label ?? rel?.source ?? projSrc ?? ""} onClick={() => srcSym && handleSymbolClick(srcSym.id)} />
           {" → "}
-          <SymbolLink symbolId={tgtSym?.id ?? ""} label={tgtSym?.label ?? rel?.target ?? projTgt} onClick={() => tgtSym && handleSymbolClick(tgtSym.id)} />
+          <SymbolLink symbolId={tgtSym?.id ?? ""} label={tgtSym?.label ?? rel?.target ?? projTgt ?? ""} onClick={() => tgtSym && handleSymbolClick(tgtSym.id)} />
         </h3>
         <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>
           Type: <strong style={{ color: "var(--accent)" }}>{rel?.type ?? projType}</strong>
@@ -992,8 +1080,7 @@ export function Inspector() {
 
       {/* ─── Calls (outgoing) ─── */}
       {outgoingCalls.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-arrow-right" /> Ruft auf ({outgoingCalls.length})</div>
+        <CollapsibleSection title="Ruft auf" icon="bi-telephone-outbound" count={outgoingCalls.length} badge="out:calls">
           <RelationItemList
             relations={outgoingCalls}
             direction="out"
@@ -1004,13 +1091,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Called by (incoming) ─── */}
       {incomingCalls.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-arrow-left" /> Aufgerufen von ({incomingCalls.length})</div>
+        <CollapsibleSection title="Aufgerufen von" icon="bi-telephone-inbound" count={incomingCalls.length} badge="in:calls">
           <RelationItemList
             relations={incomingCalls}
             direction="in"
@@ -1020,13 +1106,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Reads ─── */}
       {reads.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-book" /> Liest ({reads.length})</div>
+        <CollapsibleSection title="Liest" icon="bi-book" count={reads.length} badge="out:reads">
           <RelationItemList
             relations={reads}
             direction="out"
@@ -1035,13 +1120,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Read by ─── */}
       {readBy.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-book" /> Gelesen von ({readBy.length})</div>
+        <CollapsibleSection title="Gelesen von" icon="bi-book" count={readBy.length} badge="in:reads">
           <RelationItemList
             relations={readBy}
             direction="in"
@@ -1050,13 +1134,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Writes ─── */}
       {writes.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-pencil-square" /> Schreibt ({writes.length})</div>
+        <CollapsibleSection title="Schreibt" icon="bi-pencil-square" count={writes.length} badge="out:writes">
           <RelationItemList
             relations={writes}
             direction="out"
@@ -1065,13 +1148,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Written by ─── */}
       {writtenBy.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-pencil-square" /> Geschrieben von ({writtenBy.length})</div>
+        <CollapsibleSection title="Geschrieben von" icon="bi-pencil-square" count={writtenBy.length} badge="in:writes">
           <RelationItemList
             relations={writtenBy}
             direction="in"
@@ -1080,13 +1162,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Imports ─── */}
       {importsR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-box-arrow-in-down" /> Importiert ({importsR.length})</div>
+        <CollapsibleSection title="Importiert" icon="bi-box-arrow-in-down" count={importsR.length} badge="out:imports" defaultOpen={false}>
           <RelationItemList
             relations={importsR}
             direction="out"
@@ -1095,13 +1176,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Imported by ─── */}
       {importedByR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-box-arrow-up" /> Importiert von ({importedByR.length})</div>
+        <CollapsibleSection title="Importiert von" icon="bi-box-arrow-up" count={importedByR.length} badge="in:imports" defaultOpen={false}>
           <RelationItemList
             relations={importedByR}
             direction="in"
@@ -1110,13 +1190,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Inherits ─── */}
       {inheritsR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-diagram-3" /> Erbt von ({inheritsR.length})</div>
+        <CollapsibleSection title="Erbt von" icon="bi-diagram-3" count={inheritsR.length} badge="out:inherits">
           <RelationItemList
             relations={inheritsR}
             direction="out"
@@ -1125,13 +1204,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Inherited by ─── */}
       {inheritedByR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-diagram-3" /> Vererbt an ({inheritedByR.length})</div>
+        <CollapsibleSection title="Vererbt an" icon="bi-diagram-3" count={inheritedByR.length} badge="in:inherits">
           <RelationItemList
             relations={inheritedByR}
             direction="in"
@@ -1140,13 +1218,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Instantiates ─── */}
       {instantiatesR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-lightning" /> Instanziiert ({instantiatesR.length})</div>
+        <CollapsibleSection title="Instanziiert" icon="bi-lightning" count={instantiatesR.length} badge="out:instantiates">
           <RelationItemList
             relations={instantiatesR}
             direction="out"
@@ -1155,13 +1232,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Instantiated by ─── */}
       {instantiatedByR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-lightning" /> Instanziiert von ({instantiatedByR.length})</div>
+        <CollapsibleSection title="Instanziiert von" icon="bi-lightning" count={instantiatedByR.length} badge="in:instantiates">
           <RelationItemList
             relations={instantiatedByR}
             direction="in"
@@ -1170,13 +1246,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Uses Config ─── */}
       {usesConfigR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-gear" /> Konfiguration ({usesConfigR.length})</div>
+        <CollapsibleSection title="Konfiguration" icon="bi-gear" count={usesConfigR.length} badge="out:uses_config">
           <RelationItemList
             relations={usesConfigR}
             direction="out"
@@ -1185,13 +1260,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Config used by ─── */}
       {configUsedByR.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-gear" /> Konfig. verwendet von ({configUsedByR.length})</div>
+        <CollapsibleSection title="Konfig. verwendet von" icon="bi-gear" count={configUsedByR.length} badge="in:uses_config">
           <RelationItemList
             relations={configUsedByR}
             direction="in"
@@ -1200,13 +1274,12 @@ export function Inspector() {
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
           />
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Other relations ─── */}
       {otherRelations.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label">Weitere Relationen ({otherRelations.length})</div>
+        <CollapsibleSection title="Weitere Relationen" count={otherRelations.length}>
           <ul>
             {otherRelations.map((r) => {
               const isOut = r.source === sym.id;
@@ -1225,13 +1298,12 @@ export function Inspector() {
               );
             })}
           </ul>
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Children ─── */}
       {children.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-folder" /> Enthält ({children.length})</div>
+        <CollapsibleSection title="Enthält" icon="bi-folder" count={children.length}>
           <ul>
             {children.slice(0, 20).map((child) => (
               <li key={child.id}>
@@ -1248,12 +1320,11 @@ export function Inspector() {
               <li style={{ color: "var(--text-dim)" }}>+{children.length - 20} weitere…</li>
             )}
           </ul>
-        </div>
+        </CollapsibleSection>
       )}
 
       {doc?.links && doc.links.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label"><i className="bi bi-link-45deg" /> Links</div>
+        <CollapsibleSection title="Links" icon="bi-link-45deg" count={doc.links.length}>
           <ul>
             {doc.links.map((lnk, i) => (
               <li key={i}>
@@ -1261,7 +1332,7 @@ export function Inspector() {
               </li>
             ))}
           </ul>
-        </div>
+        </CollapsibleSection>
       )}
 
       {/* ─── Add Connection ─── */}

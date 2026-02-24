@@ -779,6 +779,51 @@ body,
   margin-bottom: 2px;
 }
 
+/* ─── Collapsible Inspector Sections ─── */
+.inspector-collapsible > .inspector-collapse-header {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding: 2px 0;
+  transition: color 0.15s;
+}
+
+.inspector-collapsible > .inspector-collapse-header:hover {
+  color: var(--text);
+}
+
+.inspector-collapsible--open > .inspector-collapse-header {
+  margin-bottom: 6px;
+}
+
+.inspector-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  font-size: 10px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  transition: color 0.15s;
+}
+
+.inspector-collapse-header:hover .inspector-collapse-toggle {
+  color: var(--text);
+}
+
+/* Badge inside collapsible header */
+.inspector-collapse-header .rel-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
 .inspector-card ul {
   list-style: none;
   padding: 0;
