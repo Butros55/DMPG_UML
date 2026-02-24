@@ -13,6 +13,48 @@ const COMPARTMENT_PADDING = 14;
 const MIN_HEIGHT = 48;
 const CHAR_WIDTH = 8.5; // average char width at 13px font
 
+type PortSide = "north" | "east" | "south" | "west";
+
+const STANDARD_NODE_PORTS: readonly PortSide[] = ["west", "east", "north", "south"];
+
+const RELATION_PORT_MAP: Record<string, { source: PortSide; target: PortSide }> = {
+  calls: { source: "east", target: "west" },
+  imports: { source: "north", target: "north" },
+  reads: { source: "south", target: "south" },
+  writes: { source: "south", target: "south" },
+  contains: { source: "south", target: "north" },
+  inherits: { source: "north", target: "south" },
+  instantiates: { source: "east", target: "west" },
+  uses_config: { source: "south", target: "north" },
+};
+
+const DEFAULT_PORT_BINDING = { source: "east", target: "west" } as const;
+
+function portId(nodeId: string, side: PortSide): string {
+  return `${nodeId}:${side}`;
+}
+
+function inferRelationType(edge: Edge): string {
+  if (typeof edge.type === "string" && edge.type.trim().length > 0) {
+    return edge.type;
+  }
+
+  if (edge.className) {
+    const classes = edge.className.toString().split(/\s+/).filter(Boolean);
+    const relClass = classes.find((cls) => cls.startsWith("edge-"));
+    if (relClass) {
+      return relClass.replace(/^edge-/, "");
+    }
+  }
+
+  return "";
+}
+
+function getPortBinding(edge: Edge): { source: PortSide; target: PortSide } {
+  const relationType = inferRelationType(edge).toLowerCase();
+  return RELATION_PORT_MAP[relationType] ?? DEFAULT_PORT_BINDING;
+}
+
 function estimateNodeSize(node: Node): { width: number; height: number } {
   const data = node.data as Record<string, unknown>;
   const kind = (data.kind as string) ?? "";
@@ -76,16 +118,28 @@ export async function layoutNodes(
       id: n.id,
       width: size.width,
       height: size.height,
+      ports: STANDARD_NODE_PORTS.map((side, index) => ({
+        id: portId(n.id, side),
+        layoutOptions: {
+          "elk.port.side": side.toUpperCase(),
+          "elk.port.index": String(index),
+        },
+      })),
     };
   });
 
   const elkEdges: ElkExtendedEdge[] = edges
     .filter((e) => nodes.some((n) => n.id === e.source) && nodes.some((n) => n.id === e.target))
-    .map((e) => ({
-      id: e.id,
-      sources: [e.source],
-      targets: [e.target],
-    }));
+    .map((e) => {
+      const binding = getPortBinding(e);
+      return {
+        id: e.id,
+        sources: [e.source],
+        targets: [e.target],
+        sourcePort: portId(e.source, binding.source),
+        targetPort: portId(e.target, binding.target),
+      };
+    });
 
   // Adaptive spacing: more nodes → more space between layers
   const nodeCount = nodes.length;
