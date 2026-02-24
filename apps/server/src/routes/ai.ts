@@ -184,9 +184,71 @@ let analyzeState: {
 let cancelRequested = false;
 let pauseRequested = false;
 
+/* ─── Event Ring Buffer for Polling ─── */
+interface AnalyzeEventEntry {
+  seq: number;
+  runId: string;
+  timestamp: number;
+  event: Record<string, unknown>;
+}
+
+const EVENT_BUFFER_MAX = 2000;
+let eventBuffer: AnalyzeEventEntry[] = [];
+let eventSeqCounter = 0;
+let currentRunId = "";
+
+/** Push an event into the ring buffer (called alongside SSE send) */
+function pushEvent(event: Record<string, unknown>): number {
+  const seq = ++eventSeqCounter;
+  eventBuffer.push({ seq, runId: currentRunId, timestamp: Date.now(), event: { ...event, seq } });
+  // Trim ring buffer
+  if (eventBuffer.length > EVENT_BUFFER_MAX) {
+    eventBuffer = eventBuffer.slice(eventBuffer.length - EVENT_BUFFER_MAX);
+  }
+  return seq;
+}
+
+/* ─── Baseline Snapshot for Validate Mode ─── */
+interface BaselineSnapshot {
+  runId: string;
+  /** symbol ID → snapshot of the symbol before analysis */
+  symbols: Map<string, { label: string; doc?: any; tags?: string[] }>;
+  /** relation IDs that existed before analysis */
+  relationIds: Set<string>;
+}
+let baseline: BaselineSnapshot | null = null;
+
 /** GET /api/ai/analyze-status — poll analysis progress */
 aiRouter.get("/analyze-status", (_req, res) => {
   res.json(analyzeState);
+});
+
+/** GET /api/ai/analyze-events?afterSeq=N — poll event log */
+aiRouter.get("/analyze-events", (req, res) => {
+  const afterSeq = parseInt(req.query.afterSeq as string ?? "0", 10) || 0;
+  const events = eventBuffer.filter((e) => e.seq > afterSeq && e.runId === currentRunId);
+  res.json({
+    runId: currentRunId,
+    latestSeq: eventSeqCounter,
+    events: events.map((e) => e.event),
+  });
+});
+
+/** GET /api/ai/analyze-baseline — get baseline snapshot for validate mode */
+aiRouter.get("/analyze-baseline", (_req, res) => {
+  if (!baseline) {
+    res.json({ runId: null, symbols: {}, relationIds: [] });
+    return;
+  }
+  const syms: Record<string, { label: string; doc?: any; tags?: string[] }> = {};
+  for (const [id, snap] of baseline.symbols) {
+    syms[id] = snap;
+  }
+  res.json({
+    runId: baseline.runId,
+    symbols: syms,
+    relationIds: Array.from(baseline.relationIds),
+  });
 });
 
 /** POST /api/ai/cancel — request cancellation of running analysis */
@@ -257,6 +319,26 @@ aiRouter.post("/analyze", async (req, res) => {
   cancelRequested = false;
   pauseRequested = false;
 
+  // Start a new run — reset event buffer and create baseline snapshot
+  currentRunId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  eventSeqCounter = 0;
+  eventBuffer = [];
+
+  // Create baseline snapshot of all symbols before AI changes them
+  const baselineSymbols = new Map<string, { label: string; doc?: any; tags?: string[] }>();
+  for (const sym of g.symbols) {
+    baselineSymbols.set(sym.id, {
+      label: sym.label,
+      doc: sym.doc ? JSON.parse(JSON.stringify(sym.doc)) : undefined,
+      tags: sym.tags ? [...sym.tags] : undefined,
+    });
+  }
+  baseline = {
+    runId: currentRunId,
+    symbols: baselineSymbols,
+    relationIds: new Set(g.relations.map((r) => r.id)),
+  };
+
   // Set up SSE with explicit flush + no buffering
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -269,7 +351,6 @@ aiRouter.post("/analyze", async (req, res) => {
 
   const scanRoot = getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? g.projectPath ?? "";
   let clientGone = false;
-  let seq = 0;
   req.on("close", () => { clientGone = true; console.log("[AI-Analyze] Client disconnected (server continues processing)"); });
 
   /** Find the deepest (most specific) view containing a symbol */
@@ -286,8 +367,10 @@ aiRouter.post("/analyze", async (req, res) => {
   }
 
   function send(event: Record<string, unknown>) {
+    // Always push to event buffer (survives client disconnect)
+    const bufferSeq = pushEvent(event);
     if (clientGone) return;
-    const withSeq = { ...event, seq: ++seq };
+    const withSeq = { ...event, seq: bufferSeq };
     try {
       res.write(`data: ${JSON.stringify(withSeq)}\n\n`);
       if (typeof (res as any).flush === "function") (res as any).flush();

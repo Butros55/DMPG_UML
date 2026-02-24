@@ -2,6 +2,37 @@ import { create } from "zustand";
 import type { ProjectGraph, DiagramView, Symbol as Sym, Relation } from "@dmpg/shared";
 import type { AnalyzeEvent } from "./api";
 
+/* ── Playback Queue Item ── */
+export interface PlaybackItem {
+  symbolId: string;
+  viewId: string | null;
+  event: AnalyzeEvent;
+  /** Timestamp when this item became ready */
+  readyAt: number;
+}
+
+/* ── Validate Mode Types ── */
+export interface ValidateChange {
+  id: string;
+  symbolId: string;
+  symbolLabel: string;
+  field: string;       // "label" | "summary" | "inputs" | "outputs" | "sideEffects" | "deadCode" | "relation"
+  phase: string;
+  before: any;
+  after: any;
+  /** For relations: the relation ID */
+  relationId?: string;
+  /** Status of validation */
+  status: "pending" | "confirmed" | "rejected";
+}
+
+export interface ValidateState {
+  active: boolean;
+  changes: ValidateChange[];
+  currentIndex: number;
+  baselineRunId: string | null;
+}
+
 export interface AiAnalysisState {
   running: boolean;
   phase: string;
@@ -24,6 +55,10 @@ export interface AiAnalysisState {
   aiWorkingSymbolId: string | null;
   /** User can pause auto-navigation without stopping the analysis */
   navPaused: boolean;
+  /** Playback queue: data events ready for sequential navigation+animation */
+  playbackQueue: PlaybackItem[];
+  /** Is playback currently animating a symbol? */
+  playbackActive: boolean;
 }
 
 export interface AppState {
@@ -40,6 +75,19 @@ export interface AppState {
   acknowledgeAiNavigationSettled: (symbolId: string) => void;
   stopAiAnalysis: () => void;
   toggleAiNavPaused: () => void;
+  /** Process next item from the playback queue */
+  processPlaybackQueue: () => void;
+
+  // Validate mode
+  validateState: ValidateState;
+  enterValidateMode: () => void;
+  exitValidateMode: () => void;
+  validateNavigateTo: (index: number) => void;
+  validateNext: () => void;
+  validatePrev: () => void;
+  validateConfirm: (changeId: string) => void;
+  validateReject: (changeId: string) => void;
+  validateConfirmAll: () => void;
 
   // Inspector
   inspectorCollapsed: boolean;
@@ -129,6 +177,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   aiAnalysis: null,
 
+  // Validate mode — initial state
+  validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
+
   inspectorCollapsed: false,
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
 
@@ -167,6 +218,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         aiCurrentSymbolId: null,
         aiWorkingSymbolId: null,
         navPaused: false,
+        playbackQueue: [],
+        playbackActive: false,
       },
     }),
 
@@ -174,11 +227,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { aiAnalysis, graph, currentViewId, breadcrumb } = get();
     if (!aiAnalysis) return;
 
-    // For poll-progress events, only update progress — skip log bloat
-    const isPoll = event._source === "poll" || event.action === "poll-progress";
-
-    const newPhase = event.phase ?? aiAnalysis.phase;
-    const newLog = isPoll ? aiAnalysis.log : [...aiAnalysis.log, event];
+    // Classify event source and type
+    const isPollStatus = event._source === "poll" && event.action === "poll-progress";
+    const isPollEvents = event._source === "poll-events";
+    const isSse = event._source === "sse" || !event._source;
 
     const isFocusEvent = event.action === "focus";
     const isDataEvent = event.action === "generated"
@@ -186,10 +238,32 @@ export const useAppStore = create<AppState>((set, get) => ({
       || (event.phase === "dead-code" && !event.action && event.reason)
       || (event.phase === "relations" && event.action === "added");
 
+    // For status-poll events, only update progress overlay — no log, no graph, no navigation
+    if (isPollStatus) {
+      const thought = event.thought ?? (event.symbolLabel && event.phase ? `${event.phase}: ${event.symbolLabel}` : null) ?? aiAnalysis.thought;
+      set({
+        aiAnalysis: {
+          ...aiAnalysis,
+          phase: event.phase ?? aiAnalysis.phase,
+          current: event.current ?? aiAnalysis.current,
+          total: event.total ?? aiAnalysis.total,
+          thought,
+          aiFocusViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
+          aiCurrentSymbolId: event.symbolId ?? aiAnalysis.aiCurrentSymbolId,
+          aiWorkingSymbolId: isFocusEvent ? (event.symbolId ?? aiAnalysis.aiWorkingSymbolId) : aiAnalysis.aiWorkingSymbolId,
+        },
+      });
+      return;
+    }
+
+    // From here: SSE or poll-events data
+    const newPhase = event.phase ?? aiAnalysis.phase;
+    const newLog = [...aiAnalysis.log, event];
+
     const thought = event.thought ?? (event.symbolLabel && event.phase ? `${event.phase}: ${event.symbolLabel}` : null) ?? aiAnalysis.thought;
 
-    // Track SSE data event freshness (used for poll-fallback navigation)
-    if (isDataEvent && !isPoll) _lastSseDataEventTime = Date.now();
+    // Track SSE data event freshness
+    if (isDataEvent && isSse) _lastSseDataEventTime = Date.now();
 
     console.debug(`[AI-Store] src=${event._source ?? 'sse'} action=${event.action ?? '-'} symbol=${event.symbolId ?? '-'} current=${event.current ?? '-'}/${event.total ?? '-'} dataEvent=${isDataEvent}`);
 
@@ -218,6 +292,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           aiCurrentSymbolId: null,
           aiWorkingSymbolId: null,
           navPaused: false,
+          playbackQueue: [],
+          playbackActive: false,
         },
       });
 
@@ -230,9 +306,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    // Live graph updates from SSE events
+    // ── Live graph updates from data events ──
     let contentChangedSymbolId: string | null = null;
-    if (graph && !isPoll) {
+    if (graph && !isPollStatus) {
       let graphChanged = false;
       const symbols = [...graph.symbols];
       const views = [...graph.views];
@@ -349,9 +425,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? (event.total ?? undefined)
       : (event.total ?? aiAnalysis.total);
 
-    const nextAnalysisSeq = isDataEvent && event.symbolId && !isPoll
+    const nextAnalysisSeq = isDataEvent && event.symbolId
       ? (aiAnalysis.analysisSeq ?? 0) + 1
       : (aiAnalysis.analysisSeq ?? 0);
+
+    // ── Playback Queue: enqueue data events for sequential navigation ──
+    let nextPlaybackQueue = [...aiAnalysis.playbackQueue];
+    if (isDataEvent && event.symbolId && !aiAnalysis.navPaused) {
+      const targetViewId = graph ? findBestViewForSymbol(graph, event.symbolId, event.viewId ?? aiAnalysis.aiFocusViewId) : null;
+      nextPlaybackQueue.push({
+        symbolId: event.symbolId,
+        viewId: targetViewId,
+        event,
+        readyAt: Date.now(),
+      });
+    }
+
+    // Fast-forward: if queue is getting long (>5), trim old items
+    if (nextPlaybackQueue.length > 8) {
+      nextPlaybackQueue = nextPlaybackQueue.slice(-5);
+    }
 
     const nextAiState: AiAnalysisState = {
       ...aiAnalysis,
@@ -363,7 +456,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       thought,
       aiFocusViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
       aiCurrentSymbolId: event.symbolId ?? aiAnalysis.aiCurrentSymbolId,
-      aiWorkingSymbolId: isDataEvent ? null : (event.symbolId ?? aiAnalysis.aiWorkingSymbolId),
+      aiWorkingSymbolId: isFocusEvent ? (event.symbolId ?? aiAnalysis.aiWorkingSymbolId) : (isDataEvent ? null : aiAnalysis.aiWorkingSymbolId),
       navPaused: aiAnalysis.navPaused,
       analysisSeq: nextAnalysisSeq,
       navigationRequestedSeq: aiAnalysis.navigationRequestedSeq,
@@ -374,39 +467,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       animationSeq: aiAnalysis.animationSeq,
       highlightSymbolId: aiAnalysis.highlightSymbolId,
       highlightSeq: aiAnalysis.highlightSeq,
+      playbackQueue: nextPlaybackQueue,
+      playbackActive: aiAnalysis.playbackActive,
     };
 
-    const setPatch: Partial<AppState> = { aiAnalysis: nextAiState };
+    set({ aiAnalysis: nextAiState });
 
-    // Navigation: primary from SSE data events, fallback from poll when SSE stale
-    const wantNav = !aiAnalysis.navPaused && !!event.symbolId && !!graph;
-    const sseIsStale = Date.now() - _lastSseDataEventTime > 3000;
-    const shouldNav = wantNav && ((isDataEvent && !isPoll) || (isPoll && sseIsStale));
-
-    if (shouldNav && event.symbolId) {
-      const targetViewId = findBestViewForSymbol(graph!, event.symbolId, event.viewId ?? aiAnalysis.aiFocusViewId);
-      if (targetViewId) {
-        setPatch.currentViewId = targetViewId;
-        setPatch.breadcrumb = navigateBreadcrumb(breadcrumb, targetViewId);
-      }
-      setPatch.focusNodeId = event.symbolId;
-      setPatch.focusSeq = (get().focusSeq ?? 0) + 1;
-      setPatch.selectedSymbolId = event.symbolId;
-      setPatch.selectedEdgeId = null;
-      setPatch.inspectorCollapsed = false;
-
-      const nextNavReqSeq = (nextAiState.navigationRequestedSeq ?? 0) + 1;
-      nextAiState.navigationRequestedSeq = nextNavReqSeq;
-      nextAiState.navigationTargetSymbolId = event.symbolId;
-      // Only queue animation for SSE data events that actually changed content
-      nextAiState.pendingAnimationSymbolId = (!isPoll && contentChangedSymbolId === event.symbolId) ? event.symbolId : null;
-
-      console.debug(`[AI-Store] Nav → symbol=${event.symbolId} view=${targetViewId} focusSeq=${setPatch.focusSeq} src=${event._source ?? 'sse'} sseStale=${sseIsStale}`);
+    // If not currently playing, kick off playback
+    if (!aiAnalysis.playbackActive && nextPlaybackQueue.length > 0) {
+      // Use setTimeout to allow the current set() to commit first
+      setTimeout(() => get().processPlaybackQueue(), 50);
     }
-
-    set({
-      ...setPatch,
-    });
   },
 
   acknowledgeAiNavigationSettled: (symbolId) => {
@@ -431,6 +502,59 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ aiAnalysis: next });
   },
 
+  processPlaybackQueue: () => {
+    const { aiAnalysis, graph, breadcrumb } = get();
+    if (!aiAnalysis || !aiAnalysis.running) return;
+    if (aiAnalysis.playbackQueue.length === 0) {
+      if (aiAnalysis.playbackActive) {
+        set({ aiAnalysis: { ...aiAnalysis, playbackActive: false } });
+      }
+      return;
+    }
+    if (aiAnalysis.navPaused) {
+      set({ aiAnalysis: { ...aiAnalysis, playbackActive: false } });
+      return;
+    }
+
+    // Dequeue front item
+    const [item, ...rest] = aiAnalysis.playbackQueue;
+    const nextAi: AiAnalysisState = {
+      ...aiAnalysis,
+      playbackActive: true,
+      playbackQueue: rest,
+    };
+
+    const setPatch: Partial<AppState> = { aiAnalysis: nextAi };
+
+    if (item.symbolId && graph) {
+      const targetViewId = item.viewId ?? findBestViewForSymbol(graph, item.symbolId, aiAnalysis.aiFocusViewId);
+      if (targetViewId) {
+        setPatch.currentViewId = targetViewId;
+        setPatch.breadcrumb = navigateBreadcrumb(breadcrumb, targetViewId);
+      }
+      setPatch.focusNodeId = item.symbolId;
+      setPatch.focusSeq = (get().focusSeq ?? 0) + 1;
+      setPatch.selectedSymbolId = item.symbolId;
+      setPatch.selectedEdgeId = null;
+      setPatch.inspectorCollapsed = false;
+
+      const nextNavReqSeq = (nextAi.navigationRequestedSeq ?? 0) + 1;
+      nextAi.navigationRequestedSeq = nextNavReqSeq;
+      nextAi.navigationTargetSymbolId = item.symbolId;
+      nextAi.pendingAnimationSymbolId = item.symbolId;
+
+      console.debug(`[AI-Playback] Nav → symbol=${item.symbolId} view=${targetViewId} queueLen=${rest.length}`);
+    }
+
+    set(setPatch);
+
+    // Schedule next item after animation delay (shorter if queue is long)
+    const delay = rest.length > 3 ? 400 : rest.length > 1 ? 800 : 1200;
+    setTimeout(() => {
+      get().processPlaybackQueue();
+    }, delay);
+  },
+
   stopAiAnalysis: () => {
     const { aiAnalysis } = get();
     if (!aiAnalysis) return;
@@ -444,6 +568,271 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { aiAnalysis } = get();
     if (!aiAnalysis) return;
     set({ aiAnalysis: { ...aiAnalysis, navPaused: !aiAnalysis.navPaused } });
+  },
+
+  // ── Validate Mode Methods ──
+
+  enterValidateMode: async () => {
+    const { graph } = get();
+    if (!graph) return;
+
+    try {
+      const { fetchAnalyzeBaseline } = await import("./api.js");
+      const baseline = await fetchAnalyzeBaseline();
+      if (!baseline.runId) {
+        console.warn("[Validate] No baseline available");
+        return;
+      }
+
+      const changes: ValidateChange[] = [];
+      let changeId = 0;
+
+      for (const sym of graph.symbols) {
+        const base = baseline.symbols[sym.id];
+        const aiFlags = sym.doc?.aiGenerated;
+        if (!aiFlags) continue;
+
+        // Label change
+        if (aiFlags.label && base && base.label !== sym.label) {
+          changes.push({
+            id: String(++changeId),
+            symbolId: sym.id,
+            symbolLabel: sym.label,
+            field: "label",
+            phase: "labels",
+            before: base.label,
+            after: sym.label,
+            status: "pending",
+          });
+        }
+
+        // Summary change
+        if (aiFlags.summary && sym.doc?.summary) {
+          changes.push({
+            id: String(++changeId),
+            symbolId: sym.id,
+            symbolLabel: sym.label,
+            field: "summary",
+            phase: "docs",
+            before: base?.doc?.summary ?? "",
+            after: sym.doc.summary,
+            status: "pending",
+          });
+        }
+
+        // Inputs change
+        if (aiFlags.inputs && sym.doc?.inputs?.length) {
+          changes.push({
+            id: String(++changeId),
+            symbolId: sym.id,
+            symbolLabel: sym.label,
+            field: "inputs",
+            phase: "docs",
+            before: JSON.stringify(base?.doc?.inputs ?? [], null, 2),
+            after: JSON.stringify(sym.doc.inputs, null, 2),
+            status: "pending",
+          });
+        }
+
+        // Outputs change
+        if (aiFlags.outputs && sym.doc?.outputs?.length) {
+          changes.push({
+            id: String(++changeId),
+            symbolId: sym.id,
+            symbolLabel: sym.label,
+            field: "outputs",
+            phase: "docs",
+            before: JSON.stringify(base?.doc?.outputs ?? [], null, 2),
+            after: JSON.stringify(sym.doc.outputs, null, 2),
+            status: "pending",
+          });
+        }
+
+        // Dead-code tagging
+        if (aiFlags.deadCode && sym.doc?.deadCodeReason) {
+          const wasDead = base?.tags?.includes("dead-code") ?? false;
+          changes.push({
+            id: String(++changeId),
+            symbolId: sym.id,
+            symbolLabel: sym.label,
+            field: "deadCode",
+            phase: "dead-code",
+            before: wasDead ? (base?.doc?.deadCodeReason ?? "dead-code") : "",
+            after: sym.doc.deadCodeReason ?? "dead-code",
+            status: "pending",
+          });
+        }
+      }
+
+      // AI-generated relations
+      for (const rel of graph.relations) {
+        if (!rel.aiGenerated) continue;
+        const wasPresent = baseline.relationIds.includes(rel.id);
+        if (!wasPresent) {
+          const sourceSym = graph.symbols.find((s) => s.id === rel.source);
+          const targetSym = graph.symbols.find((s) => s.id === rel.target);
+          changes.push({
+            id: String(++changeId),
+            symbolId: rel.source,
+            symbolLabel: `${sourceSym?.label ?? rel.source} → ${targetSym?.label ?? rel.target}`,
+            field: "relation",
+            phase: "relations",
+            before: "",
+            after: `${rel.type}: ${rel.label ?? ""}`,
+            relationId: rel.id,
+            status: "pending",
+          });
+        }
+      }
+
+      set({
+        validateState: {
+          active: true,
+          changes,
+          currentIndex: changes.length > 0 ? 0 : -1,
+          baselineRunId: baseline.runId,
+        },
+      });
+
+      // Navigate to first change if available
+      if (changes.length > 0) {
+        get().validateNavigateTo(0);
+      }
+    } catch (err) {
+      console.error("[Validate] Failed to enter validate mode:", err);
+    }
+  },
+
+  exitValidateMode: () => {
+    set({
+      validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
+    });
+  },
+
+  validateNavigateTo: (index) => {
+    const { validateState, graph, breadcrumb } = get();
+    if (!validateState.active || !graph) return;
+    const change = validateState.changes[index];
+    if (!change) return;
+
+    const targetViewId = findBestViewForSymbol(graph, change.symbolId, null);
+    const setPatch: Partial<AppState> = {
+      validateState: { ...validateState, currentIndex: index },
+      selectedSymbolId: change.symbolId,
+      selectedEdgeId: change.relationId ?? null,
+      inspectorCollapsed: false,
+      focusNodeId: change.symbolId,
+      focusSeq: (get().focusSeq ?? 0) + 1,
+    };
+    if (targetViewId) {
+      setPatch.currentViewId = targetViewId;
+      setPatch.breadcrumb = navigateBreadcrumb(breadcrumb, targetViewId);
+    }
+    set(setPatch);
+  },
+
+  validateNext: () => {
+    const { validateState } = get();
+    if (!validateState.active) return;
+    const pending = validateState.changes
+      .map((c, i) => ({ c, i }))
+      .filter(({ c, i }) => c.status === "pending" && i > validateState.currentIndex);
+    if (pending.length > 0) {
+      get().validateNavigateTo(pending[0].i);
+    } else {
+      // Wrap around to first pending
+      const first = validateState.changes.findIndex((c) => c.status === "pending");
+      if (first >= 0) get().validateNavigateTo(first);
+    }
+  },
+
+  validatePrev: () => {
+    const { validateState } = get();
+    if (!validateState.active) return;
+    const pending = validateState.changes
+      .map((c, i) => ({ c, i }))
+      .filter(({ c, i }) => c.status === "pending" && i < validateState.currentIndex);
+    if (pending.length > 0) {
+      get().validateNavigateTo(pending[pending.length - 1].i);
+    } else {
+      // Wrap around to last pending
+      const last = validateState.changes.map((c, i) => ({ c, i })).filter(({ c }) => c.status === "pending");
+      if (last.length > 0) get().validateNavigateTo(last[last.length - 1].i);
+    }
+  },
+
+  validateConfirm: (changeId) => {
+    const { validateState } = get();
+    if (!validateState.active) return;
+    const idx = validateState.changes.findIndex((c) => c.id === changeId);
+    if (idx < 0) return;
+    const change = validateState.changes[idx];
+
+    // Confirm in the graph
+    if (change.field === "relation" && change.relationId) {
+      get().confirmAiRelation(change.relationId);
+    } else {
+      get().confirmAiField(change.symbolId, change.field);
+    }
+
+    // Update validate state
+    const nextChanges = [...validateState.changes];
+    nextChanges[idx] = { ...change, status: "confirmed" };
+    set({ validateState: { ...validateState, changes: nextChanges } });
+
+    // Auto-advance
+    setTimeout(() => get().validateNext(), 150);
+  },
+
+  validateReject: (changeId) => {
+    const { validateState } = get();
+    if (!validateState.active) return;
+    const idx = validateState.changes.findIndex((c) => c.id === changeId);
+    if (idx < 0) return;
+    const change = validateState.changes[idx];
+
+    // Reject in the graph
+    if (change.field === "relation" && change.relationId) {
+      // Remove the relation
+      const { graph } = get();
+      if (graph) {
+        const updated = {
+          ...graph,
+          relations: graph.relations.filter((r) => r.id !== change.relationId),
+          views: graph.views.map((v) => ({
+            ...v,
+            edgeRefs: v.edgeRefs.filter((e) => e !== change.relationId),
+          })),
+        };
+        set({ graph: updated });
+        get().syncGraphToServer();
+      }
+    } else {
+      get().rejectAiField(change.symbolId, change.field);
+    }
+
+    // Update validate state
+    const nextChanges = [...validateState.changes];
+    nextChanges[idx] = { ...change, status: "rejected" };
+    set({ validateState: { ...validateState, changes: nextChanges } });
+
+    // Auto-advance
+    setTimeout(() => get().validateNext(), 150);
+  },
+
+  validateConfirmAll: () => {
+    const { validateState } = get();
+    if (!validateState.active) return;
+    const nextChanges = validateState.changes.map((c) => {
+      if (c.status !== "pending") return c;
+      if (c.field === "relation" && c.relationId) {
+        get().confirmAiRelation(c.relationId);
+      } else {
+        get().confirmAiField(c.symbolId, c.field);
+      }
+      return { ...c, status: "confirmed" as const };
+    });
+    set({ validateState: { ...validateState, changes: nextChanges } });
   },
 
   setGraph: (g) =>

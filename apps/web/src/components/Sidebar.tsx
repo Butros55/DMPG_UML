@@ -797,6 +797,18 @@ export function Sidebar() {
                   </div>
                 ) : null;
               })()}
+              {/* Validate mode button — shown after analysis completes */}
+              {!aiAnalysis.running && (aiAnalysis.phase === "done" || aiAnalysis.phase === "cancelled" || aiAnalysis.phase === "paused" || aiAnalysis.phase === "stopped") && (
+                <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                  <button
+                    className="btn ai-analyze-btn ai-analyze-btn--validate"
+                    onClick={() => useAppStore.getState().enterValidateMode()}
+                    style={{ width: "100%" }}
+                  >
+                    <i className="bi bi-patch-check" /> AI-Änderungen prüfen
+                  </button>
+                </div>
+              )}
               <div className="ai-log-entries" ref={logRef}>
                 {aiAnalysis.log.filter((e) => e.action !== "progress" && e.action !== "saved").slice(-100).map((ev, i) => (
                   <div key={i} className={`ai-log-entry`}>

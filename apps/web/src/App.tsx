@@ -6,6 +6,7 @@ import { Inspector } from "./components/Inspector";
 import { Breadcrumb } from "./components/Breadcrumb";
 import { SourceViewer } from "./components/SourceViewer";
 import { CommandPalette } from "./components/CommandPalette";
+import { ValidatePanel } from "./components/ValidatePanel";
 import { useAppStore } from "./store";
 import { fetchGraph } from "./api";
 
@@ -151,6 +152,9 @@ export function App() {
 
       {/* Command Palette (Ctrl+P) */}
       <CommandPalette />
+
+      {/* Validate Mode Panel (floating overlay) */}
+      <ValidatePanel />
     </div>
   );
 }

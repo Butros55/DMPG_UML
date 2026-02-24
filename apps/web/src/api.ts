@@ -181,7 +181,7 @@ export interface AnalyzeEvent {
   relationLabel?: string;
   confidence?: number;
   // Source: "sse" or "poll" — distinguishes real-time SSE from poller
-  _source?: "sse" | "poll";
+  _source?: "sse" | "poll" | "poll-events";
 }
 
 /** Cancel a running analysis on the server */
@@ -211,9 +211,75 @@ export async function fetchAnalyzeStatus(): Promise<{
   return res.json();
 }
 
+/** Fetch the baseline snapshot (symbol states before AI analysis started) */
+export async function fetchAnalyzeBaseline(): Promise<{
+  runId: string | null;
+  symbols: Record<string, { label: string; doc?: any; tags?: string[] }>;
+  relationIds: string[];
+}> {
+  const res = await fetch(`${API_BASE}/ai/analyze-baseline`);
+  if (!res.ok) return { runId: null, symbols: {}, relationIds: [] };
+  return res.json();
+}
+
+/**
+ * Poll the analyze-events endpoint continuously, relaying data events to onEvent.
+ * Unlike status polling, this delivers actual SSE-equivalent data events with
+ * deterministic sequence ordering — no events are lost even if the client reconnects.
+ */
+async function runEventsPoller(
+  onEvent: (event: AnalyzeEvent) => void,
+  signal: AbortSignal,
+  intervalMs = 1500,
+) {
+  let afterSeq = 0;
+  let runId: string | null = null;
+  const MAX_POLLS = 1200; // ~30 minutes
+
+  for (let i = 0; i < MAX_POLLS; i++) {
+    if (signal.aborted) return;
+    await new Promise((r) => setTimeout(r, intervalMs));
+    if (signal.aborted) return;
+    try {
+      const res = await fetch(`${API_BASE}/ai/analyze-events?afterSeq=${afterSeq}`);
+      if (!res.ok) continue;
+      const data = await res.json() as {
+        runId: string;
+        latestSeq: number;
+        events: Array<AnalyzeEvent & { seq?: number }>;
+      };
+
+      // Detect new run → reset
+      if (runId && data.runId !== runId) {
+        afterSeq = 0;
+        runId = data.runId;
+        continue;
+      }
+      runId = data.runId;
+
+      for (const event of data.events) {
+        event._source = "poll-events";
+        onEvent(event);
+        if (event.seq && event.seq > afterSeq) afterSeq = event.seq;
+      }
+
+      // Update high-water mark even if no events (server may have advanced)
+      if (data.latestSeq > afterSeq) afterSeq = data.latestSeq;
+
+      // Check if analysis is done
+      const hasTerminal = data.events.some(
+        (e) => e.phase === "done" || e.phase === "error" || e.phase === "cancelled" || e.phase === "paused",
+      );
+      if (hasTerminal) return;
+    } catch { /* ignore fetch errors, keep trying */ }
+  }
+  onEvent({ phase: "error", message: "Event polling timeout — analysis may still be running on server", _source: "poll" });
+}
+
 /**
  * Poll the analyze-status endpoint continuously, relaying progress to onEvent.
- * Stops when analysis is no longer running.
+ * This poller only provides UI overlay info (phase, thought, working symbol).
+ * Actual data events come from runEventsPoller.
  */
 async function runStatusPoller(
   onEvent: (event: AnalyzeEvent) => void,
@@ -237,21 +303,11 @@ async function runStatusPoller(
       console.log(`[AI-Poll] status: phase=${state.phase}, running=${state.running}, ${state.current ?? '?'}/${state.total ?? '?'}, symbol=${state.currentSymbolId ?? '-'}`);
 
       if (!state.running) {
-        // Analysis finished or paused
-        if (state.paused) {
-          onEvent({ phase: "paused", stats: state.stats as any, _source: "poll" });
-        } else {
-          onEvent({
-            phase: state.phase === "error" ? "error" : "done",
-            stats: state.stats as any,
-            message: state.phase === "error" ? "Analysis failed on server" : undefined,
-            _source: "poll",
-          });
-        }
+        // Analysis finished or paused — terminal events come from events poller
         return;
       }
 
-      // Relay progress with per-item data from server state
+      // Relay progress with per-item data from server state (UI overlay only)
       onEvent({
         phase: state.phase,
         action: "poll-progress",
@@ -266,14 +322,17 @@ async function runStatusPoller(
       });
     } catch { /* ignore fetch errors, keep trying */ }
   }
-  // Timeout
-  onEvent({ phase: "error", message: "Polling timeout — analysis may still be running on server", _source: "poll" });
 }
 
 /**
- * Start SSE-based AI analysis with parallel status polling for robustness.
- * The SSE stream provides real-time updates. If it stalls (proxy drop, network issue),
- * the parallel poller keeps progress and navigation updated reliably.
+ * Start SSE-based AI analysis with parallel event & status polling.
+ *
+ * Three channels run in parallel for maximum robustness:
+ * 1. SSE stream — real-time data events from the server
+ * 2. Events poller — polls /api/ai/analyze-events for missed SSE events (primary fallback)
+ * 3. Status poller — polls /api/ai/analyze-status for UI overlay only (phase/thought)
+ *
+ * Navigation is driven ONLY by data events (SSE or events poller), never by status poller.
  * Returns an abort function.
  */
 export function startAnalysis(
@@ -283,41 +342,52 @@ export function startAnalysis(
   resume?: boolean,
 ): () => void {
   const controller = new AbortController();
-  let sseAlive = true; // tracks if SSE is delivering data
-  let pollerDone = false; // prevents double-done from SSE + poller
+  let sseAlive = true;
   let sseDone = false;
 
-  // ── Parallel status poller — always runs alongside SSE ──
+  // Track which SSE seqs we already delivered to avoid duplicates from events poller
+  const deliveredSeqs = new Set<number>();
+
+  // ── Parallel status poller — UI overlay only (phase, thought, working symbol) ──
   const pollController = new AbortController();
-  const pollerOnEvent = (event: AnalyzeEvent) => {
-    if (pollerDone) return;
-    // If SSE already delivered a "done" event, suppress duplicate from poller
-    if (sseDone && (event.phase === "done" || event.phase === "error" || event.phase === "paused")) return;
-    // Always relay poll-progress events (they update current/total/navigation)
-    if (event.phase === "done" || event.phase === "error" || event.phase === "cancelled" || event.phase === "paused") {
-      pollerDone = true;
-    }
-    onEvent(event);
-  };
-  // Start poller after a short delay so SSE gets a chance to connect first
-  const pollerStartTimer = setTimeout(() => {
+  const statusPollerStartTimer = setTimeout(() => {
     if (!controller.signal.aborted) {
       console.log("[AI-Poll] Starting parallel status poller");
-      runStatusPoller(pollerOnEvent, pollController.signal, 2500);
+      runStatusPoller(
+        (event) => onEvent(event),
+        pollController.signal,
+        2500,
+      );
     }
   }, 3000);
+
+  // ── Events poller — deterministic event delivery (catches missed SSE data) ──
+  const eventsPollerController = new AbortController();
+  const eventsPollerStartTimer = setTimeout(() => {
+    if (!controller.signal.aborted) {
+      console.log("[AI-Events] Starting parallel events poller");
+      runEventsPoller(
+        (event) => {
+          // Deduplicate: if SSE already delivered this seq, skip
+          if (event.seq && deliveredSeqs.has(event.seq)) return;
+          if (event.seq) deliveredSeqs.add(event.seq);
+          onEvent(event);
+        },
+        eventsPollerController.signal,
+        1500,
+      );
+    }
+  }, 4000); // Start a bit after status poller
 
   // ── SSE stream reader ──
   (async () => {
     let receivedDone = false;
     let lastDataTime = Date.now();
 
-    // Inactivity monitor: if no SSE data for 15 seconds, abort the reader
     const inactivityCheck = setInterval(() => {
       if (Date.now() - lastDataTime > 15_000 && !receivedDone) {
-        console.warn("[AI-SSE] No data for 15s — SSE likely stalled, relying on poller");
+        console.warn("[AI-SSE] No data for 15s — SSE likely stalled, relying on events poller");
         sseAlive = false;
-        // Don't abort the fetch — just stop processing SSE and let poller handle it
         clearInterval(inactivityCheck);
       }
     }, 5000);
@@ -368,6 +438,8 @@ export function startAnalysis(
               console.log("[AI-SSE] Raw event:", raw);
               const event = JSON.parse(raw) as AnalyzeEvent;
               event._source = "sse";
+              // Track seq so events poller can deduplicate
+              if (event.seq) deliveredSeqs.add(event.seq);
               onEvent(event);
               if (event.phase === "done" || event.phase === "error") {
                 receivedDone = true;
@@ -380,24 +452,23 @@ export function startAnalysis(
 
       clearInterval(inactivityCheck);
 
-      // If SSE ended cleanly with "done", stop the poller too
       if (receivedDone) {
         pollController.abort();
+        eventsPollerController.abort();
       }
-      // Otherwise, poller is still running and will catch the "done" event
-
     } catch (err: any) {
       clearInterval(inactivityCheck);
       if (err.name !== "AbortError") {
-        console.warn("[AI-SSE] Connection error (poller still active):", err.message);
-        // Poller is still running — it will handle progress from here
+        console.warn("[AI-SSE] Connection error (pollers still active):", err.message);
       }
     }
   })();
 
   return () => {
-    clearTimeout(pollerStartTimer);
+    clearTimeout(statusPollerStartTimer);
+    clearTimeout(eventsPollerStartTimer);
     pollController.abort();
+    eventsPollerController.abort();
     controller.abort();
   };
 }
