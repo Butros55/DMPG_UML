@@ -43,9 +43,10 @@ app.post("/api/open-in-ide", (req, res) => {
   const lineNum = line ?? 1;
 
   if (ide === "intellij") {
-    // IntelliJ: idea64.exe --line <line> <file>
-    // IntelliJ will auto-open the project folder if file is inside it
-    const args = ["--line", String(lineNum), absFile];
+    // IntelliJ: idea64 <projectDir> --line <line> <file>
+    // Passing projectDir makes IntelliJ reuse the window if it already has that project open,
+    // or open a new window if not.
+    const args = [scanRoot, "--line", String(lineNum), absFile];
     execFile("idea64", args, { windowsHide: true }, (err) => {
       if (err) {
         // Fallback: try "idea" without "64"
@@ -61,9 +62,11 @@ app.post("/api/open-in-ide", (req, res) => {
       }
     });
   } else {
-    // VS Code: code --reuse-window --goto <file>:<line> <folder>
-    // On Windows "code" is "code.cmd" — execFile needs shell:true or the .cmd name
-    const args = ["--reuse-window", "--goto", `${absFile}:${lineNum}`, scanRoot];
+    // VS Code: code --goto <file>:<line> <folder>
+    // Without --reuse-window: if the folder is already open in a VS Code window,
+    // that window is reused. Otherwise a new window opens — never hijacks a
+    // window that has a different project open.
+    const args = ["--goto", `${absFile}:${lineNum}`, scanRoot];
     const opts = { windowsHide: true, shell: process.platform === "win32" };
     execFile("code", args, opts, (err) => {
       if (err) {
