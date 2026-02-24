@@ -4,4 +4,4 @@ dist
 *.local
 .turbo
 demo_data
-./apps/server/.dmpg-data
+apps/server/.dmpg-data
