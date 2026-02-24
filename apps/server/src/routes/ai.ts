@@ -442,14 +442,26 @@ aiRouter.post("/analyze", async (req, res) => {
       send({ phase: "labels", action: "focus", symbolId: sym.id, symbolLabel: sym.label, viewId: findBestView(sym.id), current: labelIdx, total: labelCount, thought: `Kürze Label: \u201E${sym.label}\u201C` });
       try {
         const result = await callOllama(
-          `You are a UML diagram labeling assistant. Shorten the given symbol label to max 25 chars. Rules: For file paths, use just the filename without extension. For dotted names like "module.submodule.Class", keep the last meaningful part. For "Pipeline / Orchestration" style, keep the key term. Return JSON: {"label": "short label"}`,
+          `You are a UML diagram labeling assistant. Simplify the given symbol label by removing ONLY path prefixes, directory prefixes, and module prefixes. CRITICAL RULES:
+- For file paths like "data_pipeline/output/trainings_data/df_data.csv", keep ONLY the filename without extension.
+- For dotted names like "module.Class.method", keep ONLY the last segment (the actual defined name).
+- For class-prefixed methods like "DataExtraction._set_material_cluster", keep ONLY the method name "_set_material_cluster".
+- NEVER rename, abbreviate, translate, or rephrase the name. The result MUST be a substring of the original or the exact code-defined name.
+- NEVER invent new names, use camelCase conversion, or shorten words.
+- For group labels with emojis like "📦 Libraries / Imports (20)", just remove emojis and parenthesized counts.
+Return JSON: {"label": "cleaned label"}`,
           `Current label: "${sym.label}"\nKind: ${sym.kind}`,
         );
         const newLabel = (result as any)?.label;
         if (newLabel && typeof newLabel === "string" && newLabel.length > 0 && newLabel.length < 40 && newLabel !== sym.label) {
           const oldLabel = sym.label;
-          sym.label = newLabel;          // Mark label as AI-generated
-          sym.doc = { ...sym.doc, aiGenerated: { ...(sym.doc?.aiGenerated ?? {}), label: true } };          stats.labelsFixed++;
+          sym.label = newLabel;
+          // Also update related view title so server graph stays in sync
+          const childView = g.views.find((v) => v.id === `view:${sym.id}`);
+          if (childView) childView.title = newLabel;
+          // Mark label as AI-generated
+          sym.doc = { ...sym.doc, aiGenerated: { ...(sym.doc?.aiGenerated ?? {}), label: true } };
+          stats.labelsFixed++;
           console.log(`[AI-Analyze] Label: "${oldLabel}" → "${newLabel}"`);
           send({ phase: "labels", symbolId: sym.id, symbolLabel: newLabel, old: oldLabel, new_: newLabel, current: labelIdx, total: labelCount });
         }
@@ -755,16 +767,31 @@ Respond ONLY with valid JSON.`,
       const code = readSourceCode(sym, scanRoot);
 
       let confirmed = true;
-      let reason = "Keine eingehenden Aufrufe gefunden";
+      let reason = "Keine eingehenden Aufrufe oder Instanziierungen im Projektgraphen gefunden.";
+
+      // Gather outgoing relations for context
+      const outRels = g.relations.filter((r) => r.source === sym.id && r.type !== "contains");
+      const outSummary = outRels.length > 0
+        ? outRels.slice(0, 8).map((r) => `${r.type} → ${r.target}`).join(", ")
+        : "keine ausgehenden Beziehungen";
 
       if (code) {
         try {
           const result = await callOllama(
-            `Determine if a Python/JS function appears to be dead/unused code.
-Return JSON: {"isDead": true/false, "reason": "brief explanation"}
-A function is NOT dead if: it's an entry point, API handler, event callback, test function, or likely called dynamically.
-It IS dead if: it has no callers, not an entry point, and appears to be leftover code.`,
-            `Function: ${sym.label}\nKind: ${sym.kind}\n${code ? `Code:\n${code.slice(0, 1500)}` : ""}`,
+            `Analysiere ob diese Python/JS-Funktion Dead Code (ungenutzt) ist.
+Return JSON: {"isDead": true/false, "reason": "1-2 Sätze in Englisch, spezifisch"}
+
+Die "reason" MUSS konkret erklären WARUM der Code dead ist. Beispiele guter Gründe:
+- "Hilfsfunktion die nur in einer auskommentierten Passage in X referenziert wird."
+- "Überbleibsel einer früheren Implementierung, ersetzt durch Y."
+- "Wird nirgends importiert oder aufgerufen; kein Entry-Point oder Callback."
+- "Interne Methode ohne Aufrufer innerhalb der Klasse oder von außen."
+
+NICHT dead wenn: Entry-Point, API-Handler, Event-Callback, Test, dynamisch aufgerufen (getattr/reflection), __init__, CLI-Command.
+Dead wenn: Keine Aufrufer, kein Entry-Point, kein Callback-Pattern, scheint Überbleibsel zu sein.
+
+Sei spezifisch — nenne den wahrscheinlichen Grund (z.B. "keine Aufrufer", "auskommentiert", "ersetzt", "unerreichbar").`,
+            `Funktion: ${sym.label}\nArt: ${sym.kind}\nDatei: ${sym.location?.file ?? "unbekannt"}\nAusgehende Beziehungen: ${outSummary}\nEingehende Aufrufe: 0\n${code ? `Code:\n${code.slice(0, 1500)}` : ""}`,
           );
           confirmed = (result as any)?.isDead === true;
           reason = (result as any)?.reason ?? reason;
@@ -775,8 +802,12 @@ It IS dead if: it has no callers, not an entry point, and appears to be leftover
 
       if (confirmed) {
         sym.tags = [...(sym.tags ?? []).filter((t) => t !== "dead-code"), "dead-code"];
-        // Mark dead-code as AI-generated
-        sym.doc = { ...sym.doc, aiGenerated: { ...(sym.doc?.aiGenerated ?? {}), deadCode: true } };
+        // Mark dead-code as AI-generated AND persist the reason in the graph
+        sym.doc = {
+          ...sym.doc,
+          aiGenerated: { ...(sym.doc?.aiGenerated ?? {}), deadCode: true },
+          deadCodeReason: reason,
+        };
         stats.deadCodeFound++;
         console.log(`[AI-Analyze] Dead-Code: "${sym.label}" - ${reason}`);
         send({
@@ -815,7 +846,7 @@ It IS dead if: it has no callers, not an entry point, and appears to be leftover
     const structureTotal = groupSymbols.length;
 
     // Identify complex groups (>12 direct module members, not already sub-grouped)
-    const complexGroups = structureSummary.filter((s) => s.memberCount > 10 && s.childGroups.length === 0);
+    const complexGroups = structureSummary.filter((s) => s.memberCount > 8 && s.childGroups.length === 0);
     const hasComplexity = complexGroups.length > 0;
 
     send({ phase: "structure", action: "start", current: 0, total: structureTotal });
@@ -832,6 +863,12 @@ It IS dead if: it has no callers, not an entry point, and appears to be leftover
         const result = await callOllama(
           `You review the grouping structure of a UML class diagram generated from a Python project.
 The groups were auto-generated from the directory structure. Your task is to improve readability.
+
+## Hard constraints:
+- MAX 25 nodes per group (any group with more MUST be split)
+- MAX depth 4 (root → group → sub-group → module → class)
+- MIN 3 nodes per group (smaller groups should be merged with semantic neighbors)
+- Groups should represent logical DOMAIN areas (I/O, Domain Logic, Orchestration, Configuration, Utils, etc.)
 
 ## Tasks (in priority order):
 
@@ -860,16 +897,19 @@ This is the most important task. Groups with too many modules make the diagram u
 ### 4. MOVE misplaced modules
 - Only if a module clearly doesn't belong to its current group based on name and purpose
 
+IMPORTANT: For EVERY action (rename, move, merge, split), include a "reason" field explaining
+WHY this change improves the diagram. This is shown in the review panel so the user can decide.
+
 Return JSON:
 {
-  "renames": [{"groupId": "grp:dir:...", "newLabel": "Better Name"}],
+  "renames": [{"groupId": "grp:dir:...", "newLabel": "Better Name", "reason": "brief explanation"}],
   "moves": [{"moduleId": "mod:...", "fromGroupId": "grp:dir:...", "toGroupId": "grp:dir:...", "reason": "brief reason"}],
   "merges": [{"sourceGroupId": "grp:dir:...", "targetGroupId": "grp:dir:...", "reason": "brief reason"}],
-  "splits": [{"groupId": "grp:dir:...", "subGroups": [{"label": "Sub-Group Name", "moduleIds": ["mod:...", "mod:..."]}]}]
+  "splits": [{"groupId": "grp:dir:...", "reason": "brief explanation", "subGroups": [{"label": "Sub-Group Name", "moduleIds": ["mod:...", "mod:..."]}]}]
 }
 
 Rules:
-- Splits have highest priority — a readable diagram needs groups of 3-10 nodes max
+- Splits have highest priority — a readable diagram needs groups of 3-25 nodes max
 - Only split groups where memberCount > 10 AND childGroups is empty
 - Always return all four keys (renames, moves, merges, splits), even if empty arrays
 - Do NOT split groups that already have childGroups (they are already hierarchical)
@@ -892,8 +932,8 @@ Rules:
             const view = g.views.find((v) => v.id === `view:${grp.id}`);
             if (view) view.title = rename.newLabel;
             stats.groupsReviewed++;
-            console.log(`[AI-Analyze] Structure: Renamed "${oldLabel}" → "${rename.newLabel}"`);
-            send({ phase: "structure", action: "rename", groupId: grp.id, old: oldLabel, new_: rename.newLabel });
+            console.log(`[AI-Analyze] Structure: Renamed "${oldLabel}" → "${rename.newLabel}"${rename.reason ? ` — ${rename.reason}` : ""}`);
+            send({ phase: "structure", action: "rename", groupId: grp.id, old: oldLabel, new_: rename.newLabel, reason: rename.reason ?? "" });
           }
         }
 
@@ -1063,8 +1103,8 @@ Rules:
                 ...newSubGroupIds,
               ];
               stats.groupsReviewed++;
-              console.log(`[AI-Analyze] Structure: Split "${parentGrp.label}" into ${newSubGroupIds.length} sub-groups`);
-              send({ phase: "structure", action: "split", groupId: split.groupId, groupLabel: parentGrp.label, subGroupCount: newSubGroupIds.length });
+              console.log(`[AI-Analyze] Structure: Split "${parentGrp.label}" into ${newSubGroupIds.length} sub-groups${split.reason ? ` — ${split.reason}` : ""}`);
+              send({ phase: "structure", action: "split", groupId: split.groupId, groupLabel: parentGrp.label, subGroupCount: newSubGroupIds.length, reason: split.reason ?? "" });
             }
           }
         }

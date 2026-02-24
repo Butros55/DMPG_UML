@@ -7,6 +7,7 @@ import { Breadcrumb } from "./components/Breadcrumb";
 import { SourceViewer } from "./components/SourceViewer";
 import { CommandPalette } from "./components/CommandPalette";
 import { ValidatePanel } from "./components/ValidatePanel";
+import { DebugTransportPanel } from "./components/DebugTransportPanel";
 import { useAppStore } from "./store";
 import { fetchGraph } from "./api";
 
@@ -62,6 +63,8 @@ export function App() {
   const inspectorCollapsed = useAppStore((s) => s.inspectorCollapsed);
   const sourceViewerSymbol = useAppStore((s) => s.sourceViewerSymbol);
   const closeSourceViewer = useAppStore((s) => s.closeSourceViewer);
+  const validateActive = useAppStore((s) => s.validateState.active);
+  const toggleDebugTransport = useAppStore((s) => s.toggleDebugTransport);
 
   const skipHistoryPush = useRef(false);
   const prevViewId = useRef<string | null>(null);
@@ -69,6 +72,7 @@ export function App() {
   // Resizable panels
   const sidebar = useResizeHandle("left", 240, 160, 500);
   const inspector = useResizeHandle("right", 340, 200, 600);
+  const validatePanel = useResizeHandle("left", 380, 280, 560);
 
   useEffect(() => {
     fetchGraph()
@@ -101,14 +105,24 @@ export function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [navigateToView]);
 
-  const gridCols = inspectorCollapsed
-    ? `${sidebar.width}px 1fr 36px`
-    : `${sidebar.width}px 1fr ${inspector.width}px`;
+  // Build grid columns — optionally include validate panel between sidebar & canvas
+  const gridCols = (() => {
+    const sidebarCol = `${sidebar.width}px`;
+    const validateCol = validateActive ? `${validatePanel.width}px` : "";
+    const inspectorCol = inspectorCollapsed ? "36px" : `${inspector.width}px`;
+    return validateActive
+      ? `${sidebarCol} ${validateCol} 1fr ${inspectorCol}`
+      : `${sidebarCol} 1fr ${inspectorCol}`;
+  })();
+
+  const gridAreas = validateActive
+    ? `"header header header header" "sidebar validate canvas inspector"`
+    : `"header header header" "sidebar canvas inspector"`;
 
   return (
     <div
-      className={`app-layout${inspectorCollapsed ? " inspector-collapsed" : ""}`}
-      style={{ gridTemplateColumns: gridCols }}
+      className={`app-layout${inspectorCollapsed ? " inspector-collapsed" : ""}${validateActive ? " validate-open" : ""}`}
+      style={{ gridTemplateColumns: gridCols, gridTemplateAreas: gridAreas }}
     >
       <header className="app-header">
         <h1>DMPG UML Editor</h1>
@@ -119,6 +133,13 @@ export function App() {
             {graph.symbols.length} symbols · {graph.relations.length} relations · {graph.views.length} views
           </span>
         )}
+        <button
+          className="debug-transport-toggle"
+          title="Toggle Transport Debug"
+          onClick={toggleDebugTransport}
+        >
+          <i className="bi bi-bug" />
+        </button>
       </header>
 
       <Sidebar />
@@ -127,6 +148,18 @@ export function App() {
         style={{ left: sidebar.width - 3 }}
         onMouseDown={sidebar.onMouseDown}
       />
+
+      {/* Validate Panel — docked between sidebar & canvas */}
+      {validateActive && (
+        <>
+          <ValidatePanel />
+          <div
+            className="resize-handle resize-handle--validate"
+            style={{ left: sidebar.width + validatePanel.width - 3 }}
+            onMouseDown={validatePanel.onMouseDown}
+          />
+        </>
+      )}
 
       <ReactFlowProvider>
         <Canvas />
@@ -153,8 +186,8 @@ export function App() {
       {/* Command Palette (Ctrl+P) */}
       <CommandPalette />
 
-      {/* Validate Mode Panel (floating overlay) */}
-      <ValidatePanel />
+      {/* Debug Transport overlay */}
+      <DebugTransportPanel />
     </div>
   );
 }

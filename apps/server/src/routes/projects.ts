@@ -4,6 +4,7 @@ import {
   switchProject,
   deleteProject,
   getActiveProjectPath,
+  getGraph,
 } from "../store.js";
 
 export const projectsRouter: RouterType = Router();
@@ -26,7 +27,10 @@ projectsRouter.post("/switch", (req, res) => {
   res.json({ ok: true, graph, projectPath });
 });
 
-/** DELETE /api/projects — remove a project from the index */
+/** DELETE /api/projects — remove a project from the index.
+ *  Returns the updated project list, new active project, and its graph
+ *  so the client can re-sync in a single round-trip.
+ */
 projectsRouter.delete("/", (req, res) => {
   const { projectPath } = req.body;
   if (!projectPath || typeof projectPath !== "string") {
@@ -38,5 +42,9 @@ projectsRouter.delete("/", (req, res) => {
     res.status(404).json({ error: "Project not found" });
     return;
   }
-  res.json({ ok: true });
+  // Return full state so client can re-sync without extra round-trips
+  const projects = listProjects();
+  const activeProject = getActiveProjectPath();
+  const graph = getGraph() ?? null;
+  res.json({ ok: true, projects, activeProject, graph });
 });

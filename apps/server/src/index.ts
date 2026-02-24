@@ -26,11 +26,15 @@ import { execFile } from "node:child_process";
 import * as path from "node:path";
 
 app.post("/api/open-in-ide", (req, res) => {
-  const { ide, file, line, projectPath } = req.body as {
+  const { ide, file, line, projectPath, mode, diffFile } = req.body as {
     ide?: string;
     file?: string;
     line?: number;
     projectPath?: string;
+    /** "goto" (default) | "diff" — controls how the IDE opens the file */
+    mode?: "goto" | "diff";
+    /** Second file for diff mode */
+    diffFile?: string;
   };
 
   if (!file) {
@@ -41,15 +45,20 @@ app.post("/api/open-in-ide", (req, res) => {
   const scanRoot = projectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
   const absFile = path.isAbsolute(file) ? file : path.join(scanRoot, file);
   const lineNum = line ?? 1;
+  const openMode = mode ?? "goto";
 
   if (ide === "intellij") {
     // IntelliJ: idea64 <projectDir> --line <line> <file>
-    // Passing projectDir makes IntelliJ reuse the window if it already has that project open,
-    // or open a new window if not.
-    const args = [scanRoot, "--line", String(lineNum), absFile];
+    // Diff mode: idea64 diff <file1> <file2>
+    let args: string[];
+    if (openMode === "diff" && diffFile) {
+      const absDiff = path.isAbsolute(diffFile) ? diffFile : path.join(scanRoot, diffFile);
+      args = ["diff", absFile, absDiff];
+    } else {
+      args = [scanRoot, "--line", String(lineNum), absFile];
+    }
     execFile("idea64", args, { windowsHide: true }, (err) => {
       if (err) {
-        // Fallback: try "idea" without "64"
         execFile("idea", args, { windowsHide: true }, (err2) => {
           if (err2) {
             res.status(500).json({ error: `Could not open IntelliJ: ${err2.message}` });
@@ -63,10 +72,14 @@ app.post("/api/open-in-ide", (req, res) => {
     });
   } else {
     // VS Code: code --goto <file>:<line> <folder>
-    // Without --reuse-window: if the folder is already open in a VS Code window,
-    // that window is reused. Otherwise a new window opens — never hijacks a
-    // window that has a different project open.
-    const args = ["--goto", `${absFile}:${lineNum}`, scanRoot];
+    // Diff mode: code --diff <file1> <file2>
+    let args: string[];
+    if (openMode === "diff" && diffFile) {
+      const absDiff = path.isAbsolute(diffFile) ? diffFile : path.join(scanRoot, diffFile);
+      args = ["--diff", absFile, absDiff];
+    } else {
+      args = ["--goto", `${absFile}:${lineNum}`, scanRoot];
+    }
     const opts = { windowsHide: true, shell: process.platform === "win32" };
     execFile("code", args, opts, (err) => {
       if (err) {

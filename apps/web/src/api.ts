@@ -36,12 +36,21 @@ export async function switchProject(projectPath: string): Promise<{
   return res.json();
 }
 
-export async function deleteProjectApi(projectPath: string): Promise<void> {
-  await fetch(`${API_BASE}/projects`, {
+export async function deleteProjectApi(projectPath: string): Promise<{
+  ok: boolean;
+  projects: ProjectMeta[];
+  activeProject: string | null;
+  graph: import("@dmpg/shared").ProjectGraph | null;
+}> {
+  const res = await fetch(`${API_BASE}/projects`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ projectPath }),
   });
+  if (!res.ok) {
+    return { ok: false, projects: [], activeProject: null, graph: null };
+  }
+  return res.json();
 }
 
 /* ── Source code ────────────────────────────────── */
@@ -67,16 +76,22 @@ export async function fetchSourceCode(symbolId: string): Promise<SourceCodeResul
 /* ── Open in IDE ───────────────────────────────── */
 
 export type IdeName = "vscode" | "intellij";
+export type IdeOpenMode = "goto" | "diff";
 
 export async function openInIde(
   ide: IdeName,
   file: string,
   line?: number,
+  mode?: IdeOpenMode,
+  diffFile?: string,
 ): Promise<void> {
+  const body: Record<string, unknown> = { ide, file, line };
+  if (mode) body.mode = mode;
+  if (diffFile) body.diffFile = diffFile;
   const res = await fetch(`${API_BASE}/open-in-ide`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ide, file, line }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -377,7 +392,7 @@ export function startAnalysis(
         2500,
       );
     }
-  }, 3000);
+  }, 1000);
 
   // ── Events poller — deterministic event delivery (catches missed SSE data) ──
   const eventsPollerController = new AbortController();
@@ -395,7 +410,7 @@ export function startAnalysis(
         1500,
       );
     }
-  }, 4000); // Start a bit after status poller
+  }, 250); // Start almost immediately — primary transport
 
   // ── SSE stream reader ──
   (async () => {

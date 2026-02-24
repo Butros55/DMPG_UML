@@ -1,12 +1,19 @@
 {
-  "activeProject": "C:\\dev\\dmpg_models\\data_pipeline",
+  "activeProject": "C:\\dev\\dmpg_models",
   "projects": [
     {
       "projectPath": "C:\\dev\\dmpg_models\\data_pipeline",
       "name": "data_pipeline",
-      "symbolCount": 401,
-      "lastScanned": "2026-02-24T10:30:32.307Z",
+      "symbolCount": 400,
+      "lastScanned": "2026-02-24T13:05:46.203Z",
       "hash": "a845846712dc"
+    },
+    {
+      "projectPath": "C:\\dev\\dmpg_models",
+      "name": "dmpg_models",
+      "symbolCount": 3377,
+      "lastScanned": "2026-02-24T13:11:21.641Z",
+      "hash": "3449a09340fa"
     }
   ]
 }

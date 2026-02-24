@@ -377,6 +377,11 @@ export function Canvas() {
       });
     }
     setTimeout(() => {
+      // Clear ALL previous focus highlights — only one node should be highlighted at a time
+      document.querySelectorAll(".node-focus-highlight").forEach((prev) => {
+        prev.classList.remove("node-focus-highlight");
+      });
+
       const el = document.querySelector(`[data-id="${nodeId}"]`);
       if (el) {
         // Use ai-processing class during AI analysis, regular highlight otherwise

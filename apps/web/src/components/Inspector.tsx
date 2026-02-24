@@ -7,6 +7,52 @@ import type { Relation, RelationType } from "@dmpg/shared";
 const RELATION_TYPES: RelationType[] = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"];
 const SYMBOL_KINDS = ["module", "class", "function", "method", "group", "package", "interface", "variable"] as const;
 
+/* ── Known external names — Python builtins, stdlib modules, common 3rd-party aliases ── */
+const KNOWN_EXTERNAL: ReadonlySet<string> = new Set([
+  // Python builtins
+  'abs','all','any','ascii','bin','bool','breakpoint','bytearray','bytes',
+  'callable','chr','classmethod','compile','complex','delattr','dict','dir',
+  'divmod','enumerate','eval','exec','filter','float','format','frozenset',
+  'getattr','globals','hasattr','hash','help','hex','id','input','int',
+  'isinstance','issubclass','iter','len','list','locals','map','max',
+  'memoryview','min','next','object','oct','open','ord','pow','print',
+  'property','range','repr','reversed','round','set','setattr','slice',
+  'sorted','staticmethod','str','sum','super','tuple','type','vars','zip',
+  // Python exceptions
+  'Exception','BaseException','TypeError','ValueError','KeyError','IndexError',
+  'AttributeError','ImportError','RuntimeError','StopIteration','FileNotFoundError',
+  'OSError','IOError','NotImplementedError','ZeroDivisionError','OverflowError',
+  'AssertionError','SyntaxError','NameError','RecursionError','PermissionError',
+  // Python stdlib modules (first-segment)
+  'abc','argparse','array','ast','asyncio','atexit','base64','bisect','builtins',
+  'calendar','cmath','cmd','codecs','collections','concurrent','configparser',
+  'contextlib','copy','csv','ctypes','dataclasses','datetime','decimal','difflib',
+  'dis','email','enum','errno','fnmatch','fractions','ftplib','functools','gc',
+  'getpass','glob','gzip','hashlib','heapq','hmac','html','http','importlib',
+  'inspect','io','ipaddress','itertools','json','keyword','linecache','locale',
+  'logging','lzma','math','mimetypes','mmap','multiprocessing','numbers',
+  'operator','optparse','os','pathlib','pdb','pickle','pkgutil','platform',
+  'pprint','profile','pstats','queue','random','re','readline','reprlib',
+  'resource','runpy','sched','secrets','select','shelve','shlex','shutil',
+  'signal','site','smtplib','socket','socketserver','sqlite3','ssl','stat',
+  'statistics','string','struct','subprocess','sys','sysconfig','tarfile',
+  'tempfile','textwrap','threading','time','timeit','tkinter','token',
+  'tokenize','tomllib','trace','traceback','tracemalloc','types','typing',
+  'unicodedata','unittest','urllib','uuid','venv','warnings','wave','weakref',
+  'webbrowser','xml','xmlrpc','zipfile','zipimport','zlib',
+  // Common 3rd-party packages & aliases
+  'np','numpy','pd','pandas','plt','matplotlib','mpl','sns','seaborn',
+  'scipy','sklearn','sk','tf','tensorflow','torch','cv2','PIL','requests',
+  'flask','django','fastapi','sqlalchemy','sa','boto3','bs4','lxml','yaml',
+  'pyyaml','dotenv','click','typer','pydantic','uvicorn','celery','redis',
+  'pymongo','psycopg2','openpyxl','xlrd','xlsxwriter','pytest','mock','tqdm',
+  'rich','colorama','networkx','nx','sympy','statsmodels','sm','wandb','mlflow',
+  'optuna','dask','polars','pl','pyarrow','pa','h5py','shapely','geopandas',
+  'gpd','kafka','aiohttp','httpx','grpc','docker','airflow','pyspark',
+  'transformers','tokenizers','langchain','openai','streamlit','st','gradio',
+  'plotly','dash','setuptools','pip','pkg_resources','simpy','pydruid',
+]);
+
 /* ── Badge metadata mapping (same IDs as UmlNode REL_BADGE_META) ── */
 const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: string }> = {
   "out:calls":        { iconCls: "bi-telephone-outbound", label: "calls",         cls: "calls" },
@@ -116,26 +162,39 @@ function AiRelationBadge({ relationId, onConfirm, onReject }: {
   );
 }
 
-/** Classify whether a symbol is project-defined (not standard library / built-in) */
+/**
+ * Classify whether a symbol is project-defined (not standard library / built-in).
+ * Default is project-own — only symbols whose root prefix is KNOWN to be external
+ * (Python builtins, stdlib, or common third-party) are classified as "Vordefiniert".
+ */
 function isProjectOwn(
   sym: { kind: string; label: string } | undefined,
   symbolId: string,
   projectPrefixes: Set<string>,
+  externalPrefixes: Set<string>,
 ): boolean {
   if (!sym) {
-    // No symbol in graph — check if the ID shares a root package with project symbols
     const bare = symbolId.replace(/^(mod:|cls:|fn:|ext:|meth:)/, "");
     const first = bare.split(".")[0];
+    // Matches a project root package → project-own
     if (first && projectPrefixes.has(first)) return true;
-    return false;
+    // Matches a known external → predefined
+    if (first && externalPrefixes.has(first)) return false;
+    if (bare && externalPrefixes.has(bare)) return false;
+    // Unknown → default project-own
+    return true;
   }
   if (sym.kind !== "external") return true;
-  // External symbols representing project data files are project-own
+  // Data files → project-own
   if (/\.(csv|xlsx?|json|ya?ml|toml|txt|dat|sql|parquet|h5|pkl|pickle|feather|arrow)$/i.test(sym.label)) return true;
-  // External symbol whose root package matches a project package
-  const bare = sym.label.split(".")[0];
-  if (bare && projectPrefixes.has(bare)) return true;
-  return false;
+  const first = sym.label.split(".")[0];
+  // Project prefix → project-own
+  if (first && projectPrefixes.has(first)) return true;
+  // Known external → predefined
+  if (first && externalPrefixes.has(first)) return false;
+  if (externalPrefixes.has(sym.label)) return false;
+  // Unknown external → project-own (local variable method calls etc.)
+  return true;
 }
 
 /** Reusable list that partitions relation targets into project-own (top, highlighted) and stdlib (collapsed) */
@@ -172,20 +231,37 @@ function RelationItemList({
     return prefixes;
   }, [graph]);
 
+  /** Build the effective external prefix set: hardcoded + dangling import targets */
+  const externalPrefixes = useMemo(() => {
+    const prefixes = new Set<string>(KNOWN_EXTERNAL);
+    if (!graph) return prefixes;
+    const allSymIds = new Set(graph.symbols.map((s) => s.id));
+    for (const r of (graph as any).relations ?? []) {
+      if (r.type !== "imports") continue;
+      if (!allSymIds.has(r.target)) {
+        // Import target has no symbol → external module
+        const bare = (r.target as string).replace(/^(mod:|ext:)/, "");
+        const first = bare.split(".")[0];
+        if (first) prefixes.add(first);
+      }
+    }
+    return prefixes;
+  }, [graph]);
+
   const { own, stdlib } = useMemo(() => {
     const ownArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: true }> = [];
     const stdlibArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: false }> = [];
     for (const r of relations) {
       const otherId = direction === "out" ? r.target : r.source;
       const sym = graph?.symbols.find((s) => s.id === otherId);
-      if (isProjectOwn(sym, otherId, projectPrefixes)) {
+      if (isProjectOwn(sym, otherId, projectPrefixes, externalPrefixes)) {
         ownArr.push({ r, otherId, sym, isOwn: true });
       } else {
         stdlibArr.push({ r, otherId, sym, isOwn: false });
       }
     }
     return { own: ownArr, stdlib: stdlibArr };
-  }, [relations, graph, direction, projectPrefixes]);
+  }, [relations, graph, direction, projectPrefixes, externalPrefixes]);
 
   const renderItem = ({ r, otherId, sym, isOwn }: { r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: boolean }) => (
     <li key={r.id} className={`rel-item ${isOwn ? "rel-own" : "rel-stdlib"} ${r.aiGenerated ? "ai-generated-item" : ""}`}>
@@ -397,36 +473,28 @@ function SymbolLink({ symbolId, label, onClick }: { symbolId: string; label: str
 /* ─── AI Inspector Animation Hook ─── */
 /**
  * Detects when AI-generated content changes in the inspector for the selected symbol.
+ * Uses the store-driven animationSymbolId / animationSeq mechanism (same as UmlNode)
+ * so animations fire in sync with the playback queue navigation.
+ *
  * Returns a CSS class string that triggers a typewriter-style reveal animation
  * on the inspector card content.
  */
 function useAiInspectorAnimation(sym: { id: string; doc?: { summary?: string; inputs?: unknown[]; outputs?: unknown[]; sideEffects?: unknown[]; aiGenerated?: Record<string, unknown> } } | undefined): string {
   const [animClass, setAnimClass] = useState("");
-  const prevSnap = useRef("");
-  const prevSymId = useRef<string | null>(null);
-  const aiRunning = useAppStore((s) => s.aiAnalysis?.running ?? false);
+  const animationSymbolId = useAppStore((s) => s.aiAnalysis?.animationSymbolId ?? null);
+  const animationSeq = useAppStore((s) => s.aiAnalysis?.animationSeq ?? 0);
+  const lastAppliedSeqRef = useRef(0);
 
   useEffect(() => {
-    if (!sym) { prevSnap.current = ""; prevSymId.current = null; return; }
+    if (!sym) return;
+    if (animationSeq === 0 || animationSeq === lastAppliedSeqRef.current) return;
+    lastAppliedSeqRef.current = animationSeq;
+    if (animationSymbolId !== sym.id) return;
 
-    const snap = `${sym.doc?.summary ?? ""}|${(sym.doc?.inputs as unknown[])?.length ?? 0}|${(sym.doc?.outputs as unknown[])?.length ?? 0}|${(sym.doc?.sideEffects as unknown[])?.length ?? 0}`;
-
-    // If symbol changed, reset without animating
-    if (prevSymId.current !== sym.id) {
-      prevSymId.current = sym.id;
-      prevSnap.current = snap;
-      return;
-    }
-
-    if (snap !== prevSnap.current && aiRunning) {
-      prevSnap.current = snap;
-      setAnimClass("inspector-ai-typing");
-      const timer = setTimeout(() => setAnimClass(""), 2500);
-      return () => clearTimeout(timer);
-    }
-
-    prevSnap.current = snap;
-  }, [sym?.id, sym?.doc?.summary, sym?.doc?.inputs, sym?.doc?.outputs, sym?.doc?.sideEffects, aiRunning]);
+    setAnimClass("inspector-ai-typing");
+    const timer = setTimeout(() => setAnimClass(""), 2500);
+    return () => clearTimeout(timer);
+  }, [animationSeq, animationSymbolId, sym?.id]);
 
   return animClass;
 }
@@ -454,6 +522,9 @@ export function Inspector() {
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
+
+  // Edit mode toggle
+  const [editMode, setEditMode] = useState(false);
 
   // Editing states
   const [editLabel, setEditLabel] = useState("");
@@ -490,6 +561,7 @@ export function Inspector() {
       setShowAddConn(false);
       setEditingSection(null);
       setNewTag("");
+      setEditMode(false);
     }
   }, [sym?.id]);
 
@@ -750,27 +822,38 @@ export function Inspector() {
   const availableTargets = graph?.symbols.filter((s) => s.id !== sym.id) ?? [];
 
   return (
-    <div className="inspector">
+    <div className={`inspector${inspectorAnimClass ? " inspector--ai-animating" : ""}`}>
       <button className="inspector-toggle-btn inspector-toggle-btn--inside" onClick={toggleInspector} title="Inspector schließen">«</button>
-      <h2>Inspector</h2>
+      <div className="inspector-header-row">
+        <h2>Inspector</h2>
+        <button
+          className={`btn btn-xs inspector-edit-toggle${editMode ? " inspector-edit-toggle--active" : ""}`}
+          onClick={() => { setEditMode(!editMode); if (editMode) { setIsEditing(false); setEditingSection(null); setShowAddConn(false); } }}
+          title={editMode ? "Bearbeitungsmodus deaktivieren" : "Bearbeitungsmodus aktivieren"}
+        >
+          <i className={editMode ? "bi bi-pencil-fill" : "bi bi-pencil"} />{editMode ? " Bearbeiten" : " Bearbeiten"}
+        </button>
+      </div>
 
       {/* ─── Node Header / Edit Toggle ─── */}
       <div className="inspector-card">
-        {!isEditing ? (
+        {(!editMode || !isEditing) ? (
           <>
             <h3>
               <span className={`kind-badge kind-${sym.kind}`} style={{ marginRight: 6 }}>
                 {sym.kind}
               </span>
               {sym.label}
-              <button
-                className="btn-icon"
-                title="Edit"
-                onClick={() => setIsEditing(true)}
-                style={{ marginLeft: 8, cursor: "pointer", background: "none", border: "none", color: "var(--accent)", fontSize: 14 }}
-              >
-                <i className="bi bi-pencil" />
-              </button>
+              {editMode && (
+                <button
+                  className="btn-icon"
+                  title="Edit"
+                  onClick={() => setIsEditing(true)}
+                  style={{ marginLeft: 8, cursor: "pointer", background: "none", border: "none", color: "var(--accent)", fontSize: 14 }}
+                >
+                  <i className="bi bi-pencil" />
+                </button>
+              )}
             </h3>
 
             {sym.location && (
@@ -788,7 +871,7 @@ export function Inspector() {
               </div>
             )}
 
-            {/* ─── Editable Tags ─── */}
+            {/* ─── Tags ─── */}
             <div className="tags">
               {(sym.tags ?? []).map((t) => (
                 <span key={t} className={`tag${t === "dead-code" && doc?.aiGenerated?.deadCode ? " ai-tagged" : ""}`}>
@@ -796,25 +879,29 @@ export function Inspector() {
                   {t === "dead-code" && doc?.aiGenerated?.deadCode && (
                     <AiBadge field="deadCode" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
                   )}
-                  <button
-                    className="tag-remove-btn"
-                    onClick={() => handleRemoveTag(t)}
-                    title={`Tag "${t}" entfernen`}
-                  >×</button>
+                  {editMode && (
+                    <button
+                      className="tag-remove-btn"
+                      onClick={() => handleRemoveTag(t)}
+                      title={`Tag "${t}" entfernen`}
+                    >×</button>
+                  )}
                 </span>
               ))}
-              <span className="tag-add-inline">
-                <input
-                  className="tag-add-input"
-                  value={newTag}
-                  onChange={(e) => setNewTag(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleAddTag(); }}
-                  placeholder="+ Tag"
-                />
-                {newTag.trim() && (
-                  <button className="tag-add-btn" onClick={handleAddTag} title="Tag hinzufügen">+</button>
-                )}
-              </span>
+              {editMode && (
+                <span className="tag-add-inline">
+                  <input
+                    className="tag-add-input"
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleAddTag(); }}
+                    placeholder="+ Tag"
+                  />
+                  {newTag.trim() && (
+                    <button className="tag-add-btn" onClick={handleAddTag} title="Tag hinzufügen">+</button>
+                  )}
+                </span>
+              )}
             </div>
 
             {/* ─── Dead Code Reason ─── */}
@@ -935,7 +1022,7 @@ export function Inspector() {
             {doc?.aiGenerated?.inputs && (
               <AiBadge field="inputs" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
             )}
-            {editingSection !== "inputs" && (
+            {editMode && editingSection !== "inputs" && (
               <button className="section-edit-btn" onClick={handleStartEditInputs} title="Parameter bearbeiten"><i className="bi bi-pencil" /></button>
             )}
           </div>
@@ -971,7 +1058,7 @@ export function Inspector() {
         </div>
       )}
       {/* Add Parameters when none exist */}
-      {!doc?.inputs?.length && editingSection !== "inputs" && (
+      {editMode && !doc?.inputs?.length && editingSection !== "inputs" && (
         <div className="inspector-card">
           <button className="btn btn-xs" onClick={handleStartEditInputs}>+ Parameter hinzufügen</button>
         </div>
@@ -985,7 +1072,7 @@ export function Inspector() {
             {doc?.aiGenerated?.outputs && (
               <AiBadge field="outputs" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
             )}
-            {editingSection !== "outputs" && (
+            {editMode && editingSection !== "outputs" && (
               <button className="section-edit-btn" onClick={handleStartEditOutputs} title="Rückgabe bearbeiten"><i className="bi bi-pencil" /></button>
             )}
           </div>
@@ -1021,7 +1108,7 @@ export function Inspector() {
         </div>
       )}
       {/* Add Outputs when none exist */}
-      {!doc?.outputs?.length && editingSection !== "outputs" && (
+      {editMode && !doc?.outputs?.length && editingSection !== "outputs" && (
         <div className="inspector-card">
           <button className="btn btn-xs" onClick={handleStartEditOutputs}>+ Rückgabe hinzufügen</button>
         </div>
@@ -1029,13 +1116,13 @@ export function Inspector() {
 
       {/* ─── Side Effects ─── */}
       {(editingSection === "sideEffects" || (doc?.sideEffects && doc.sideEffects.length > 0)) && (
-        <div className={`inspector-card${doc?.aiGenerated?.sideEffects ? " ai-generated-card" : ""}`}>
+        <div className={`inspector-card${doc?.aiGenerated?.sideEffects ? ` ai-generated-card ${inspectorAnimClass}` : ""}`}>
           <div className="field-label">
             <i className="bi bi-exclamation-triangle" /> Seiteneffekte
             {doc?.aiGenerated?.sideEffects && (
               <AiBadge field="sideEffects" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
             )}
-            {editingSection !== "sideEffects" && (
+            {editMode && editingSection !== "sideEffects" && (
               <button className="section-edit-btn" onClick={handleStartEditSideEffects} title="Seiteneffekte bearbeiten"><i className="bi bi-pencil" /></button>
             )}
           </div>
@@ -1072,7 +1159,7 @@ export function Inspector() {
         </div>
       )}
       {/* Add SideEffects when none exist */}
-      {!doc?.sideEffects?.length && editingSection !== "sideEffects" && (
+      {editMode && !doc?.sideEffects?.length && editingSection !== "sideEffects" && (
         <div className="inspector-card">
           <button className="btn btn-xs" onClick={handleStartEditSideEffects}>+ Seiteneffekt hinzufügen</button>
         </div>
@@ -1336,73 +1423,77 @@ export function Inspector() {
       )}
 
       {/* ─── Add Connection ─── */}
-      <div className="inspector-card">
-        {!showAddConn ? (
-          <button className="btn btn-sm" onClick={() => setShowAddConn(true)}>
-            <i className="bi bi-plus-circle" /> Add Connection
-          </button>
-        ) : (
-          <div className="add-connection-form">
-            <div className="field-label">Target Node</div>
-            <select
-              className="inspector-select"
-              value={connTarget}
-              onChange={(e) => setConnTarget(e.target.value)}
-            >
-              <option value="">-- Select target --</option>
-              {availableTargets.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.label} ({s.kind})
-                </option>
-              ))}
-            </select>
-
-            <div className="field-label" style={{ marginTop: 6 }}>Type</div>
-            <select
-              className="inspector-select"
-              value={connType}
-              onChange={(e) => { setConnType(e.target.value); setConnLabel(e.target.value); }}
-            >
-              {RELATION_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-
-            <div className="field-label" style={{ marginTop: 6 }}>Label</div>
-            <input
-              className="inspector-input"
-              value={connLabel}
-              onChange={(e) => setConnLabel(e.target.value)}
-              placeholder="Edge label"
-            />
-
-            <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
-              <button
-                className="btn btn-sm btn-primary"
-                onClick={handleAddConnection}
-                disabled={!connTarget}
+      {editMode && (
+        <div className="inspector-card">
+          {!showAddConn ? (
+            <button className="btn btn-sm" onClick={() => setShowAddConn(true)}>
+              <i className="bi bi-plus-circle" /> Add Connection
+            </button>
+          ) : (
+            <div className="add-connection-form">
+              <div className="field-label">Target Node</div>
+              <select
+                className="inspector-select"
+                value={connTarget}
+                onChange={(e) => setConnTarget(e.target.value)}
               >
-                <i className="bi bi-check-circle" /> Add
-              </button>
-              <button className="btn btn-sm" onClick={() => setShowAddConn(false)}>
-                Cancel
-              </button>
+                <option value="">-- Select target --</option>
+                {availableTargets.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label} ({s.kind})
+                  </option>
+                ))}
+              </select>
+
+              <div className="field-label" style={{ marginTop: 6 }}>Type</div>
+              <select
+                className="inspector-select"
+                value={connType}
+                onChange={(e) => { setConnType(e.target.value); setConnLabel(e.target.value); }}
+              >
+                {RELATION_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+
+              <div className="field-label" style={{ marginTop: 6 }}>Label</div>
+              <input
+                className="inspector-input"
+                value={connLabel}
+                onChange={(e) => setConnLabel(e.target.value)}
+                placeholder="Edge label"
+              />
+
+              <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+                <button
+                  className="btn btn-sm btn-primary"
+                  onClick={handleAddConnection}
+                  disabled={!connTarget}
+                >
+                  <i className="bi bi-check-circle" /> Add
+                </button>
+                <button className="btn btn-sm" onClick={() => setShowAddConn(false)}>
+                  Cancel
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* ─── Actions ─── */}
       <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
         <button className="btn btn-sm" onClick={handleAiGenerate} disabled={aiLoading}>
           {aiLoading ? "Generating…" : <><i className="bi bi-cpu" /> Generate AI Docs</>}
         </button>
-        <button
-          className="btn btn-sm btn-danger"
-          onClick={() => { removeSymbol(sym.id); selectSymbol(null); }}
-        >
-          <i className="bi bi-trash" /> Delete Node
-        </button>
+        {editMode && (
+          <button
+            className="btn btn-sm btn-danger"
+            onClick={() => { removeSymbol(sym.id); selectSymbol(null); }}
+          >
+            <i className="bi bi-trash" /> Delete Node
+          </button>
+        )}
       </div>
       {aiError && (
         <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4 }}>{aiError}</div>
