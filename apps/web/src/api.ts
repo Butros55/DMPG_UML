@@ -64,6 +64,26 @@ export async function fetchSourceCode(symbolId: string): Promise<SourceCodeResul
   return res.json();
 }
 
+/* ── Open in IDE ───────────────────────────────── */
+
+export type IdeName = "vscode" | "intellij";
+
+export async function openInIde(
+  ide: IdeName,
+  file: string,
+  line?: number,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/open-in-ide`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ide, file, line }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error ?? "Could not open IDE");
+  }
+}
+
 export async function fetchGraph() {
   const res = await fetch(`${API_BASE}/graph`);
   if (!res.ok) throw new Error("Failed to fetch graph");

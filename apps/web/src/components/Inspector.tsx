@@ -16,17 +16,17 @@ function AiBadge({ field, symbolId, onConfirm, onReject }: {
 }) {
   return (
     <span className="ai-badge-group">
-      <span className="ai-badge" title="Vom LLM generiert">🤖 AI</span>
+      <span className="ai-badge" title="Vom LLM generiert"><i className="bi bi-cpu" /> AI</span>
       <button
         className="ai-action-btn ai-confirm-btn"
         onClick={(e) => { e.stopPropagation(); onConfirm(symbolId, field); }}
         title="Bestätigen — AI-Markierung entfernen"
-      >✓</button>
+      ><i className="bi bi-check-lg" /></button>
       <button
         className="ai-action-btn ai-reject-btn"
         onClick={(e) => { e.stopPropagation(); onReject(symbolId, field); }}
         title="Ablehnen — Eintrag löschen"
-      >✗</button>
+      ><i className="bi bi-x-lg" /></button>
     </span>
   );
 }
@@ -38,17 +38,17 @@ function AiRelationBadge({ relationId, onConfirm, onReject }: {
 }) {
   return (
     <span className="ai-badge-group">
-      <span className="ai-badge" title="Vom LLM entdeckt">🤖</span>
+      <span className="ai-badge" title="Vom LLM entdeckt"><i className="bi bi-cpu" /></span>
       <button
         className="ai-action-btn ai-confirm-btn"
         onClick={(e) => { e.stopPropagation(); onConfirm(relationId); }}
         title="Bestätigen"
-      >✓</button>
+      ><i className="bi bi-check-lg" /></button>
       <button
         className="ai-action-btn ai-reject-btn"
         onClick={(e) => { e.stopPropagation(); onReject(relationId); }}
         title="Löschen"
-      >✗</button>
+      ><i className="bi bi-x-lg" /></button>
     </span>
   );
 }
@@ -115,7 +115,7 @@ function RelationItemList({
       {own.map(renderItem)}
       {stdlib.length > 0 && (
         <li className="rel-stdlib-header" onClick={() => setShowStdlib(!showStdlib)}>
-          <span className="rel-stdlib-toggle">{showStdlib ? "▾" : "▸"}</span>
+          <span className="rel-stdlib-toggle"><i className={showStdlib ? "bi bi-chevron-down" : "bi bi-chevron-right"} /></span>
           Vordefiniert ({stdlib.length})
         </li>
       )}
@@ -262,7 +262,7 @@ function EdgeInspector() {
 
           <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
             <button className="btn btn-sm btn-danger" onClick={() => { removeRelation(rel.id); selectEdge(null); }}>
-              🗑 Delete Edge
+              <i className="bi bi-trash" /> Delete Edge
             </button>
           </div>
         </>
@@ -617,13 +617,17 @@ export function Inspector() {
   const outgoingCalls = relations.filter((r) => r.source === sym.id && r.type === "calls");
   const incomingCalls = relations.filter((r) => r.target === sym.id && r.type === "calls");
   const reads = relations.filter((r) => r.source === sym.id && r.type === "reads");
+  const readBy = relations.filter((r) => r.target === sym.id && r.type === "reads");
   const writes = relations.filter((r) => r.source === sym.id && r.type === "writes");
+  const writtenBy = relations.filter((r) => r.target === sym.id && r.type === "writes");
   const importsR = relations.filter((r) => r.source === sym.id && r.type === "imports");
   const importedByR = relations.filter((r) => r.target === sym.id && r.type === "imports");
   const inheritsR = relations.filter((r) => r.source === sym.id && r.type === "inherits");
+  const inheritedByR = relations.filter((r) => r.target === sym.id && r.type === "inherits");
   const instantiatesR = relations.filter((r) => r.source === sym.id && r.type === "instantiates");
   const instantiatedByR = relations.filter((r) => r.target === sym.id && r.type === "instantiates");
   const usesConfigR = relations.filter((r) => r.source === sym.id && r.type === "uses_config");
+  const configUsedByR = relations.filter((r) => r.target === sym.id && r.type === "uses_config");
   const parentSym = sym.parentId ? graph?.symbols.find((s) => s.id === sym.parentId) : null;
   const children = graph?.symbols.filter((s) => s.parentId === sym.id) ?? [];
   const lineCount = sym.location?.startLine != null && sym.location?.endLine != null
@@ -677,13 +681,13 @@ export function Inspector() {
                 onClick={() => setIsEditing(true)}
                 style={{ marginLeft: 8, cursor: "pointer", background: "none", border: "none", color: "var(--accent)", fontSize: 14 }}
               >
-                ✏️
+                <i className="bi bi-pencil" />
               </button>
             </h3>
 
             {sym.location && (
               <div className="location">
-                📄 {sym.location.file}
+                <i className="bi bi-file-earmark" /> {sym.location.file}
                 {sym.location.startLine != null && `:${sym.location.startLine}`}
                 {sym.location.endLine != null && `-${sym.location.endLine}`}
                 <button
@@ -691,7 +695,7 @@ export function Inspector() {
                   onClick={() => openSourceViewer(sym.id, sym.label)}
                   title="Quellcode anzeigen"
                 >
-                  📝 Code
+                  <i className="bi bi-code-square" /> Code
                 </button>
               </div>
             )}
@@ -729,13 +733,13 @@ export function Inspector() {
             {sym.tags?.includes("dead-code") && (
               <div className="dead-code-reason">
                 <div className="dead-code-reason-header">
-                  <span className="dead-code-reason-icon">💀</span>
+                  <span className="dead-code-reason-icon"><i className="bi bi-x-circle" /></span>
                   <span>Dead Code — Begründung</span>
                 </div>
                 <p className="dead-code-reason-text">{deadCodeReasonText}</p>
                 {sym.location && (
                   <div className="dead-code-source-ref">
-                    📄 {sym.location.file}
+                    <i className="bi bi-file-earmark" /> {sym.location.file}
                     {sym.location.startLine != null && `:${sym.location.startLine}`}
                     {sym.location.endLine != null && `-${sym.location.endLine}`}
                   </div>
@@ -774,7 +778,7 @@ export function Inspector() {
 
             <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
               <button className="btn btn-sm btn-primary" onClick={handleSaveEdit}>
-                💾 Save
+                <i className="bi bi-floppy" /> Save
               </button>
               <button className="btn btn-sm" onClick={() => setIsEditing(false)}>
                 Cancel
@@ -817,7 +821,7 @@ export function Inspector() {
       {/* ─── Parent module / class ─── */}
       {parentSym && (
         <div className="inspector-card">
-          <div className="field-label">📦 Übergeordnet</div>
+          <div className="field-label"><i className="bi bi-box" /> Übergeordnet</div>
           <SymbolLink
             symbolId={parentSym.id}
             label={parentSym.label}
@@ -830,7 +834,7 @@ export function Inspector() {
       {/* ─── Line count ─── */}
       {lineCount != null && (
         <div className="inspector-card">
-          <div className="field-label">📏 Umfang</div>
+          <div className="field-label"><i className="bi bi-rulers" /> Umfang</div>
           <span>{lineCount} Zeilen</span>
         </div>
       )}
@@ -839,12 +843,12 @@ export function Inspector() {
       {(editingSection === "inputs" || (doc?.inputs && doc.inputs.length > 0)) && (
         <div className={`inspector-card${doc?.aiGenerated?.inputs ? ` ai-generated-card ${inspectorAnimClass}` : ""}`}>
           <div className="field-label">
-            ⬇ Parameter
+            <i className="bi bi-arrow-down" /> Parameter
             {doc?.aiGenerated?.inputs && (
               <AiBadge field="inputs" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
             )}
             {editingSection !== "inputs" && (
-              <button className="section-edit-btn" onClick={handleStartEditInputs} title="Parameter bearbeiten">✏️</button>
+              <button className="section-edit-btn" onClick={handleStartEditInputs} title="Parameter bearbeiten"><i className="bi bi-pencil" /></button>
             )}
           </div>
           {editingSection === "inputs" ? (
@@ -859,7 +863,7 @@ export function Inspector() {
               ))}
               <div className="section-edit-actions">
                 <button className="btn btn-xs" onClick={handleAddInput}>+ Parameter</button>
-                <button className="btn btn-xs btn-primary" onClick={handleSaveInputs}>💾 Speichern</button>
+                <button className="btn btn-xs btn-primary" onClick={handleSaveInputs}><i className="bi bi-floppy" /> Speichern</button>
                 <button className="btn btn-xs" onClick={() => setEditingSection(null)}>Abbrechen</button>
               </div>
             </div>
@@ -889,12 +893,12 @@ export function Inspector() {
       {(editingSection === "outputs" || (doc?.outputs && doc.outputs.length > 0)) && (
         <div className={`inspector-card${doc?.aiGenerated?.outputs ? ` ai-generated-card ${inspectorAnimClass}` : ""}`}>
           <div className="field-label">
-            ⬆ Rückgabe
+            <i className="bi bi-arrow-up" /> Rückgabe
             {doc?.aiGenerated?.outputs && (
               <AiBadge field="outputs" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
             )}
             {editingSection !== "outputs" && (
-              <button className="section-edit-btn" onClick={handleStartEditOutputs} title="Rückgabe bearbeiten">✏️</button>
+              <button className="section-edit-btn" onClick={handleStartEditOutputs} title="Rückgabe bearbeiten"><i className="bi bi-pencil" /></button>
             )}
           </div>
           {editingSection === "outputs" ? (
@@ -909,7 +913,7 @@ export function Inspector() {
               ))}
               <div className="section-edit-actions">
                 <button className="btn btn-xs" onClick={handleAddOutput}>+ Rückgabe</button>
-                <button className="btn btn-xs btn-primary" onClick={handleSaveOutputs}>💾 Speichern</button>
+                <button className="btn btn-xs btn-primary" onClick={handleSaveOutputs}><i className="bi bi-floppy" /> Speichern</button>
                 <button className="btn btn-xs" onClick={() => setEditingSection(null)}>Abbrechen</button>
               </div>
             </div>
@@ -939,12 +943,12 @@ export function Inspector() {
       {(editingSection === "sideEffects" || (doc?.sideEffects && doc.sideEffects.length > 0)) && (
         <div className={`inspector-card${doc?.aiGenerated?.sideEffects ? " ai-generated-card" : ""}`}>
           <div className="field-label">
-            ⚠ Seiteneffekte
+            <i className="bi bi-exclamation-triangle" /> Seiteneffekte
             {doc?.aiGenerated?.sideEffects && (
               <AiBadge field="sideEffects" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
             )}
             {editingSection !== "sideEffects" && (
-              <button className="section-edit-btn" onClick={handleStartEditSideEffects} title="Seiteneffekte bearbeiten">✏️</button>
+              <button className="section-edit-btn" onClick={handleStartEditSideEffects} title="Seiteneffekte bearbeiten"><i className="bi bi-pencil" /></button>
             )}
           </div>
           {editingSection === "sideEffects" ? (
@@ -966,14 +970,14 @@ export function Inspector() {
                 <button className="btn btn-xs" onClick={handleAddSideEffect} disabled={!newSideEffect.trim()}>+</button>
               </div>
               <div className="section-edit-actions">
-                <button className="btn btn-xs btn-primary" onClick={handleSaveSideEffects}>💾 Speichern</button>
+                <button className="btn btn-xs btn-primary" onClick={handleSaveSideEffects}><i className="bi bi-floppy" /> Speichern</button>
                 <button className="btn btn-xs" onClick={() => setEditingSection(null)}>Abbrechen</button>
               </div>
             </div>
           ) : (
             <ul>
               {doc!.sideEffects!.map((se, i) => (
-                <li key={i}>⚠️ {se}</li>
+                <li key={i}><i className="bi bi-exclamation-triangle" /> {se}</li>
               ))}
             </ul>
           )}
@@ -989,7 +993,7 @@ export function Inspector() {
       {/* ─── Calls (outgoing) ─── */}
       {outgoingCalls.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">→ Ruft auf ({outgoingCalls.length})</div>
+          <div className="field-label"><i className="bi bi-arrow-right" /> Ruft auf ({outgoingCalls.length})</div>
           <RelationItemList
             relations={outgoingCalls}
             direction="out"
@@ -1006,7 +1010,7 @@ export function Inspector() {
       {/* ─── Called by (incoming) ─── */}
       {incomingCalls.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">← Aufgerufen von ({incomingCalls.length})</div>
+          <div className="field-label"><i className="bi bi-arrow-left" /> Aufgerufen von ({incomingCalls.length})</div>
           <RelationItemList
             relations={incomingCalls}
             direction="in"
@@ -1022,7 +1026,7 @@ export function Inspector() {
       {/* ─── Reads ─── */}
       {reads.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">📖 Liest ({reads.length})</div>
+          <div className="field-label"><i className="bi bi-book" /> Liest ({reads.length})</div>
           <RelationItemList
             relations={reads}
             direction="out"
@@ -1034,10 +1038,25 @@ export function Inspector() {
         </div>
       )}
 
+      {/* ─── Read by ─── */}
+      {readBy.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label"><i className="bi bi-book" /> Gelesen von ({readBy.length})</div>
+          <RelationItemList
+            relations={readBy}
+            direction="in"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
+        </div>
+      )}
+
       {/* ─── Writes ─── */}
       {writes.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">📝 Schreibt ({writes.length})</div>
+          <div className="field-label"><i className="bi bi-pencil-square" /> Schreibt ({writes.length})</div>
           <RelationItemList
             relations={writes}
             direction="out"
@@ -1049,10 +1068,25 @@ export function Inspector() {
         </div>
       )}
 
+      {/* ─── Written by ─── */}
+      {writtenBy.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label"><i className="bi bi-pencil-square" /> Geschrieben von ({writtenBy.length})</div>
+          <RelationItemList
+            relations={writtenBy}
+            direction="in"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
+        </div>
+      )}
+
       {/* ─── Imports ─── */}
       {importsR.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">📥 Importiert ({importsR.length})</div>
+          <div className="field-label"><i className="bi bi-box-arrow-in-down" /> Importiert ({importsR.length})</div>
           <RelationItemList
             relations={importsR}
             direction="out"
@@ -1067,7 +1101,7 @@ export function Inspector() {
       {/* ─── Imported by ─── */}
       {importedByR.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">📤 Importiert von ({importedByR.length})</div>
+          <div className="field-label"><i className="bi bi-box-arrow-up" /> Importiert von ({importedByR.length})</div>
           <RelationItemList
             relations={importedByR}
             direction="in"
@@ -1082,7 +1116,7 @@ export function Inspector() {
       {/* ─── Inherits ─── */}
       {inheritsR.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">🧬 Erbt von</div>
+          <div className="field-label"><i className="bi bi-diagram-3" /> Erbt von ({inheritsR.length})</div>
           <RelationItemList
             relations={inheritsR}
             direction="out"
@@ -1094,10 +1128,25 @@ export function Inspector() {
         </div>
       )}
 
+      {/* ─── Inherited by ─── */}
+      {inheritedByR.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label"><i className="bi bi-diagram-3" /> Vererbt an ({inheritedByR.length})</div>
+          <RelationItemList
+            relations={inheritedByR}
+            direction="in"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
+        </div>
+      )}
+
       {/* ─── Instantiates ─── */}
       {instantiatesR.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">🏗 Instanziiert</div>
+          <div className="field-label"><i className="bi bi-lightning" /> Instanziiert ({instantiatesR.length})</div>
           <RelationItemList
             relations={instantiatesR}
             direction="out"
@@ -1109,13 +1158,43 @@ export function Inspector() {
         </div>
       )}
 
+      {/* ─── Instantiated by ─── */}
+      {instantiatedByR.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label"><i className="bi bi-lightning" /> Instanziiert von ({instantiatedByR.length})</div>
+          <RelationItemList
+            relations={instantiatedByR}
+            direction="in"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
+        </div>
+      )}
+
       {/* ─── Uses Config ─── */}
       {usesConfigR.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">⚙ Konfiguration</div>
+          <div className="field-label"><i className="bi bi-gear" /> Konfiguration ({usesConfigR.length})</div>
           <RelationItemList
             relations={usesConfigR}
             direction="out"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
+        </div>
+      )}
+
+      {/* ─── Config used by ─── */}
+      {configUsedByR.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label"><i className="bi bi-gear" /> Konfig. verwendet von ({configUsedByR.length})</div>
+          <RelationItemList
+            relations={configUsedByR}
+            direction="in"
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1136,7 +1215,7 @@ export function Inspector() {
               return (
                 <li key={r.id} className={r.aiGenerated ? "ai-generated-item" : ""}>
                   <span style={{ color: "var(--text-dim)", fontSize: 10, marginRight: 4 }}>
-                    {isOut ? "→" : "←"} {r.type}
+                    {isOut ? <i className="bi bi-arrow-right" /> : <i className="bi bi-arrow-left" />} {r.type}
                   </span>
                   <SymbolLink symbolId={otherId} label={other?.label ?? otherId} onClick={() => handleSymbolLinkClick(otherId)} />
                   {r.aiGenerated && (
@@ -1152,7 +1231,7 @@ export function Inspector() {
       {/* ─── Children ─── */}
       {children.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">📁 Enthält ({children.length})</div>
+          <div className="field-label"><i className="bi bi-folder" /> Enthält ({children.length})</div>
           <ul>
             {children.slice(0, 20).map((child) => (
               <li key={child.id}>
@@ -1174,7 +1253,7 @@ export function Inspector() {
 
       {doc?.links && doc.links.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">🔗 Links</div>
+          <div className="field-label"><i className="bi bi-link-45deg" /> Links</div>
           <ul>
             {doc.links.map((lnk, i) => (
               <li key={i}>
@@ -1189,7 +1268,7 @@ export function Inspector() {
       <div className="inspector-card">
         {!showAddConn ? (
           <button className="btn btn-sm" onClick={() => setShowAddConn(true)}>
-            ➕ Add Connection
+            <i className="bi bi-plus-circle" /> Add Connection
           </button>
         ) : (
           <div className="add-connection-form">
@@ -1232,7 +1311,7 @@ export function Inspector() {
                 onClick={handleAddConnection}
                 disabled={!connTarget}
               >
-                ✅ Add
+                <i className="bi bi-check-circle" /> Add
               </button>
               <button className="btn btn-sm" onClick={() => setShowAddConn(false)}>
                 Cancel
@@ -1245,13 +1324,13 @@ export function Inspector() {
       {/* ─── Actions ─── */}
       <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
         <button className="btn btn-sm" onClick={handleAiGenerate} disabled={aiLoading}>
-          {aiLoading ? "Generating…" : "🤖 Generate AI Docs"}
+          {aiLoading ? "Generating…" : <><i className="bi bi-cpu" /> Generate AI Docs</>}
         </button>
         <button
           className="btn btn-sm btn-danger"
           onClick={() => { removeSymbol(sym.id); selectSymbol(null); }}
         >
-          🗑 Delete Node
+          <i className="bi bi-trash" /> Delete Node
         </button>
       </div>
       {aiError && (

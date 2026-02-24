@@ -22,21 +22,21 @@ export interface UmlNodeData {
 /* ── Relation badge icons & labels ──────────────── */
 
 /** Badge metadata: keyed by "out:<type>" or "in:<type>" */
-const REL_BADGE_META: Record<string, { icon: string; label: string; cls: string }> = {
-  "out:calls":       { icon: "📞", label: "calls",      cls: "calls" },
-  "in:calls":        { icon: "📞", label: "called by",  cls: "calls-in" },
-  "out:reads":       { icon: "📖", label: "reads",      cls: "reads" },
-  "in:reads":        { icon: "📖", label: "read by",    cls: "reads-in" },
-  "out:writes":      { icon: "💾", label: "writes",     cls: "writes" },
-  "in:writes":       { icon: "💾", label: "written by", cls: "writes-in" },
-  "out:imports":     { icon: "📦", label: "imports",    cls: "imports" },
-  "in:imports":      { icon: "📦", label: "imported by", cls: "imports-in" },
-  "out:inherits":    { icon: "🧬", label: "inherits",   cls: "inherits" },
-  "in:inherits":     { icon: "🧬", label: "inherited by", cls: "inherits-in" },
-  "out:instantiates":{ icon: "⚡", label: "creates",    cls: "instantiates" },
-  "in:instantiates": { icon: "⚡", label: "created by", cls: "instantiates-in" },
-  "out:uses_config": { icon: "⚙️", label: "config",     cls: "uses_config" },
-  "in:uses_config":  { icon: "⚙️", label: "configured by", cls: "uses_config-in" },
+const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: string }> = {
+  "out:calls":       { iconCls: "bi-telephone-outbound", label: "calls",      cls: "calls" },
+  "in:calls":        { iconCls: "bi-telephone-inbound",  label: "called by",  cls: "calls-in" },
+  "out:reads":       { iconCls: "bi-book",               label: "reads",      cls: "reads" },
+  "in:reads":        { iconCls: "bi-book",               label: "read by",    cls: "reads-in" },
+  "out:writes":      { iconCls: "bi-pencil-square",      label: "writes",     cls: "writes" },
+  "in:writes":       { iconCls: "bi-pencil-square",      label: "written by", cls: "writes-in" },
+  "out:imports":     { iconCls: "bi-box-arrow-in-down",  label: "imports",    cls: "imports" },
+  "in:imports":      { iconCls: "bi-box-arrow-in-down",  label: "imported by", cls: "imports-in" },
+  "out:inherits":    { iconCls: "bi-diagram-3",          label: "inherits",   cls: "inherits" },
+  "in:inherits":     { iconCls: "bi-diagram-3",          label: "inherited by", cls: "inherits-in" },
+  "out:instantiates":{ iconCls: "bi-lightning",           label: "creates",    cls: "instantiates" },
+  "in:instantiates": { iconCls: "bi-lightning",           label: "created by", cls: "instantiates-in" },
+  "out:uses_config": { iconCls: "bi-gear",               label: "config",     cls: "uses_config" },
+  "in:uses_config":  { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
 };
 
 function RelationBadges({ badges }: { badges?: string[] }) {
@@ -49,7 +49,8 @@ function RelationBadges({ badges }: { badges?: string[] }) {
         const isIn = t.startsWith("in:");
         return (
           <span key={t} className={`rel-badge rel-badge--${meta.cls}`}>
-            {isIn ? "← " : ""}{meta.icon} {meta.label}
+            {isIn && <i className="bi bi-arrow-left" style={{ fontSize: 9, marginRight: 2 }} />}
+            <i className={`bi ${meta.iconCls}`} /> {meta.label}
           </span>
         );
       })}
@@ -143,13 +144,13 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
       <div className="node-header">
         <span className="kind-badge">{d.kind}</span>
         <span className="node-label">{d.label}</span>
-        {isDead && <span className="dead-code-badge" title="Unused — no callers">💀</span>}
+        {isDead && <span className="dead-code-badge" title="Unused — no callers"><i className="bi bi-x-circle" /></span>}
       </div>
-      {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
+      {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
       <RelationBadges badges={d.relationBadges} />
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
-          ▶ Drill down
+          <i className="bi bi-caret-right-fill" /> Drill down
         </div>
       )}
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
@@ -189,14 +190,14 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
         <span className="kind-badge">{d.kind}</span>
         <span className="node-label">{d.label}</span>
       </div>
-      {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
+      {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
       <RelationBadges badges={d.relationBadges} />
       {countParts.length > 0 && (
         <div className="node-count-badge">{countParts.join(", ")}</div>
       )}
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
-          ▶ Drill down
+          <i className="bi bi-caret-right-fill" /> Drill down
         </div>
       )}
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
@@ -231,7 +232,7 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
       <div className="node-header class-header">
         <div className="stereotype">«class»</div>
         <span className="node-label">{d.label}</span>
-        {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
+        {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
       </div>
 
       {/* Attributes compartment */}
@@ -270,7 +271,7 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
 
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
-          ▶ Methods detail
+          <i className="bi bi-caret-right-fill" /> Methods detail
         </div>
       )}
 
@@ -305,10 +306,10 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
       <div className="node-header">
         <span className="kind-badge">{d.kind === "method" ? "method" : "fn"}</span>
         <span className="node-label">{d.label.split(".").pop()}</span>
-        {isDead && <span className="dead-code-badge" title="Unused — no callers">💀</span>}
+        {isDead && <span className="dead-code-badge" title="Unused — no callers"><i className="bi bi-x-circle" /></span>}
       </div>
 
-      {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
+      {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
 
       {/* Signature */}
       {inputs.length > 0 && (
@@ -325,7 +326,7 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
 
       {outputs.length > 0 && (
         <div className="fn-return">
-          → {outputs.map((o) => o.type ?? o.name).join(", ")}
+          <i className="bi bi-arrow-return-right" /> {outputs.map((o) => o.type ?? o.name).join(", ")}
         </div>
       )}
 
@@ -333,7 +334,7 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
 
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
-          ▶ Detail
+          <i className="bi bi-caret-right-fill" /> Detail
         </div>
       )}
 
@@ -351,12 +352,12 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
 
   // Determine icon based on label
   const label = d.label.toLowerCase();
-  let icon = "📄";
-  if (label.includes(".csv") || label.includes(".xlsx") || label.includes(".xls")) icon = "📊";
-  else if (label.includes(".json")) icon = "📋";
-  else if (label.includes(".pkl") || label.includes(".pickle")) icon = "🗃️";
-  else if (label.includes("db") || label.includes("sql") || label.includes("database")) icon = "🗄️";
-  else if (label.includes("http") || label.includes("api")) icon = "🌐";
+  let iconCls = "bi-file-earmark";
+  if (label.includes(".csv") || label.includes(".xlsx") || label.includes(".xls")) iconCls = "bi-file-earmark-spreadsheet";
+  else if (label.includes(".json")) iconCls = "bi-filetype-json";
+  else if (label.includes(".pkl") || label.includes(".pickle")) iconCls = "bi-archive";
+  else if (label.includes("db") || label.includes("sql") || label.includes("database")) iconCls = "bi-database";
+  else if (label.includes("http") || label.includes("api")) iconCls = "bi-globe";
 
   return (
     <div
@@ -369,7 +370,7 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
       <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
 
       <div className="node-header artifact-header">
-        <span className="artifact-icon">{icon}</span>
+        <span className="artifact-icon"><i className={`bi ${iconCls}`} /></span>
         <span className="node-label">{d.label}</span>
       </div>
 

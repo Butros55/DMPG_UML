@@ -21,6 +21,60 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
+/* ── Open file in external IDE (VS Code / IntelliJ) ─────────────── */
+import { execFile } from "node:child_process";
+import * as path from "node:path";
+
+app.post("/api/open-in-ide", (req, res) => {
+  const { ide, file, line, projectPath } = req.body as {
+    ide?: string;
+    file?: string;
+    line?: number;
+    projectPath?: string;
+  };
+
+  if (!file) {
+    res.status(400).json({ error: "file is required" });
+    return;
+  }
+
+  const scanRoot = projectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
+  const absFile = path.isAbsolute(file) ? file : path.join(scanRoot, file);
+  const lineNum = line ?? 1;
+
+  if (ide === "intellij") {
+    // IntelliJ: idea64.exe --line <line> <file>
+    // IntelliJ will auto-open the project folder if file is inside it
+    const args = ["--line", String(lineNum), absFile];
+    execFile("idea64", args, { windowsHide: true }, (err) => {
+      if (err) {
+        // Fallback: try "idea" without "64"
+        execFile("idea", args, { windowsHide: true }, (err2) => {
+          if (err2) {
+            res.status(500).json({ error: `Could not open IntelliJ: ${err2.message}` });
+          } else {
+            res.json({ ok: true, ide: "intellij" });
+          }
+        });
+      } else {
+        res.json({ ok: true, ide: "intellij" });
+      }
+    });
+  } else {
+    // VS Code: code --reuse-window --goto <file>:<line> <folder>
+    // On Windows "code" is "code.cmd" — execFile needs shell:true or the .cmd name
+    const args = ["--reuse-window", "--goto", `${absFile}:${lineNum}`, scanRoot];
+    const opts = { windowsHide: true, shell: process.platform === "win32" };
+    execFile("code", args, opts, (err) => {
+      if (err) {
+        res.status(500).json({ error: `Could not open VS Code: ${err.message}` });
+      } else {
+        res.json({ ok: true, ide: "vscode" });
+      }
+    });
+  }
+});
+
 /** Expose non-secret config to the frontend */
 import { getCurrentProjectPath } from "./store.js";
 app.get("/api/config", (_req, res) => {

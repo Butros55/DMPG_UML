@@ -6,6 +6,8 @@ import type { Symbol as Sym, Relation, ProjectGraph } from "@dmpg/shared";
 
 let showTimer: ReturnType<typeof setTimeout> | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
+/** True while the pointer is physically over the hover card. */
+let _mouseOverCard = false;
 
 /** Schedule showing the hover card after a short delay */
 export function scheduleShowHover(symbolId: string, rect: DOMRect) {
@@ -23,15 +25,25 @@ export function scheduleShowHover(symbolId: string, rect: DOMRect) {
 /** Schedule hiding the hover card after a short delay (allows mouse to reach card) */
 export function scheduleHideHover() {
   if (showTimer) { clearTimeout(showTimer); showTimer = null; }
+  // Always clear previous hide timer to avoid duplicate / orphan timeouts
+  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
   hideTimer = setTimeout(() => {
-    useAppStore.getState().setHoverSymbol(null);
     hideTimer = null;
-  }, 250);
+    // Safety: never close while the pointer is physically over the card
+    if (_mouseOverCard) return;
+    useAppStore.getState().setHoverSymbol(null);
+  }, 300);
 }
 
 /** Cancel pending hide (called when mouse enters the card) */
 export function cancelHideHover() {
   if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+}
+
+/** Notify that the pointer entered / left the card surface. */
+export function setMouseOverCard(over: boolean) {
+  _mouseOverCard = over;
+  if (over) cancelHideHover();
 }
 
 /* ── Enriched symbol info (computed from graph relations) ── */
@@ -43,13 +55,17 @@ interface EnrichedInfo {
   outgoingCalls: Array<{ rel: Relation; target: Sym | undefined }>;
   incomingCalls: Array<{ rel: Relation; source: Sym | undefined }>;
   reads: Array<{ rel: Relation; target: Sym | undefined }>;
+  readBy: Array<{ rel: Relation; source: Sym | undefined }>;
   writes: Array<{ rel: Relation; target: Sym | undefined }>;
+  writtenBy: Array<{ rel: Relation; source: Sym | undefined }>;
   imports: Array<{ rel: Relation; target: Sym | undefined }>;
   importedBy: Array<{ rel: Relation; source: Sym | undefined }>;
   inherits: Array<{ rel: Relation; target: Sym | undefined }>;
+  inheritedBy: Array<{ rel: Relation; source: Sym | undefined }>;
   instantiates: Array<{ rel: Relation; target: Sym | undefined }>;
   instantiatedBy: Array<{ rel: Relation; source: Sym | undefined }>;
   usesConfig: Array<{ rel: Relation; target: Sym | undefined }>;
+  configUsedBy: Array<{ rel: Relation; source: Sym | undefined }>;
   lineCount: number | null;
 }
 
@@ -73,9 +89,17 @@ function enrichSymbol(sym: Sym, graph: ProjectGraph): EnrichedInfo {
     .filter((r) => r.source === sym.id && r.type === "reads")
     .map((r) => ({ rel: r, target: findSym(r.target) }));
 
+  const readBy = rels
+    .filter((r) => r.target === sym.id && r.type === "reads")
+    .map((r) => ({ rel: r, source: findSym(r.source) }));
+
   const writes = rels
     .filter((r) => r.source === sym.id && r.type === "writes")
     .map((r) => ({ rel: r, target: findSym(r.target) }));
+
+  const writtenBy = rels
+    .filter((r) => r.target === sym.id && r.type === "writes")
+    .map((r) => ({ rel: r, source: findSym(r.source) }));
 
   const imports = rels
     .filter((r) => r.source === sym.id && r.type === "imports")
@@ -89,6 +113,10 @@ function enrichSymbol(sym: Sym, graph: ProjectGraph): EnrichedInfo {
     .filter((r) => r.source === sym.id && r.type === "inherits")
     .map((r) => ({ rel: r, target: findSym(r.target) }));
 
+  const inheritedBy = rels
+    .filter((r) => r.target === sym.id && r.type === "inherits")
+    .map((r) => ({ rel: r, source: findSym(r.source) }));
+
   const instantiates = rels
     .filter((r) => r.source === sym.id && r.type === "instantiates")
     .map((r) => ({ rel: r, target: findSym(r.target) }));
@@ -100,6 +128,10 @@ function enrichSymbol(sym: Sym, graph: ProjectGraph): EnrichedInfo {
   const usesConfig = rels
     .filter((r) => r.source === sym.id && r.type === "uses_config")
     .map((r) => ({ rel: r, target: findSym(r.target) }));
+
+  const configUsedBy = rels
+    .filter((r) => r.target === sym.id && r.type === "uses_config")
+    .map((r) => ({ rel: r, source: findSym(r.source) }));
 
   const lineCount =
     sym.location?.startLine != null && sym.location?.endLine != null
@@ -113,13 +145,17 @@ function enrichSymbol(sym: Sym, graph: ProjectGraph): EnrichedInfo {
     outgoingCalls,
     incomingCalls,
     reads,
+    readBy,
     writes,
+    writtenBy,
     imports,
     importedBy,
     inherits,
+    inheritedBy,
     instantiates,
     instantiatedBy,
     usesConfig,
+    configUsedBy,
     lineCount,
   };
 }
@@ -176,6 +212,7 @@ export function SymbolHoverCard() {
       if (view) navigateToView(view.id);
       setFocusNode(symId);
       // Close hover card
+      setMouseOverCard(false);
       useAppStore.getState().setHoverSymbol(null);
     },
     [graph, selectSymbol, navigateToView, setFocusNode],
@@ -184,6 +221,7 @@ export function SymbolHoverCard() {
   const handleOpenSource = useCallback(() => {
     if (!info) return;
     openSourceViewer(info.sym.id, info.sym.label);
+    setMouseOverCard(false);
     useAppStore.getState().setHoverSymbol(null);
   }, [info, openSourceViewer]);
 
@@ -219,8 +257,8 @@ export function SymbolHoverCard() {
       ref={cardRef}
       className="symbol-hover-card"
       style={{ left: hoverPosition.x, top: hoverPosition.y }}
-      onMouseEnter={cancelHideHover}
-      onMouseLeave={() => scheduleHideHover()}
+      onMouseEnter={() => setMouseOverCard(true)}
+      onMouseLeave={() => { setMouseOverCard(false); scheduleHideHover(); }}
     >
       {/* ── Header ── */}
       <div className="shc-header">
@@ -233,7 +271,7 @@ export function SymbolHoverCard() {
       {/* ── Location ── */}
       {loc && (
         <div className="shc-location">
-          📄 {loc.file}
+          <i className="bi bi-file-earmark" /> {loc.file}
           {loc.startLine != null && `:${loc.startLine}`}
           {loc.endLine != null && `-${loc.endLine}`}
           {info.lineCount != null && (
@@ -245,14 +283,14 @@ export function SymbolHoverCard() {
       {/* ── Source Code Button ── */}
       {loc && (
         <button className="shc-source-btn" onClick={handleOpenSource}>
-          📝 Quellcode anzeigen
+          <i className="bi bi-code-square" /> Quellcode anzeigen
         </button>
       )}
 
       {/* ── Parent ── */}
       {info.parent && (
         <div className="shc-parent">
-          📦 in:{" "}
+          <i className="bi bi-box" /> in:{" "}
           <span className="shc-link" onClick={() => handleNavigate(info.parent!.id)}>
             {info.parent.label}
           </span>
@@ -319,7 +357,7 @@ export function SymbolHoverCard() {
       {/* ── Calls (outgoing) ── */}
       {info.outgoingCalls.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">→ Ruft auf</div>
+          <div className="shc-section-label"><i className="bi bi-arrow-right" /> Ruft auf</div>
           <div className="shc-links">
             {info.outgoingCalls.map(({ rel, target }) => (
               <span
@@ -338,7 +376,7 @@ export function SymbolHoverCard() {
       {/* ── Called by (incoming) ── */}
       {info.incomingCalls.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">← Aufgerufen von</div>
+          <div className="shc-section-label"><i className="bi bi-arrow-left" /> Aufgerufen von</div>
           <div className="shc-links">
             {info.incomingCalls.map(({ rel, source }) => (
               <span
@@ -357,7 +395,7 @@ export function SymbolHoverCard() {
       {/* ── Reads ── */}
       {info.reads.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">📖 Liest</div>
+          <div className="shc-section-label"><i className="bi bi-book" /> Liest</div>
           <div className="shc-links">
             {info.reads.map(({ rel, target }) => (
               <span
@@ -372,10 +410,28 @@ export function SymbolHoverCard() {
         </div>
       )}
 
+      {/* ── Read By (incoming) ── */}
+      {info.readBy.length > 0 && (
+        <div className="shc-section">
+          <div className="shc-section-label"><i className="bi bi-book" /> Gelesen von</div>
+          <div className="shc-links">
+            {info.readBy.map(({ rel, source }) => (
+              <span
+                key={rel.id}
+                className="shc-link-chip shc-link-read"
+                onClick={() => source && handleNavigate(source.id)}
+              >
+                {source?.label ?? rel.source}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Writes ── */}
       {info.writes.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">📝 Schreibt</div>
+          <div className="shc-section-label"><i className="bi bi-pencil-square" /> Schreibt</div>
           <div className="shc-links">
             {info.writes.map(({ rel, target }) => (
               <span
@@ -390,10 +446,28 @@ export function SymbolHoverCard() {
         </div>
       )}
 
+      {/* ── Written By (incoming) ── */}
+      {info.writtenBy.length > 0 && (
+        <div className="shc-section">
+          <div className="shc-section-label"><i className="bi bi-pencil-square" /> Geschrieben von</div>
+          <div className="shc-links">
+            {info.writtenBy.map(({ rel, source }) => (
+              <span
+                key={rel.id}
+                className="shc-link-chip shc-link-write"
+                onClick={() => source && handleNavigate(source.id)}
+              >
+                {source?.label ?? rel.source}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Imports ── */}
       {info.imports.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">📥 Importiert</div>
+          <div className="shc-section-label"><i className="bi bi-box-arrow-in-down" /> Importiert</div>
           <div className="shc-links">
             {info.imports.map(({ rel, target }) => (
               <span
@@ -411,7 +485,7 @@ export function SymbolHoverCard() {
       {/* ── Imported By ── */}
       {info.importedBy.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">📤 Importiert von</div>
+          <div className="shc-section-label"><i className="bi bi-box-arrow-up" /> Importiert von</div>
           <div className="shc-links">
             {info.importedBy.map(({ rel, source }) => (
               <span
@@ -429,7 +503,7 @@ export function SymbolHoverCard() {
       {/* ── Inherits ── */}
       {info.inherits.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">🧬 Erbt von</div>
+          <div className="shc-section-label"><i className="bi bi-diagram-3" /> Erbt von</div>
           <div className="shc-links">
             {info.inherits.map(({ rel, target }) => (
               <span
@@ -444,10 +518,28 @@ export function SymbolHoverCard() {
         </div>
       )}
 
+      {/* ── Inherited By (incoming) ── */}
+      {info.inheritedBy.length > 0 && (
+        <div className="shc-section">
+          <div className="shc-section-label"><i className="bi bi-diagram-3" /> Vererbt an</div>
+          <div className="shc-links">
+            {info.inheritedBy.map(({ rel, source }) => (
+              <span
+                key={rel.id}
+                className="shc-link-chip"
+                onClick={() => source && handleNavigate(source.id)}
+              >
+                {source?.label ?? rel.source}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Instantiates ── */}
       {info.instantiates.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">🏗 Instanziiert</div>
+          <div className="shc-section-label"><i className="bi bi-lightning" /> Instanziiert</div>
           <div className="shc-links">
             {info.instantiates.map(({ rel, target }) => (
               <span
@@ -462,10 +554,28 @@ export function SymbolHoverCard() {
         </div>
       )}
 
+      {/* ── Instantiated By (incoming) ── */}
+      {info.instantiatedBy.length > 0 && (
+        <div className="shc-section">
+          <div className="shc-section-label"><i className="bi bi-lightning" /> Instanziiert von</div>
+          <div className="shc-links">
+            {info.instantiatedBy.map(({ rel, source }) => (
+              <span
+                key={rel.id}
+                className="shc-link-chip"
+                onClick={() => source && handleNavigate(source.id)}
+              >
+                {source?.label ?? rel.source}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Uses Config ── */}
       {info.usesConfig.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">⚙ Konfiguration</div>
+          <div className="shc-section-label"><i className="bi bi-gear" /> Konfiguration</div>
           <div className="shc-links">
             {info.usesConfig.map(({ rel, target }) => (
               <span
@@ -480,10 +590,28 @@ export function SymbolHoverCard() {
         </div>
       )}
 
+      {/* ── Config Used By (incoming) ── */}
+      {info.configUsedBy.length > 0 && (
+        <div className="shc-section">
+          <div className="shc-section-label"><i className="bi bi-gear" /> Konfig. verwendet von</div>
+          <div className="shc-links">
+            {info.configUsedBy.map(({ rel, source }) => (
+              <span
+                key={rel.id}
+                className="shc-link-chip"
+                onClick={() => source && handleNavigate(source.id)}
+              >
+                {source?.label ?? rel.source}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Side Effects ── */}
       {doc?.sideEffects && doc.sideEffects.length > 0 && (
         <div className="shc-section">
-          <div className="shc-section-label">⚠ Seiteneffekte</div>
+          <div className="shc-section-label"><i className="bi bi-exclamation-triangle" /> Seiteneffekte</div>
           <ul className="shc-side-effects">
             {doc.sideEffects.map((se, i) => (
               <li key={i}>{se}</li>
@@ -496,7 +624,7 @@ export function SymbolHoverCard() {
       {info.children.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label">
-            📁 Enthält ({info.children.length})
+            <i className="bi bi-folder" /> Enthält ({info.children.length})
           </div>
           <div className="shc-links">
             {info.children.slice(0, 12).map((child) => (
@@ -520,7 +648,7 @@ export function SymbolHoverCard() {
       {/* ── Tags ── */}
       {isDeadCode && (
         <div className="shc-section">
-          <div className="shc-section-label">💀 Dead Code — Begründung</div>
+          <div className="shc-section-label"><i className="bi bi-x-circle" /> Dead Code — Begründung</div>
           <div className="shc-summary">{deadCodeReasonText}</div>
         </div>
       )}
@@ -532,7 +660,7 @@ export function SymbolHoverCard() {
               key={t}
               className={`shc-tag ${t === "dead-code" ? "shc-tag-dead" : ""}`}
             >
-              {t === "dead-code" ? "💀 " : ""}
+              {t === "dead-code" ? <><i className="bi bi-x-circle" />{" "}</> : ""}
               {t}
             </span>
           ))}

@@ -335,6 +335,9 @@ body,
 
 /* ─── Custom Nodes ────────────────────────────── */
 .uml-node {
+  /* Default kind color (accent blue) — overridden per kind-* class */
+  --kind-color: var(--accent);
+  --kind-rgb: 108, 140, 255;
   background: var(--bg-card);
   border: 2px solid var(--border);
   border-radius: 8px;
@@ -344,10 +347,23 @@ body,
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
+/* Per-kind color variables */
+.uml-node.kind-module   { --kind-color: var(--accent); --kind-rgb: 108, 140, 255; }
+.uml-node.kind-class    { --kind-color: var(--yellow); --kind-rgb: 255, 216, 102; }
+.uml-node.kind-function { --kind-color: var(--green);  --kind-rgb: 128, 224, 160; }
+.uml-node.kind-method   { --kind-color: var(--orange); --kind-rgb: 255, 171, 112; }
+.uml-node.kind-group    { --kind-color: var(--accent); --kind-rgb: 108, 140, 255; }
+.uml-node.kind-constant { --kind-color: var(--red);    --kind-rgb: 255, 107, 107; }
+.uml-node.kind-script   { --kind-color: var(--orange); --kind-rgb: 255, 171, 112; }
+.uml-node.kind-package  { --kind-color: var(--accent); --kind-rgb: 108, 140, 255; }
+.uml-node.kind-external { --kind-color: var(--text-dim); --kind-rgb: 139, 143, 167; }
+.uml-node.kind-interface{ --kind-color: var(--green);  --kind-rgb: 128, 224, 160; }
+.uml-node.kind-variable { --kind-color: var(--orange); --kind-rgb: 255, 171, 112; }
+
 .uml-node.selected,
 .uml-node:hover {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(108, 140, 255, 0.25), 0 4px 16px rgba(0, 0, 0, 0.3);
+  border-color: var(--kind-color);
+  box-shadow: 0 0 0 2px rgba(var(--kind-rgb), 0.25), 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
 /* Hide alternative edge routing handles (Left/Right) */
@@ -559,16 +575,16 @@ body,
 
 /* ─── AI Content Update Animation — Typewriter ── */
 
-/* Subtle border highlight — no scale, no glow */
+/* Subtle border highlight — uses kind color */
 @keyframes ai-border-highlight {
-  0%   { border-color: var(--accent); }
+  0%   { border-color: var(--kind-color, var(--accent)); }
   100% { border-color: var(--border); }
 }
 
 /* Cursor blink for typewriter feel */
 @keyframes ai-cursor-blink {
   0%, 100% { border-right-color: transparent; }
-  50%      { border-right-color: var(--accent); }
+  50%      { border-right-color: var(--kind-color, var(--accent)); }
 }
 
 /* Typewriter reveal: text clips from left to right */
@@ -578,10 +594,10 @@ body,
   100% { clip-path: inset(0 0% 0 0);   opacity: 1; }
 }
 
-/* Brief "selection" flash before new text types in (simulates selecting old text) */
+/* Brief "selection" flash before new text types in (uses kind color) */
 @keyframes ai-select-flash {
-  0%   { background-color: rgba(108, 140, 255, 0.3); }
-  30%  { background-color: rgba(108, 140, 255, 0.15); }
+  0%   { background-color: rgba(var(--kind-rgb, 108, 140, 255), 0.3); }
+  30%  { background-color: rgba(var(--kind-rgb, 108, 140, 255), 0.15); }
   100% { background-color: transparent; }
 }
 
@@ -604,7 +620,7 @@ body,
 
 /* Blinking cursor only on the label (most prominent text in the node) */
 .ai-content-updated .node-header .node-label {
-  border-right: 2px solid var(--accent);
+  border-right: 2px solid var(--kind-color, var(--accent));
   animation:
     ai-select-flash 0.4s ease-out forwards,
     ai-typewriter-reveal 1.2s steps(20, end) 0.4s both,
@@ -2055,65 +2071,67 @@ body,
   color: var(--text);
 }
 
-/* ── AI Processing Pulse on Canvas Nodes ─────── */
+/* ── AI Processing Pulse on Canvas Nodes (kind-colored) ── */
 @keyframes ai-pulse {
-  0%   { box-shadow: 0 0 4px rgba(108, 140, 255, 0.3); }
-  50%  { box-shadow: 0 0 16px rgba(108, 140, 255, 0.7), 0 0 32px rgba(108, 140, 255, 0.3); }
-  100% { box-shadow: 0 0 4px rgba(108, 140, 255, 0.3); }
+  0%   { box-shadow: 0 0 4px rgba(var(--kind-rgb, 108, 140, 255), 0.3); }
+  50%  { box-shadow: 0 0 16px rgba(var(--kind-rgb, 108, 140, 255), 0.7), 0 0 32px rgba(var(--kind-rgb, 108, 140, 255), 0.3); }
+  100% { box-shadow: 0 0 4px rgba(var(--kind-rgb, 108, 140, 255), 0.3); }
 }
 
 .ai-processing .uml-node,
 .react-flow__node.ai-processing .uml-node {
   animation: ai-pulse 1.5s ease-in-out infinite;
-  border-color: var(--accent) !important;
+  border-color: var(--kind-color, var(--accent)) !important;
 }
 
-/* ── Focus-Navigate: persistent highlight until user hovers ── */
+/* ── Focus-Navigate: persistent highlight until user hovers (kind-colored) ── */
+.node-focus-highlight .uml-node,
+.react-flow__node.node-focus-highlight .uml-node {
+  animation: focus-pulse 1.6s ease-in-out infinite;
+  border-color: var(--kind-color, #6c8cff) !important;
+  transition: border-color 0.2s ease;
+}
 @keyframes focus-pulse {
-  0%   { box-shadow: 0 0 8px 3px rgba(108, 140, 255, 0.7); }
-  50%  { box-shadow: 0 0 18px 6px rgba(108, 140, 255, 0.45); }
-  100% { box-shadow: 0 0 8px 3px rgba(108, 140, 255, 0.7); }
+  0%   { box-shadow: 0 0 8px 3px rgba(var(--kind-rgb, 108, 140, 255), 0.7); }
+  50%  { box-shadow: 0 0 18px 6px rgba(var(--kind-rgb, 108, 140, 255), 0.45); }
+  100% { box-shadow: 0 0 8px 3px rgba(var(--kind-rgb, 108, 140, 255), 0.7); }
 }
 .node-focus-highlight,
 .react-flow__node.node-focus-highlight {
-  animation: focus-pulse 1.6s ease-in-out infinite !important;
   z-index: 100 !important;
 }
-.node-focus-highlight .uml-node {
-  border-color: #6c8cff !important;
-  transition: border-color 0.2s ease;
-}
 
-/* ── AI Flash: brief highlight when a node is updated by AI ── */
+/* ── AI Flash: brief highlight when a node is updated by AI (kind-colored) ── */
+.ai-flash .uml-node,
+.react-flow__node.ai-flash .uml-node {
+  animation: ai-flash-highlight 1.4s ease-out forwards;
+  border-color: var(--kind-color, var(--accent)) !important;
+  transition: border-color 0.3s ease;
+}
 @keyframes ai-flash-highlight {
-  0%   { box-shadow: 0 0 0 2px rgba(108, 140, 255, 0.6); }
-  50%  { box-shadow: 0 0 0 3px rgba(108, 140, 255, 0.3); }
-  100% { box-shadow: 0 0 0 0 rgba(108, 140, 255, 0); }
+  0%   { box-shadow: 0 0 0 2px rgba(var(--kind-rgb, 108, 140, 255), 0.6); }
+  50%  { box-shadow: 0 0 0 3px rgba(var(--kind-rgb, 108, 140, 255), 0.3); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--kind-rgb, 108, 140, 255), 0); }
 }
 .ai-flash,
 .react-flow__node.ai-flash {
-  animation: ai-flash-highlight 1.4s ease-out forwards !important;
   z-index: 100 !important;
-}
-.ai-flash .uml-node {
-  border-color: var(--accent) !important;
-  transition: border-color 0.3s ease;
 }
 
 /* ── AI Phase Badge: docs ── */
 .ai-phase-badge--docs { background: #6c8cff22; color: #6c8cff; }
 .ai-log-phase--docs { color: #6c8cff; }
 
-/* ── AI Working Node Pulse — continuous while LLM analyzes ── */
+/* ── AI Working Node Pulse — continuous while LLM analyzes (kind-colored) ── */
 @keyframes ai-working-pulse {
-  0%   { box-shadow: 0 0 6px 2px rgba(180, 140, 255, 0.4); border-color: rgba(180, 140, 255, 0.6); }
-  50%  { box-shadow: 0 0 20px 6px rgba(180, 140, 255, 0.7), 0 0 40px 10px rgba(108, 140, 255, 0.2); border-color: rgba(180, 140, 255, 0.9); }
-  100% { box-shadow: 0 0 6px 2px rgba(180, 140, 255, 0.4); border-color: rgba(180, 140, 255, 0.6); }
+  0%   { box-shadow: 0 0 6px 2px rgba(var(--kind-rgb, 108, 140, 255), 0.4); border-color: rgba(var(--kind-rgb, 108, 140, 255), 0.6); }
+  50%  { box-shadow: 0 0 20px 6px rgba(var(--kind-rgb, 108, 140, 255), 0.7), 0 0 40px 10px rgba(var(--kind-rgb, 108, 140, 255), 0.2); border-color: rgba(var(--kind-rgb, 108, 140, 255), 0.9); }
+  100% { box-shadow: 0 0 6px 2px rgba(var(--kind-rgb, 108, 140, 255), 0.4); border-color: rgba(var(--kind-rgb, 108, 140, 255), 0.6); }
 }
 .ai-working .uml-node,
 .react-flow__node.ai-working .uml-node {
   animation: ai-working-pulse 1.8s ease-in-out infinite;
-  border-color: rgba(180, 140, 255, 0.7) !important;
+  border-color: rgba(var(--kind-rgb, 108, 140, 255), 0.7) !important;
 }
 .ai-working,
 .react-flow__node.ai-working {
@@ -2603,8 +2621,8 @@ body,
 }
 
 .source-viewer-panel {
-  width: min(90vw, 800px);
-  max-height: 80vh;
+  width: min(94vw, 1400px);
+  max-height: 85vh;
   background: var(--bg-panel, #1a1d27);
   border: 1px solid var(--border, #2d3148);
   border-radius: 12px;
@@ -2670,6 +2688,87 @@ body,
 .source-viewer-close:hover {
   background: rgba(255, 255, 255, 0.1);
   color: var(--text);
+}
+
+/* ── Source Viewer: header actions row ── */
+.source-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Open in IDE dropdown ── */
+.sv-ide-dropdown {
+  position: relative;
+}
+
+.sv-ide-btn {
+  background: rgba(108, 140, 255, 0.12);
+  border: 1px solid rgba(108, 140, 255, 0.3);
+  color: var(--accent, #6c8cff);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.sv-ide-btn:hover {
+  background: rgba(108, 140, 255, 0.22);
+  border-color: var(--accent);
+}
+
+.sv-ide-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+  background: var(--bg-card, #23263a);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  z-index: 10;
+  animation: sv-menu-in 0.12s ease-out;
+}
+
+@keyframes sv-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.sv-ide-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.sv-ide-menu-item:hover {
+  background: rgba(108, 140, 255, 0.12);
+}
+.sv-ide-menu-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.sv-ide-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  animation: sv-status-fade 0.2s ease-out;
+}
+
+@keyframes sv-status-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 .source-viewer-body {
@@ -2739,3 +2838,166 @@ body,
 .tok-type      { color: #4ec9b0; }        /* cyan — ClassName (uppercase start) */
 .tok-self      { color: #9cdcfe; }        /* light blue — self, cls */
 .tok-punct     { color: #808080; }        /* grey — : , = ( ) */
+
+/* ═════════════════════════════════════════════════════════════
+   Command Palette  (Ctrl+P)
+   ═════════════════════════════════════════════════════════════ */
+
+.cmd-palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  padding-top: 72px;
+  background: rgba(0, 0, 0, 0.35);
+  animation: cmd-backdrop-in 0.12s ease-out;
+}
+
+@keyframes cmd-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.cmd-palette {
+  width: min(600px, 90vw);
+  max-height: 480px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(108, 140, 255, 0.15);
+  overflow: hidden;
+  animation: cmd-palette-in 0.14s ease-out;
+  align-self: flex-start;
+}
+
+@keyframes cmd-palette-in {
+  from { opacity: 0; transform: translateY(-12px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.cmd-palette__input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cmd-palette__icon {
+  font-size: 15px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.cmd-palette__input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 14px;
+  min-width: 0;
+}
+
+.cmd-palette__input::placeholder {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.cmd-palette__clear {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color 0.1s;
+}
+
+.cmd-palette__clear:hover {
+  color: var(--text);
+}
+
+.cmd-palette__kbd {
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--text-dim);
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.cmd-palette__results {
+  overflow-y: auto;
+  max-height: 380px;
+  padding: 4px 0;
+}
+
+.cmd-palette__empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.cmd-palette__result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.08s;
+}
+
+.cmd-palette__result:hover,
+.cmd-palette__result--active {
+  background: rgba(108, 140, 255, 0.12);
+}
+
+.cmd-palette__result-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.cmd-palette__result-kind {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.cmd-palette__result-summary {
+  display: none;
+}
+
+/* Show summary on the active/hovered item as a second line */
+.cmd-palette__result--active .cmd-palette__result-summary,
+.cmd-palette__result:hover .cmd-palette__result-summary {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  flex-basis: 100%;
+}
+
+/* Allow result to wrap to second line for summary */
+.cmd-palette__result--active,
+.cmd-palette__result:hover {
+  flex-wrap: wrap;
+}

@@ -34,6 +34,8 @@ const nodeTypes = {
   umlGroup: UmlGroupNode,
 };
 
+const proOptions = { hideAttribution: true };
+
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
@@ -691,7 +693,7 @@ export function Canvas() {
         nodeTypes={nodeTypes}
         fitView
         minZoom={0.05}
-        proOptions={{ hideAttribution: true }}
+        proOptions={proOptions}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#2d3148" />
         <Controls />
@@ -716,7 +718,7 @@ export function Canvas() {
           <span className="ai-spinner" />
           <span className={`ai-phase-badge ai-phase-badge--${aiPhase}`}>{aiPhase || "starting…"}</span>
           {aiThought && <span className="ai-canvas-overlay__thought">{aiThought}</span>}
-          {aiNavPaused && <span className="ai-canvas-overlay__paused">🧭 Nav pausiert</span>}
+          {aiNavPaused && <span className="ai-canvas-overlay__paused"><i className="bi bi-compass" /> Nav pausiert</span>}
         </div>
       )}
 
@@ -729,7 +731,7 @@ export function Canvas() {
           }}
           title="Komplettes UML-Projekt als HTML exportieren (alle Views + Navigation)"
         >
-          📥 Export Projekt
+          <i className="bi bi-download" /> Export Projekt
         </button>
         <button
           className="export-btn"
@@ -739,7 +741,7 @@ export function Canvas() {
           }}
           title="Nur aktuelle Ansicht als HTML exportieren"
         >
-          📄 Export View
+          <i className="bi bi-file-earmark" /> Export View
         </button>
       </div>
 
@@ -795,7 +797,7 @@ export function Canvas() {
             </div>
             <div className="connect-type-dialog-actions">
               <button className="btn btn-sm btn-primary" onClick={handleConfirmConnect}>
-                ✅ Verbinden
+                <i className="bi bi-check-circle" /> Verbinden
               </button>
               <button className="btn btn-sm" onClick={() => setConnectDialog(null)}>
                 Abbrechen

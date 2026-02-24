@@ -5,6 +5,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Inspector } from "./components/Inspector";
 import { Breadcrumb } from "./components/Breadcrumb";
 import { SourceViewer } from "./components/SourceViewer";
+import { CommandPalette } from "./components/CommandPalette";
 import { useAppStore } from "./store";
 import { fetchGraph } from "./api";
 
@@ -147,6 +148,9 @@ export function App() {
           onClose={closeSourceViewer}
         />
       )}
+
+      {/* Command Palette (Ctrl+P) */}
+      <CommandPalette />
     </div>
   );
 }

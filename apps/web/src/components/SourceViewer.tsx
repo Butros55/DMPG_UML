@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { fetchSourceCode, type SourceCodeResult } from "../api";
+import { fetchSourceCode, openInIde, type SourceCodeResult, type IdeName } from "../api";
 
 interface SourceViewerProps {
   symbolId: string;
@@ -127,7 +127,10 @@ export function SourceViewer({ symbolId, symbolLabel, onClose }: SourceViewerPro
   const [result, setResult] = useState<SourceCodeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [ideStatus, setIdeStatus] = useState<string | null>(null);
+  const [ideMenuOpen, setIdeMenuOpen] = useState(false);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const ideMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -146,12 +149,41 @@ export function SourceViewer({ symbolId, symbolLabel, onClose }: SourceViewerPro
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  // Close IDE menu on outside click
+  useEffect(() => {
+    if (!ideMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (ideMenuRef.current && !ideMenuRef.current.contains(e.target as Node)) {
+        setIdeMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [ideMenuOpen]);
+
   // Close on overlay click (outside content)
   const handleOverlayClick = useCallback(
     (e: React.MouseEvent) => {
       if (e.target === overlayRef.current) onClose();
     },
     [onClose],
+  );
+
+  const handleOpenInIde = useCallback(
+    async (ide: IdeName) => {
+      if (!result) return;
+      setIdeMenuOpen(false);
+      setIdeStatus(`Öffne in ${ide === "vscode" ? "VS Code" : "IntelliJ"}…`);
+      try {
+        await openInIde(ide, result.file, result.startLine);
+        setIdeStatus(`\u2705 Ge\u00f6ffnet in ${ide === "vscode" ? "VS Code" : "IntelliJ"}`);
+        setTimeout(() => setIdeStatus(null), 2500);
+      } catch (err: any) {
+        setIdeStatus(`\u26a0\ufe0f ${err.message}`);
+        setTimeout(() => setIdeStatus(null), 4000);
+      }
+    },
+    [result],
   );
 
   // Pre-tokenize all lines once
@@ -167,7 +199,7 @@ export function SourceViewer({ symbolId, symbolLabel, onClose }: SourceViewerPro
         {/* Header */}
         <div className="source-viewer-header">
           <div className="source-viewer-title">
-            <span className="source-viewer-icon">📝</span>
+            <span className="source-viewer-icon"><i className="bi bi-code-square" /></span>
             <span className="source-viewer-name">{symbolLabel}</span>
             {result && (
               <span className="source-viewer-location">
@@ -175,13 +207,38 @@ export function SourceViewer({ symbolId, symbolLabel, onClose }: SourceViewerPro
               </span>
             )}
           </div>
-          <button className="source-viewer-close" onClick={onClose} title="Schließen (Esc)">✕</button>
+          <div className="source-viewer-actions">
+            {/* Open in IDE dropdown */}
+            {result && (
+              <div className="sv-ide-dropdown" ref={ideMenuRef}>
+                <button
+                  className="sv-ide-btn"
+                  onClick={() => setIdeMenuOpen((o) => !o)}
+                  title="In IDE öffnen"
+                >
+                  <i className="bi bi-box-arrow-up-right" /> In IDE öffnen
+                </button>
+                {ideMenuOpen && (
+                  <div className="sv-ide-menu">
+                    <button className="sv-ide-menu-item" onClick={() => handleOpenInIde("vscode")}>
+                      <span className="sv-ide-menu-icon"><i className="bi bi-window" /></span> VS Code
+                    </button>
+                    <button className="sv-ide-menu-item" onClick={() => handleOpenInIde("intellij")}>
+                      <span className="sv-ide-menu-icon"><i className="bi bi-braces" /></span> IntelliJ IDEA
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {ideStatus && <span className="sv-ide-status">{ideStatus}</span>}
+            <button className="source-viewer-close" onClick={onClose} title="Schließen (Esc)"><i className="bi bi-x-lg" /></button>
+          </div>
         </div>
 
         {/* Body */}
         <div className="source-viewer-body">
           {loading && <div className="source-viewer-loading">Lade Quellcode…</div>}
-          {error && <div className="source-viewer-error">⚠️ {error}</div>}
+          {error && <div className="source-viewer-error"><i className="bi bi-exclamation-triangle" /> {error}</div>}
           {result && (
             <div className="source-viewer-code-wrap">
               <pre className="source-viewer-code">

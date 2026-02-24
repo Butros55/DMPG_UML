@@ -67,6 +67,7 @@ export function exportProjectAsHtml(graph: ProjectGraph) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${esc(projectName)} — DMPG UML</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>${CSS_CONTENT}</style>
 </head>
 <body>
@@ -439,7 +440,7 @@ const KIND_BADGE = {
   interface:{letter:"I",color:"#66d9ef"},variable:{letter:"V",color:"#c792ea"},
   external:{letter:"E",color:"#888"},
 };
-const SCOPE_ICONS = {root:"🌐",group:"📦",module:"📄",class:"🏛️"};
+const SCOPE_ICONS = {root:'<i class="bi bi-globe2"></i>',group:'<i class="bi bi-box"></i>',module:'<i class="bi bi-file-earmark-code"></i>',class:'<i class="bi bi-building"></i>'};
 
 // ── Pan / Zoom state ──
 let zoom = 1;
@@ -811,7 +812,7 @@ function renderView(viewId) {
 
 function renderDefaultNode(sym, scope) {
   let html = '<div class="node-hdr"><span class="kbadge kb-'+sym.kind+'">'+sym.kind+'</span><span class="nlbl">'+esc(sym.label)+'</span>';
-  if (sym.tags && sym.tags.includes("dead-code")) html += '<span class="dead-tag" title="Dead code">💀</span>';
+  if (sym.tags && sym.tags.includes("dead-code")) html += '<span class="dead-tag" title="Dead code"><i class="bi bi-x-circle"></i></span>';
   html += '</div>';
   html += renderRelBadges(sym);
   if (sym.childViewId) html += renderDrilldown(sym);
@@ -859,7 +860,7 @@ function renderClassNode(sym) {
 
 function renderFunctionNode(sym) {
   let html = '<div class="node-hdr"><span class="kbadge kb-'+sym.kind+'">'+(sym.kind==="method"?"method":"fn")+'</span><span class="nlbl">'+esc((sym.label||"").split(".").pop()||sym.label)+'</span>';
-  if (sym.tags && sym.tags.includes("dead-code")) html += '<span class="dead-tag" title="Dead code">💀</span>';
+  if (sym.tags && sym.tags.includes("dead-code")) html += '<span class="dead-tag" title="Dead code"><i class="bi bi-x-circle"></i></span>';
   html += '</div>';
   const inputs = sym.doc?.inputs || [];
   if (inputs.length > 0) {
@@ -874,12 +875,12 @@ function renderFunctionNode(sym) {
 
 function renderArtifactNode(sym) {
   const label = (sym.label||"").toLowerCase();
-  let icon = "📄";
-  if (label.includes(".csv")||label.includes(".xlsx")) icon = "📊";
-  else if (label.includes(".json")) icon = "📋";
-  else if (label.includes(".pkl")||label.includes(".pickle")) icon = "🗃️";
-  else if (label.includes("db")||label.includes("sql")) icon = "🗄️";
-  else if (label.includes("http")||label.includes("api")) icon = "🌐";
+  let icon = '<i class="bi bi-file-earmark"></i>';
+  if (label.includes(".csv")||label.includes(".xlsx")) icon = '<i class="bi bi-file-earmark-spreadsheet"></i>';
+  else if (label.includes(".json")) icon = '<i class="bi bi-filetype-json"></i>';
+  else if (label.includes(".pkl")||label.includes(".pickle")) icon = '<i class="bi bi-archive"></i>';
+  else if (label.includes("db")||label.includes("sql")) icon = '<i class="bi bi-database"></i>';
+  else if (label.includes("http")||label.includes("api")) icon = '<i class="bi bi-globe"></i>';
   let html = '<div class="node-hdr"><span style="font-size:18px">'+icon+'</span><span class="nlbl">'+esc(sym.label)+'</span></div>';
   html += renderRelBadges(sym);
   return html;
@@ -889,7 +890,7 @@ function renderRelBadges(sym) {
   const rels = G.relations.filter(r => (r.source === sym.id || r.target === sym.id) && r.type !== "contains");
   const types = new Set(rels.map(r => r.type));
   if (types.size === 0) return "";
-  const META = {reads:{icon:"📖",label:"reads"},writes:{icon:"💾",label:"writes"},calls:{icon:"📞",label:"calls"},imports:{icon:"📦",label:"imports"},inherits:{icon:"🧬",label:"inherits"},instantiates:{icon:"⚡",label:"creates"},uses_config:{icon:"⚙️",label:"config"}};
+  const META = {reads:{icon:'<i class="bi bi-book"></i>',label:"reads"},writes:{icon:'<i class="bi bi-pencil-square"></i>',label:"writes"},calls:{icon:'<i class="bi bi-telephone-outbound"></i>',label:"calls"},imports:{icon:'<i class="bi bi-box-arrow-in-down"></i>',label:"imports"},inherits:{icon:'<i class="bi bi-diagram-3"></i>',label:"inherits"},instantiates:{icon:'<i class="bi bi-lightning"></i>',label:"creates"},uses_config:{icon:'<i class="bi bi-gear"></i>',label:"config"}};
   let html = '<div class="rbadges">';
   types.forEach(t => {
     if (t === "imports") return;
@@ -950,9 +951,9 @@ function renderSidebar() {
   let html = '<div class="sidebar-section">';
   html += '<div class="symbol-search">';
   html += '<div class="symbol-search__input-wrap">';
-  html += '<span class="symbol-search__icon">🔍</span>';
+  html += '<span class="symbol-search__icon"><i class="bi bi-search"></i></span>';
   html += '<input class="symbol-search__input" id="searchInput" type="text" placeholder="Suche nach Symbolen…">';
-  html += '<button class="symbol-search__clear" id="searchClear" style="display:none">✕</button>';
+  html += '<button class="symbol-search__clear" id="searchClear" style="display:none"><i class="bi bi-x-lg"></i></button>';
   html += '</div>';
   html += '<div class="symbol-search__dropdown" id="searchDropdown" style="display:none"></div>';
   html += '</div></div>';
@@ -1001,7 +1002,7 @@ function renderSidebar() {
     const viewSyms = symbolsByView.get(v.id) || [];
     const hasKids = childViews.length > 0 || viewSyms.length > 0;
     const isActive = v.id === currentViewId;
-    const icon = SCOPE_ICONS[v.scope || ""] || "📂";
+    const icon = SCOPE_ICONS[v.scope || ""] || '<i class="bi bi-folder"></i>';
     const hasDead = v.nodeRefs.some(id => deadIds.has(id));
 
     const item = document.createElement("div");
@@ -1253,11 +1254,11 @@ function renderInspector() {
 
   if (loc) {
     const lc = (loc.startLine != null && loc.endLine != null) ? (loc.endLine - loc.startLine + 1) : null;
-    html += '<div class="insp-row"><span class="insp-lbl">📄 Datei</span><span class="insp-val" style="font-family:monospace;font-size:10px">'+esc(loc.file)+(loc.startLine!=null?":"+loc.startLine:"")+(loc.endLine!=null?"-"+loc.endLine:"")+(lc?" ("+lc+" Zeilen)":"")+'</span></div>';
+    html += '<div class="insp-row"><span class="insp-lbl"><i class="bi bi-file-earmark"></i> Datei</span><span class="insp-val" style="font-family:monospace;font-size:10px">'+esc(loc.file)+(loc.startLine!=null?":"+loc.startLine:"")+(loc.endLine!=null?"-"+loc.endLine:"")+(lc?" ("+lc+" Zeilen)":"")+'</span></div>';
   }
 
   if (parent) {
-    html += '<div class="insp-row"><span class="insp-lbl">📦 In</span><span class="insp-val"><span class="insp-link" onclick="navigateToSymbol(\\''+parent.id+'\\')">'+esc(parent.label)+'</span> ('+parent.kind+')</span></div>';
+    html += '<div class="insp-row"><span class="insp-lbl"><i class="bi bi-box"></i> In</span><span class="insp-val"><span class="insp-link" onclick="navigateToSymbol(\\''+parent.id+'\\')">'+esc(parent.label)+'</span> ('+parent.kind+')</span></div>';
   }
 
   if (sym.kind === "function" || sym.kind === "method") {
@@ -1272,7 +1273,7 @@ function renderInspector() {
   }
 
   if (doc.inputs && doc.inputs.length > 0) {
-    html += '<div class="insp-card"><div class="insp-section-lbl">⬇ Parameter</div><div class="hc-tbl">';
+    html += '<div class="insp-card"><div class="insp-section-lbl"><i class="bi bi-arrow-down"></i> Parameter</div><div class="hc-tbl">';
     doc.inputs.forEach(p => {
       html += '<div class="hc-tbl-row"><span class="hc-pn">'+esc(p.name)+'</span>';
       if (p.type) html += '<span class="hc-pt">'+esc(p.type)+'</span>';
@@ -1283,7 +1284,7 @@ function renderInspector() {
   }
 
   if (doc.outputs && doc.outputs.length > 0) {
-    html += '<div class="insp-card"><div class="insp-section-lbl">⬆ Rückgabe</div><div class="hc-tbl">';
+    html += '<div class="insp-card"><div class="insp-section-lbl"><i class="bi bi-arrow-up"></i> Rückgabe</div><div class="hc-tbl">';
     doc.outputs.forEach(o => {
       html += '<div class="hc-tbl-row"><span class="hc-pn">'+esc(o.name)+'</span>';
       if (o.type) html += '<span class="hc-pt">'+esc(o.type)+'</span>';
@@ -1303,23 +1304,23 @@ function renderInspector() {
     return h + '</div></div>';
   }
 
-  html += relCard("Ruft auf","→",outCalls);
-  html += relCard("Aufgerufen von","←",inCalls);
-  html += relCard("Liest","📖",reads);
-  html += relCard("Schreibt","📝",writes);
-  html += relCard("Importiert","📥",imports);
-  html += relCard("Importiert von","📤",importedBy);
-  html += relCard("Erbt von","🧬",inherits);
-  html += relCard("Instanziiert","🏗",instantiates);
+  html += relCard("Ruft auf",'<i class="bi bi-arrow-right"></i>',outCalls);
+  html += relCard("Aufgerufen von",'<i class="bi bi-arrow-left"></i>',inCalls);
+  html += relCard("Liest",'<i class="bi bi-book"></i>',reads);
+  html += relCard("Schreibt",'<i class="bi bi-pencil-square"></i>',writes);
+  html += relCard("Importiert",'<i class="bi bi-box-arrow-in-down"></i>',imports);
+  html += relCard("Importiert von",'<i class="bi bi-box-arrow-up"></i>',importedBy);
+  html += relCard("Erbt von",'<i class="bi bi-diagram-3"></i>',inherits);
+  html += relCard("Instanziiert",'<i class="bi bi-lightning"></i>',instantiates);
 
   if (doc.sideEffects && doc.sideEffects.length > 0) {
-    html += '<div class="insp-card"><div class="insp-section-lbl">⚠ Seiteneffekte</div><ul class="insp-se">';
+    html += '<div class="insp-card"><div class="insp-section-lbl"><i class="bi bi-exclamation-triangle"></i> Seiteneffekte</div><ul class="insp-se">';
     doc.sideEffects.forEach(se => { html += '<li>'+esc(se)+'</li>'; });
     html += '</ul></div>';
   }
 
   if (children.length > 0) {
-    html += '<div class="insp-card"><div class="insp-section-lbl">📁 Enthält ('+children.length+')</div><div class="insp-chips">';
+    html += '<div class="insp-card"><div class="insp-section-lbl"><i class="bi bi-folder"></i> Enthält ('+children.length+')</div><div class="insp-chips">';
     children.slice(0,20).forEach(c => {
       html += '<span class="insp-chip" onclick="navigateToSymbol(\\''+c.id+'\\')">'+esc(c.label.split(".").pop()||c.label)+'</span>';
     });
@@ -1330,13 +1331,13 @@ function renderInspector() {
   if (sym.tags && sym.tags.length > 0) {
     html += '<div class="insp-tags">';
     sym.tags.forEach(t => {
-      html += '<span class="insp-tag'+(t==="dead-code"?" insp-tag-dead":"")+'">'+(t==="dead-code"?"💀 ":"")+esc(t)+'</span>';
+      html += '<span class="insp-tag'+(t==="dead-code"?" insp-tag-dead":"")+'">'+(t==="dead-code"?'<i class="bi bi-x-circle"></i> ':"")+esc(t)+'</span>';
     });
     html += '</div>';
   }
 
   if (isDeadCode) {
-    html += '<div class="insp-card"><div class="insp-section-lbl">💀 Dead Code — Begründung</div><div class="insp-summary">'+esc(deadReason)+'</div></div>';
+    html += '<div class="insp-card"><div class="insp-section-lbl"><i class="bi bi-x-circle"></i> Dead Code — Begründung</div><div class="insp-summary">'+esc(deadReason)+'</div></div>';
   }
 
   insp.innerHTML = html;
@@ -1381,11 +1382,11 @@ function showHoverCard(symId, rect) {
 
   if (loc) {
     const lc = (loc.startLine!=null && loc.endLine!=null) ? (loc.endLine-loc.startLine+1) : null;
-    html += '<div class="hc-loc">📄 '+esc(loc.file)+(loc.startLine?":"+loc.startLine:"")+(loc.endLine?"-"+loc.endLine:"")+(lc?" ("+lc+" Zeilen)":"")+'</div>';
+    html += '<div class="hc-loc"><i class="bi bi-file-earmark"></i> '+esc(loc.file)+(loc.startLine?":"+loc.startLine:"")+(loc.endLine?"-"+loc.endLine:"")+(lc?" ("+lc+" Zeilen)":"")+'</div>';
   }
 
   if (parent) {
-    html += '<div class="hc-parent">📦 in: <span class="insp-link" onclick="navigateToSymbol(\\''+parent.id+'\\')">'+esc(parent.label)+'</span> ('+parent.kind+')</div>';
+    html += '<div class="hc-parent"><i class="bi bi-box"></i> in: <span class="insp-link" onclick="navigateToSymbol(\\''+parent.id+'\\')">'+esc(parent.label)+'</span> ('+parent.kind+')</div>';
   }
 
   if (sym.kind === "function" || sym.kind === "method") {
@@ -1399,7 +1400,7 @@ function showHoverCard(symId, rect) {
   }
 
   if (doc.inputs && doc.inputs.length > 0) {
-    html += '<div class="hc-section"><div class="hc-slbl">⬇ Parameter</div><div class="hc-tbl">';
+    html += '<div class="hc-section"><div class="hc-slbl"><i class="bi bi-arrow-down"></i> Parameter</div><div class="hc-tbl">';
     doc.inputs.forEach(p => {
       html += '<div class="hc-tbl-row"><span class="hc-pn">'+esc(p.name)+'</span>';
       if (p.type) html += '<span class="hc-pt">'+esc(p.type)+'</span>';
@@ -1410,7 +1411,7 @@ function showHoverCard(symId, rect) {
   }
 
   // Relations
-  const TYPE_LABELS = {calls:["→ Ruft auf","← Aufgerufen von"],reads:["📖 Liest",null],writes:["📝 Schreibt",null],imports:["📥 Importiert","📤 Importiert von"],inherits:["🧬 Erbt von",null],instantiates:["🏗 Instanziiert",null],uses_config:["⚙ Konfiguration",null]};
+  const TYPE_LABELS = {calls:['<i class="bi bi-arrow-right"></i> Ruft auf','<i class="bi bi-arrow-left"></i> Aufgerufen von'],reads:['<i class="bi bi-book"></i> Liest',null],writes:['<i class="bi bi-pencil-square"></i> Schreibt',null],imports:['<i class="bi bi-box-arrow-in-down"></i> Importiert','<i class="bi bi-box-arrow-up"></i> Importiert von'],inherits:['<i class="bi bi-diagram-3"></i> Erbt von',null],instantiates:['<i class="bi bi-lightning"></i> Instanziiert',null],uses_config:['<i class="bi bi-gear"></i> Konfiguration',null]};
   const outgoing = {}, incoming = {};
   rels.forEach(r => {
     if (r.source === sym.id) { if (!outgoing[r.type]) outgoing[r.type]=[]; outgoing[r.type].push(symMap.get(r.target)); }
@@ -1437,17 +1438,17 @@ function showHoverCard(symId, rect) {
     const instantiatedBy = rels.filter(r => r.target === sym.id && r.type === "instantiates").length;
     const instantiates = rels.filter(r => r.source === sym.id && r.type === "instantiates").length;
     const deadReason = deadCodeReasonText(sym, doc, inCalls + instantiatedBy, outCalls + instantiates);
-    html += '<div class="hc-section"><div class="hc-slbl">💀 Dead Code — Begründung</div><div class="hc-summary">'+esc(deadReason)+'</div></div>';
+    html += '<div class="hc-section"><div class="hc-slbl"><i class="bi bi-x-circle"></i> Dead Code — Begründung</div><div class="hc-summary">'+esc(deadReason)+'</div></div>';
   }
 
   if (doc.sideEffects && doc.sideEffects.length > 0) {
-    html += '<div class="hc-section"><div class="hc-slbl">⚠ Seiteneffekte</div><ul class="hc-se">';
+    html += '<div class="hc-section"><div class="hc-slbl"><i class="bi bi-exclamation-triangle"></i> Seiteneffekte</div><ul class="hc-se">';
     doc.sideEffects.forEach(se => { html += '<li>'+esc(se)+'</li>'; });
     html += '</ul></div>';
   }
 
   if (children.length > 0) {
-    html += '<div class="hc-section"><div class="hc-slbl">📁 Enthält ('+children.length+')</div><div class="hc-chips">';
+    html += '<div class="hc-section"><div class="hc-slbl"><i class="bi bi-folder"></i> Enthält ('+children.length+')</div><div class="hc-chips">';
     children.slice(0,12).forEach(c => { html += '<span class="hc-chip" onclick="navigateToSymbol(\\''+c.id+'\\')">'+esc(c.label.split(".").pop()||c.label)+'</span>'; });
     if (children.length>12) html += '<span style="color:var(--text-dim);font-size:10px">+'+(children.length-12)+' weitere</span>';
     html += '</div></div>';
@@ -1455,11 +1456,11 @@ function showHoverCard(symId, rect) {
 
   if (sym.tags && sym.tags.length > 0) {
     html += '<div class="hc-tags">';
-    sym.tags.forEach(t => { html += '<span class="hc-tag'+(t==="dead-code"?" hc-tag-dead":"")+'">'+(t==="dead-code"?"💀 ":"")+esc(t)+'</span>'; });
+    sym.tags.forEach(t => { html += '<span class="hc-tag'+(t==="dead-code"?" hc-tag-dead":"")+'">'+(t==="dead-code"?'<i class="bi bi-x-circle"></i> ':"")+esc(t)+'</span>'; });
     html += '</div>';
   }
 
-  html += '<div class="hc-footer">Klick auf Node = Inspector · Drilldown via ▶</div>';
+  html += '<div class="hc-footer">Klick auf Node = Inspector · Drilldown via <i class="bi bi-caret-right-fill"></i></div>';
   card.innerHTML = html;
 }
 

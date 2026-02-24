@@ -1,5 +1,5 @@
 {
-  "activeProject": "C:\\dev\\dmpg_models\\data_pipeline",
+  "activeProject": "C:\\dev\\dmpg_models",
   "projects": [
     {
       "projectPath": "C:\\dev\\dmpg_models\\data_pipeline",
@@ -7,6 +7,13 @@
       "symbolCount": 401,
       "lastScanned": "2026-02-24T07:34:56.465Z",
       "hash": "a845846712dc"
+    },
+    {
+      "projectPath": "C:\\dev\\dmpg_models",
+      "name": "dmpg_models",
+      "symbolCount": 3377,
+      "lastScanned": "2026-02-24T08:35:17.059Z",
+      "hash": "3449a09340fa"
     }
   ]
 }

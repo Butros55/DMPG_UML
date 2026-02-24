@@ -31,10 +31,10 @@ const KIND_BADGE: Record<string, { letter: string; color: string }> = {
 };
 
 const SCOPE_ICONS: Record<string, string> = {
-  root: "🌐",
-  group: "📦",
-  module: "📄",
-  class: "🏛️",
+  root: "bi-globe2",
+  group: "bi-box",
+  module: "bi-file-earmark-code",
+  class: "bi-building",
 };
 
 /** Navigate to the deepest view containing a symbol and focus it */
@@ -93,7 +93,7 @@ function SymbolSearch({ symbols }: { symbols: Sym[] }) {
   return (
     <div className="symbol-search">
       <div className="symbol-search__input-wrap">
-        <span className="symbol-search__icon">🔍</span>
+        <span className="symbol-search__icon"><i className="bi bi-search" /></span>
         <input
           ref={inputRef}
           className="symbol-search__input"
@@ -111,7 +111,7 @@ function SymbolSearch({ symbols }: { symbols: Sym[] }) {
           }}
         />
         {query && (
-          <button className="symbol-search__clear" onClick={() => setQuery("")}>✕</button>
+          <button className="symbol-search__clear" onClick={() => setQuery("")}><i className="bi bi-x-lg" /></button>
         )}
       </div>
       {showDropdown && (
@@ -169,7 +169,7 @@ function ViewTreeItem({
   const isCollapsed = collapsed[view.id] ?? (level > 1);
   const isActive = view.id === currentViewId;
   const scope = (view as any).scope as string | undefined;
-  const icon = SCOPE_ICONS[scope ?? ""] ?? "📂";
+  const icon = SCOPE_ICONS[scope ?? ""] ?? "bi-folder";
 
   // Check if this view contains dead-code nodes
   const hasDeadCode = view.nodeRefs.some((id) => deadSymbolIds.has(id));
@@ -186,12 +186,12 @@ function ViewTreeItem({
             className={`view-tree-chevron ${isCollapsed ? "" : "view-tree-chevron--open"}`}
             onClick={(e) => { e.stopPropagation(); toggleCollapse(view.id); }}
           >
-            ▸
+            <i className="bi bi-chevron-right" />
           </span>
         ) : (
           <span className="view-tree-chevron view-tree-chevron--leaf" />
         )}
-        <span className="view-tree-icon">{icon}</span>
+        <span className="view-tree-icon"><i className={`bi ${icon}`} /></span>
         <span className="view-tree-label">{view.title}</span>
       </div>
       {hasChildren && !isCollapsed && (
@@ -265,7 +265,7 @@ function FolderBrowser({ onSelect, onClose }: { onSelect: (path: string) => void
       <div className="folder-browser" onClick={(e) => e.stopPropagation()}>
         <div className="folder-browser-header">
           <h3>Select Project Folder</h3>
-          <button className="btn-icon" onClick={onClose} style={{ fontSize: 16, color: "var(--text-dim)" }}>✕</button>
+          <button className="btn-icon" onClick={onClose} style={{ fontSize: 16, color: "var(--text-dim)" }}><i className="bi bi-x-lg" /></button>
         </div>
 
         <div className="folder-browser-path">
@@ -284,13 +284,13 @@ function FolderBrowser({ onSelect, onClose }: { onSelect: (path: string) => void
 
           {parentDir && (
             <div className="folder-item" onClick={() => loadDir(parentDir)}>
-              <span>📁</span> <span style={{ color: "var(--text-dim)" }}>..</span>
+              <span><i className="bi bi-folder" /></span> <span style={{ color: "var(--text-dim)" }}>..</span>
             </div>
           )}
 
           {folders.map((f) => (
             <div key={f.path} className="folder-item" onClick={() => loadDir(f.path)}>
-              <span>📁</span> <span>{f.name}</span>
+              <span><i className="bi bi-folder" /></span> <span>{f.name}</span>
             </div>
           ))}
 
@@ -584,7 +584,7 @@ export function Sidebar() {
 
       <div className="sidebar-section">
         <h2 className="sidebar-section__header" onClick={() => toggleSection("umlNodes")}>
-          <span className={`sidebar-section__chevron ${sectionCollapsed.umlNodes ? "" : "sidebar-section__chevron--open"}`}>▸</span>
+          <span className={`sidebar-section__chevron ${sectionCollapsed.umlNodes ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
           UML Nodes
         </h2>
         {!sectionCollapsed.umlNodes && NODE_KINDS.map((nk) => (
@@ -605,14 +605,14 @@ export function Sidebar() {
       {/* ── Collapsible View Tree ── */}
       <div className="sidebar-section">
         <h2 className="sidebar-section__header" onClick={() => toggleSection("views")}>
-          <span className={`sidebar-section__chevron ${sectionCollapsed.views ? "" : "sidebar-section__chevron--open"}`}>▸</span>
+          <span className={`sidebar-section__chevron ${sectionCollapsed.views ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
           Views
           <button
             className="sidebar-section__action"
             onClick={(e) => { e.stopPropagation(); collapseAllViews(); }}
             title="Alle Views einklappen"
           >
-            ⊟
+            <i className="bi bi-dash-square" />
           </button>
         </h2>
         {!sectionCollapsed.views && (
@@ -638,14 +638,14 @@ export function Sidebar() {
       {/* ── Dead Code Section ── */}
       {deadCodeSymbols.length > 0 && (
         <div className="sidebar-section">
-          <h2>⚠️ Dead Code ({deadCodeSymbols.length})</h2>
+          <h2><i className="bi bi-exclamation-triangle" /> Dead Code ({deadCodeSymbols.length})</h2>
           {deadCodeSymbols.map((sym) => (
             <div
               key={sym.id}
               className="node-palette-item dead-code-item"
               onClick={() => goToSymbol(sym.id)}
             >
-              <span className="dead-code-icon">💀</span>
+              <span className="dead-code-icon"><i className="bi bi-x-circle" /></span>
               <KindBadge kind={sym.kind} />
               <span>{sym.label.split(".").pop()}</span>
             </div>
@@ -657,7 +657,7 @@ export function Sidebar() {
       {graph && (
         <div className="sidebar-section">
           <h2 className="sidebar-section__header" onClick={() => toggleSection("aiAnalysis")}>
-            <span className={`sidebar-section__chevron ${sectionCollapsed.aiAnalysis ? "" : "sidebar-section__chevron--open"}`}>▸</span>
+            <span className={`sidebar-section__chevron ${sectionCollapsed.aiAnalysis ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
             AI Analysis
           </h2>
           {!sectionCollapsed.aiAnalysis && (<>
@@ -665,7 +665,7 @@ export function Sidebar() {
           {/* Provider info */}
           <div className="ai-provider-info">
             <span className={`ai-provider-badge ai-provider-badge--${aiProvider}`}>
-              {aiProvider === "local" ? "🖥️ Lokal" : "☁️ Cloud"}
+              {aiProvider === "local" ? <><i className="bi bi-pc-display" /> Lokal</> : <><i className="bi bi-cloud" /> Cloud</>}
             </span>
             {ollamaModel && <span className="ai-provider-model">{ollamaModel}</span>}
           </div>
@@ -699,21 +699,21 @@ export function Sidebar() {
           {!aiAnalysis?.running ? (
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               <button className="btn ai-analyze-btn ai-analyze-btn--start" onClick={() => handleStartAnalysis(false)} style={{ flex: 1 }}>
-                🤖 AI Analyse starten
+                <i className="bi bi-cpu" /> AI Analyse starten
               </button>
               {canResume && (
                 <button className="btn ai-analyze-btn ai-analyze-btn--resume" onClick={() => handleStartAnalysis(true)} style={{ flex: 1 }}>
-                  ▶️ Fortsetzen
+                  <i className="bi bi-play-fill" /> Fortsetzen
                 </button>
               )}
             </div>
           ) : (
             <div style={{ display: "flex", gap: 4 }}>
               <button className="btn ai-analyze-btn ai-analyze-btn--pause" onClick={handlePauseAnalysis} style={{ flex: 1 }}>
-                ⏸ Pausieren
+                <i className="bi bi-pause-fill" /> Pausieren
               </button>
               <button className="btn ai-analyze-btn ai-analyze-btn--stop" onClick={handleStopAnalysis} style={{ flex: 1 }}>
-                ⏹ Stoppen
+                <i className="bi bi-stop-fill" /> Stoppen
               </button>
               <button
                 className={`btn ai-analyze-btn ${aiAnalysis?.navPaused ? "ai-analyze-btn--resume" : "ai-analyze-btn--nav-pause"}`}
@@ -721,7 +721,7 @@ export function Sidebar() {
                 title={aiAnalysis?.navPaused ? "Auto-Navigation fortsetzen" : "Auto-Navigation pausieren (Analyse läuft weiter)"}
                 style={{ flex: 1 }}
               >
-                {aiAnalysis?.navPaused ? "🧭▶ Nav" : "🧭⏸ Nav"}
+                {aiAnalysis?.navPaused ? <><i className="bi bi-compass" /><i className="bi bi-play-fill" /> Nav</> : <><i className="bi bi-compass" /><i className="bi bi-pause-fill" /> Nav</>}
               </button>
             </div>
           )}
@@ -753,7 +753,7 @@ export function Sidebar() {
                   {/* AI thought — what the LLM is currently processing */}
                   {aiAnalysis.thought && (
                     <div className="ai-thought-line">
-                      <span className="ai-thought-icon">🧠</span>
+                      <span className="ai-thought-icon"><i className="bi bi-lightbulb" /></span>
                       <span className="ai-thought-text">{aiAnalysis.thought}</span>
                     </div>
                   )}
@@ -761,27 +761,27 @@ export function Sidebar() {
               )}
               {!aiAnalysis.running && aiAnalysis.phase === "done" && (
                 <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--green)" }}>
-                  ✅ Analyse abgeschlossen
+                  <i className="bi bi-check-circle" /> Analyse abgeschlossen
                 </div>
               )}
               {!aiAnalysis.running && aiAnalysis.phase === "error" && (
                 <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--red)" }}>
-                  ❌ Analyse fehlgeschlagen
+                  <i className="bi bi-x-octagon" /> Analyse fehlgeschlagen
                 </div>
               )}
               {!aiAnalysis.running && aiAnalysis.phase === "stopped" && (
                 <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--yellow)" }}>
-                  ⏹ Analyse gestoppt — Änderungen bis hier gespeichert
+                  <i className="bi bi-stop-circle" /> Analyse gestoppt — Änderungen bis hier gespeichert
                 </div>
               )}
               {!aiAnalysis.running && aiAnalysis.phase === "cancelled" && (
                 <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--yellow)" }}>
-                  🚫 Analyse abgebrochen — Änderungen bis hier gespeichert
+                  <i className="bi bi-slash-circle" /> Analyse abgebrochen — Änderungen bis hier gespeichert
                 </div>
               )}
               {!aiAnalysis.running && aiAnalysis.phase === "paused" && (
                 <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--cyan, #66d9ef)" }}>
-                  ⏸ Analyse pausiert — Fortschritt gespeichert, Fortsetzen möglich
+                  <i className="bi bi-pause-circle" /> Analyse pausiert — Fortschritt gespeichert, Fortsetzen möglich
                 </div>
               )}
               {/* Stats summary after completion */}
@@ -789,11 +789,11 @@ export function Sidebar() {
                 const s = (aiAnalysis.log.find((e) => e.phase === "done") ?? aiAnalysis.log.find((e) => e.phase === "paused") ?? aiAnalysis.log.find((e) => e.phase === "cancelled"))?.stats;
                 return s ? (
                   <div className="ai-stats">
-                    <div className="ai-stat"><span>✏️</span><span className="num">{s?.labelsFixed ?? 0}</span> Labels</div>
-                    <div className="ai-stat"><span>📝</span><span className="num">{s?.docsGenerated ?? 0}</span> Docs</div>
-                    <div className="ai-stat"><span>🔗</span><span className="num">{s?.relationsAdded ?? 0}</span> Relations</div>
-                    <div className="ai-stat"><span>💀</span><span className="num">{s?.deadCodeFound ?? 0}</span> Dead Code</div>
-                    <div className="ai-stat"><span>🏗️</span><span className="num">{s?.groupsReviewed ?? 0}</span> Gruppen</div>
+                    <div className="ai-stat"><span><i className="bi bi-pencil" /></span><span className="num">{s?.labelsFixed ?? 0}</span> Labels</div>
+                    <div className="ai-stat"><span><i className="bi bi-file-text" /></span><span className="num">{s?.docsGenerated ?? 0}</span> Docs</div>
+                    <div className="ai-stat"><span><i className="bi bi-link-45deg" /></span><span className="num">{s?.relationsAdded ?? 0}</span> Relations</div>
+                    <div className="ai-stat"><span><i className="bi bi-x-circle" /></span><span className="num">{s?.deadCodeFound ?? 0}</span> Dead Code</div>
+                    <div className="ai-stat"><span><i className="bi bi-collection" /></span><span className="num">{s?.groupsReviewed ?? 0}</span> Gruppen</div>
                   </div>
                 ) : null;
               })()}
@@ -803,20 +803,20 @@ export function Sidebar() {
                     <span className={`ai-log-phase ai-log-phase--${ev.phase}`}>{ev.phase}</span>
                     <span className="ai-log-text">
                       {ev.action === "start" && `Phase gestartet…`}
-                      {ev.action === "error" && <span style={{ color: "var(--red)" }}>⚠️ {ev.message ?? "Fehler"} ({ev.symbolLabel ?? ""})</span>}
-                      {ev.phase === "labels" && !ev.action && <span>✏️ {ev.old} → {ev.new_}</span>}
-                      {ev.phase === "docs" && ev.action === "generated" && <span>📝 {ev.symbolLabel}: {ev.summary?.slice(0, 60)}</span>}
-                      {ev.phase === "relations" && ev.action === "added" && <span>🔗 +{ev.relationType}: {ev.sourceLabel} → {ev.targetLabel}</span>}
-                      {ev.phase === "dead-code" && !ev.action && <span>💀 {ev.symbolLabel} — {ev.reason}</span>}
-                      {ev.phase === "structure" && ev.action === "rename" && <span>🏗️ {ev.old} → {ev.new_}</span>}
-                      {ev.phase === "structure" && ev.action === "move" && <span>🏗️ {ev.moduleLabel}: {ev.fromGroup} → {ev.toGroup}</span>}
-                      {ev.phase === "structure" && ev.action === "merge" && <span>🏗️ {ev.sourceGroup} → {ev.targetGroup}</span>}
-                      {ev.phase === "structure" && ev.action === "split" && <span>✂️ {ev.groupLabel} → {ev.subGroupCount} Sub-Gruppen</span>}
-                      {ev.phase === "structure" && ev.action === "split-subgroup" && <span>📦 {ev.parentGroup} → {ev.subGroupLabel} ({ev.moduleCount})</span>}
-                      {ev.phase === "done" && <span>✅ Fertig!</span>}
-                      {ev.phase === "cancelled" && <span>🚫 Abgebrochen</span>}
-                      {ev.phase === "paused" && <span>⏸ Pausiert</span>}
-                      {ev.phase === "error" && !ev.action && <span style={{ color: "var(--red)" }}>❌ {ev.message}</span>}
+                      {ev.action === "error" && <span style={{ color: "var(--red)" }}><i className="bi bi-exclamation-triangle" /> {ev.message ?? "Fehler"} ({ev.symbolLabel ?? ""})</span>}
+                      {ev.phase === "labels" && !ev.action && <span><i className="bi bi-pencil" /> {ev.old} → {ev.new_}</span>}
+                      {ev.phase === "docs" && ev.action === "generated" && <span><i className="bi bi-file-text" /> {ev.symbolLabel}: {ev.summary?.slice(0, 60)}</span>}
+                      {ev.phase === "relations" && ev.action === "added" && <span><i className="bi bi-link-45deg" /> +{ev.relationType}: {ev.sourceLabel} → {ev.targetLabel}</span>}
+                      {ev.phase === "dead-code" && !ev.action && <span><i className="bi bi-x-circle" /> {ev.symbolLabel} — {ev.reason}</span>}
+                      {ev.phase === "structure" && ev.action === "rename" && <span><i className="bi bi-collection" /> {ev.old} → {ev.new_}</span>}
+                      {ev.phase === "structure" && ev.action === "move" && <span><i className="bi bi-collection" /> {ev.moduleLabel}: {ev.fromGroup} → {ev.toGroup}</span>}
+                      {ev.phase === "structure" && ev.action === "merge" && <span><i className="bi bi-collection" /> {ev.sourceGroup} → {ev.targetGroup}</span>}
+                      {ev.phase === "structure" && ev.action === "split" && <span><i className="bi bi-scissors" /> {ev.groupLabel} → {ev.subGroupCount} Sub-Gruppen</span>}
+                      {ev.phase === "structure" && ev.action === "split-subgroup" && <span><i className="bi bi-box" /> {ev.parentGroup} → {ev.subGroupLabel} ({ev.moduleCount})</span>}
+                      {ev.phase === "done" && <span><i className="bi bi-check-circle" /> Fertig!</span>}
+                      {ev.phase === "cancelled" && <span><i className="bi bi-slash-circle" /> Abgebrochen</span>}
+                      {ev.phase === "paused" && <span><i className="bi bi-pause-circle" /> Pausiert</span>}
+                      {ev.phase === "error" && !ev.action && <span style={{ color: "var(--red)" }}><i className="bi bi-x-octagon" /> {ev.message}</span>}
                     </span>
                   </div>
                 ))}
@@ -851,7 +851,7 @@ export function Sidebar() {
                   onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.projectPath); }}
                   title="Projekt entfernen"
                 >
-                  ✕
+                  <i className="bi bi-x-lg" />
                 </button>
               </div>
             ))}
@@ -873,7 +873,7 @@ export function Sidebar() {
             title="Browse folders"
             style={{ whiteSpace: "nowrap" }}
           >
-            📂
+            <i className="bi bi-folder2-open" />
           </button>
         </div>
         <button className="btn" onClick={handleScan} disabled={scanning} style={{ marginTop: 4 }}>
