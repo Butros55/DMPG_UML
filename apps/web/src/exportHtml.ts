@@ -1023,7 +1023,7 @@ function renderSidebar() {
 
     const icoEl = document.createElement("span");
     icoEl.className = "vt-ico";
-    icoEl.textContent = icon;
+    icoEl.innerHTML = icon;
     item.appendChild(icoEl);
 
     const lbl = document.createElement("span");

@@ -397,8 +397,11 @@ function buildGraphFromScan(
     group.parentId = domainById.get(domain);
   }
 
-  // Add all domain groups so they are visible in root and get their own views.
-  sectionGroups = [...domainGroups, ...sectionGroups];
+  // Only keep domain groups that received at least one classified top-level group.
+  const classifiedDomainGroups = domainGroups.filter((domainGroup) =>
+    sectionGroups.some((group) => group.parentId === domainGroup.id),
+  );
+  sectionGroups = [...classifiedDomainGroups, ...sectionGroups];
 
   // ── Build multi-level views ──
 

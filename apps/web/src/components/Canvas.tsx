@@ -12,6 +12,7 @@ import {
   type Node,
   type Edge,
   BackgroundVariant,
+  Position,
   useReactFlow,
   type EdgeMouseHandler,
 } from "@xyflow/react";
@@ -35,6 +36,15 @@ const nodeTypes = {
 };
 
 const proOptions = { hideAttribution: true };
+
+function positionFromHandle(handle: string): Position {
+  const normalized = handle.toLowerCase();
+  if (normalized.endsWith("right") || normalized.endsWith("east")) return Position.Right;
+  if (normalized.endsWith("left") || normalized.endsWith("west")) return Position.Left;
+  if (normalized.endsWith("north") || normalized.endsWith("top")) return Position.Top;
+  if (normalized.endsWith("south") || normalized.endsWith("bottom")) return Position.Bottom;
+  return Position.Bottom;
+}
 
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
@@ -177,12 +187,17 @@ export function Canvas() {
 
     const vEdges: Edge[] = projected.map((pe) => {
       const isReverse = reverseSet.has(pe.key);
+      const sourceHandle = isReverse ? "out-right" : "out-bottom";
+      const targetHandle = isReverse ? "in-left" : "in-top";
       return {
         id: pe.key,
         source: pe.source,
         target: pe.target,
-        sourceHandle: isReverse ? "out-right" : "out-bottom",
-        targetHandle: isReverse ? "in-left" : "in-top",
+        sourceHandle,
+        targetHandle,
+        sourcePosition: positionFromHandle(sourceHandle),
+        targetPosition: positionFromHandle(targetHandle),
+        type: "step",
         label: pe.label,
         animated: pe.animated,
         className: pe.className,
@@ -696,6 +711,7 @@ export function Canvas() {
         onDrop={onDrop}
         onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
+        defaultEdgeOptions={{ type: "step" }}
         fitView
         minZoom={0.05}
         proOptions={proOptions}
