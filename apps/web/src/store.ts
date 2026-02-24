@@ -1,6 +1,17 @@
 import { create } from "zustand";
-import type { ProjectGraph, DiagramView, Symbol as Sym, Relation } from "@dmpg/shared";
+import type { ProjectGraph, DiagramView, Symbol as Sym, Relation, RelationType } from "@dmpg/shared";
 import type { AnalyzeEvent } from "./api";
+import {
+  DEFAULT_DIAGRAM_SETTINGS,
+  cloneDiagramSettings,
+  getDiagramPreset,
+  mergeDiagramSettings,
+  sanitizeDiagramSettings,
+  type DiagramLayoutSettings,
+  type DiagramPresetId,
+  type DiagramSettings,
+  type DiagramSettingsPatch,
+} from "./diagramSettings";
 
 /* ── Playback Queue Item ── */
 export interface PlaybackItem {
@@ -82,6 +93,10 @@ export interface AppState {
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
   breadcrumb: string[]; // view IDs path
+  graphHistoryPast: GraphHistorySnapshot[];
+  graphHistoryFuture: GraphHistorySnapshot[];
+  historyCanUndo: boolean;
+  historyCanRedo: boolean;
 
   // AI analysis
   aiAnalysis: AiAnalysisState | null;
@@ -109,6 +124,16 @@ export interface AppState {
   inspectorCollapsed: boolean;
   toggleInspector: () => void;
 
+  // Diagram settings
+  diagramSettings: DiagramSettings;
+  diagramLayoutVersion: number;
+  updateDiagramSettings: (patch: DiagramSettingsPatch) => void;
+  updateDiagramLayout: (patch: Partial<DiagramLayoutSettings>) => void;
+  setRelationFilter: (relationType: RelationType, enabled: boolean) => void;
+  setDiagramPreset: (presetId: DiagramPresetId) => void;
+  applyDiagramLayout: () => void;
+  resetDiagramSettings: () => void;
+
   // Hover card
   hoverSymbolId: string | null;
   hoverPosition: { x: number; y: number } | null;
@@ -134,6 +159,8 @@ export interface AppState {
   setGraph: (g: ProjectGraph) => void;
   /** Update graph data while keeping current view / breadcrumb intact */
   updateGraph: (g: ProjectGraph) => void;
+  undoGraphChange: () => void;
+  redoGraphChange: () => void;
   navigateToView: (viewId: string) => void;
   goBack: () => void;
   selectSymbol: (id: string | null) => void;
@@ -162,9 +189,87 @@ export interface AppState {
   syncGraphToServer: () => Promise<void>;
 }
 
+export interface GraphHistorySnapshot {
+  graph: ProjectGraph;
+  currentViewId: string | null;
+  selectedSymbolId: string | null;
+  selectedEdgeId: string | null;
+  breadcrumb: string[];
+}
+
 /* ── AI animation timing: track last data update for navigation ── */
 let _lastDataUpdateTime = 0;
 let _lastSseDataEventTime = 0;
+const DIAGRAM_SETTINGS_STORAGE_KEY = "dmpg.diagram-settings.v1";
+const MAX_GRAPH_HISTORY = 80;
+
+function cloneProjectGraph(graph: ProjectGraph): ProjectGraph {
+  if (typeof structuredClone === "function") {
+    return structuredClone(graph);
+  }
+  return JSON.parse(JSON.stringify(graph)) as ProjectGraph;
+}
+
+function buildGraphHistorySnapshot(state: Pick<AppState,
+  "graph" | "currentViewId" | "selectedSymbolId" | "selectedEdgeId" | "breadcrumb">): GraphHistorySnapshot | null {
+  if (!state.graph) return null;
+  return {
+    graph: cloneProjectGraph(state.graph),
+    currentViewId: state.currentViewId,
+    selectedSymbolId: state.selectedSymbolId,
+    selectedEdgeId: state.selectedEdgeId,
+    breadcrumb: [...state.breadcrumb],
+  };
+}
+
+function historyPatchWithCurrentSnapshot(state: Pick<AppState,
+  | "graph"
+  | "currentViewId"
+  | "selectedSymbolId"
+  | "selectedEdgeId"
+  | "breadcrumb"
+  | "graphHistoryPast"
+  | "graphHistoryFuture">) {
+  const snapshot = buildGraphHistorySnapshot(state);
+  if (!snapshot) {
+    return {
+      graphHistoryPast: state.graphHistoryPast,
+      graphHistoryFuture: state.graphHistoryFuture,
+      historyCanUndo: state.graphHistoryPast.length > 0,
+      historyCanRedo: state.graphHistoryFuture.length > 0,
+    };
+  }
+  const past = [...state.graphHistoryPast, snapshot];
+  if (past.length > MAX_GRAPH_HISTORY) past.shift();
+  return {
+    graphHistoryPast: past,
+    graphHistoryFuture: [] as GraphHistorySnapshot[],
+    historyCanUndo: past.length > 0,
+    historyCanRedo: false,
+  };
+}
+
+function loadDiagramSettings(): DiagramSettings {
+  if (typeof window === "undefined") {
+    return cloneDiagramSettings(DEFAULT_DIAGRAM_SETTINGS);
+  }
+  try {
+    const raw = window.localStorage.getItem(DIAGRAM_SETTINGS_STORAGE_KEY);
+    if (!raw) return cloneDiagramSettings(DEFAULT_DIAGRAM_SETTINGS);
+    return sanitizeDiagramSettings(JSON.parse(raw));
+  } catch {
+    return cloneDiagramSettings(DEFAULT_DIAGRAM_SETTINGS);
+  }
+}
+
+function persistDiagramSettings(settings: DiagramSettings) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DIAGRAM_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Non-fatal: keep settings in-memory if storage fails.
+  }
+}
 
 function findBestViewForSymbol(graph: ProjectGraph, symbolId: string, preferredViewId?: string | null): string | null {
   if (preferredViewId && graph.views.some((v) => v.id === preferredViewId && v.nodeRefs.includes(symbolId))) {
@@ -196,6 +301,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedSymbolId: null,
   selectedEdgeId: null,
   breadcrumb: [],
+  graphHistoryPast: [],
+  graphHistoryFuture: [],
+  historyCanUndo: false,
+  historyCanRedo: false,
 
   aiAnalysis: null,
 
@@ -204,6 +313,67 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   inspectorCollapsed: false,
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
+
+  diagramSettings: loadDiagramSettings(),
+  diagramLayoutVersion: 1,
+  updateDiagramSettings: (patch) =>
+    set((state) => {
+      const next = sanitizeDiagramSettings(
+        mergeDiagramSettings(state.diagramSettings, {
+          ...patch,
+          activePreset: patch.activePreset ?? "custom",
+        }),
+      );
+      persistDiagramSettings(next);
+      return { diagramSettings: next };
+    }),
+  updateDiagramLayout: (patch) =>
+    set((state) => {
+      const next = sanitizeDiagramSettings(
+        mergeDiagramSettings(state.diagramSettings, {
+          activePreset: "custom",
+          layout: patch,
+        }),
+      );
+      persistDiagramSettings(next);
+      return { diagramSettings: next };
+    }),
+  setRelationFilter: (relationType, enabled) =>
+    set((state) => {
+      const next = sanitizeDiagramSettings(
+        mergeDiagramSettings(state.diagramSettings, {
+          activePreset: "custom",
+          relationFilters: {
+            [relationType]: enabled,
+          } as Partial<Record<RelationType, boolean>>,
+        }),
+      );
+      persistDiagramSettings(next);
+      return { diagramSettings: next };
+    }),
+  setDiagramPreset: (presetId) =>
+    set(() => {
+      const preset = getDiagramPreset(presetId);
+      if (!preset) return {};
+      const next = sanitizeDiagramSettings(
+        mergeDiagramSettings(cloneDiagramSettings(DEFAULT_DIAGRAM_SETTINGS), {
+          ...preset.settings,
+          activePreset: presetId,
+        }),
+      );
+      persistDiagramSettings(next);
+      return { diagramSettings: next };
+    }),
+  applyDiagramLayout: () => set((state) => ({ diagramLayoutVersion: state.diagramLayoutVersion + 1 })),
+  resetDiagramSettings: () =>
+    set((state) => {
+      const next = cloneDiagramSettings(DEFAULT_DIAGRAM_SETTINGS);
+      persistDiagramSettings(next);
+      return {
+        diagramSettings: next,
+        diagramLayoutVersion: state.diagramLayoutVersion + 1,
+      };
+    }),
 
   hoverSymbolId: null,
   hoverPosition: null,
@@ -909,7 +1079,10 @@ export const useAppStore = create<AppState>((set, get) => ({
             edgeRefs: v.edgeRefs.filter((e) => e !== change.relationId),
           })),
         };
-        set({ graph: updated });
+        set((state) => ({
+          graph: updated,
+          ...historyPatchWithCurrentSnapshot(state),
+        }));
         get().syncGraphToServer();
       }
     } else {
@@ -947,6 +1120,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedSymbolId: null,
       selectedEdgeId: null,
       breadcrumb: [g.rootViewId],
+      graphHistoryPast: [],
+      graphHistoryFuture: [],
+      historyCanUndo: false,
+      historyCanRedo: false,
     }),
 
   updateGraph: (g) => {
@@ -969,7 +1146,61 @@ export const useAppStore = create<AppState>((set, get) => ({
       breadcrumb: viewStillExists ? breadcrumb : [g.rootViewId],
       selectedSymbolId: g.symbols.some((s) => s.id === selectedSymbolId) ? selectedSymbolId : null,
       selectedEdgeId: g.relations.some((r) => r.id === selectedEdgeId) ? selectedEdgeId : null,
+      graphHistoryPast: [],
+      graphHistoryFuture: [],
+      historyCanUndo: false,
+      historyCanRedo: false,
     });
+  },
+
+  undoGraphChange: () => {
+    const state = get();
+    if (state.graphHistoryPast.length === 0) return;
+    const currentSnapshot = buildGraphHistorySnapshot(state);
+    if (!currentSnapshot) return;
+
+    const previousSnapshot = state.graphHistoryPast[state.graphHistoryPast.length - 1];
+    const past = state.graphHistoryPast.slice(0, -1);
+    const future = [...state.graphHistoryFuture, currentSnapshot];
+    if (future.length > MAX_GRAPH_HISTORY) future.shift();
+
+    set({
+      graph: cloneProjectGraph(previousSnapshot.graph),
+      currentViewId: previousSnapshot.currentViewId,
+      selectedSymbolId: previousSnapshot.selectedSymbolId,
+      selectedEdgeId: previousSnapshot.selectedEdgeId,
+      breadcrumb: [...previousSnapshot.breadcrumb],
+      graphHistoryPast: past,
+      graphHistoryFuture: future,
+      historyCanUndo: past.length > 0,
+      historyCanRedo: future.length > 0,
+    });
+    void get().syncGraphToServer();
+  },
+
+  redoGraphChange: () => {
+    const state = get();
+    if (state.graphHistoryFuture.length === 0) return;
+    const currentSnapshot = buildGraphHistorySnapshot(state);
+    if (!currentSnapshot) return;
+
+    const nextSnapshot = state.graphHistoryFuture[state.graphHistoryFuture.length - 1];
+    const future = state.graphHistoryFuture.slice(0, -1);
+    const past = [...state.graphHistoryPast, currentSnapshot];
+    if (past.length > MAX_GRAPH_HISTORY) past.shift();
+
+    set({
+      graph: cloneProjectGraph(nextSnapshot.graph),
+      currentViewId: nextSnapshot.currentViewId,
+      selectedSymbolId: nextSnapshot.selectedSymbolId,
+      selectedEdgeId: nextSnapshot.selectedEdgeId,
+      breadcrumb: [...nextSnapshot.breadcrumb],
+      graphHistoryPast: past,
+      graphHistoryFuture: future,
+      historyCanUndo: past.length > 0,
+      historyCanRedo: future.length > 0,
+    });
+    void get().syncGraphToServer();
   },
 
   navigateToView: (viewId) => {
@@ -1019,7 +1250,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         v.id === viewId ? { ...v, nodeRefs: [...v.nodeRefs, sym.id] } : v,
       ),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1038,7 +1272,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       symbols: graph.symbols.map((s) => (s.id === id ? { ...s, ...patch } : s)),
       views: updatedViews,
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1058,7 +1295,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         }),
       })),
     };
-    set({ graph: updated, selectedSymbolId: null });
+    set((state) => ({
+      graph: updated,
+      selectedSymbolId: null,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1072,7 +1313,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         v.id === viewId ? { ...v, edgeRefs: [...v.edgeRefs, rel.id] } : v,
       ),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1083,7 +1327,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...graph,
       relations: graph.relations.map((r) => (r.id === id ? { ...r, ...patch } : r)),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1095,7 +1342,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...graph,
       relations: graph.relations.map((r) => (idSet.has(r.id) ? { ...r, ...patch } : r)),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1110,7 +1360,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         edgeRefs: v.edgeRefs.filter((eId) => eId !== id),
       })),
     };
-    set({ graph: updated, selectedEdgeId: null });
+    set((state) => ({
+      graph: updated,
+      selectedEdgeId: null,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1129,7 +1383,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         return { ...v, nodePositions: Array.from(existing.values()) };
       }),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1144,7 +1401,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         return { ...s, doc: { ...s.doc, aiGenerated: Object.keys(rest).length > 0 ? rest : undefined } };
       }),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1176,7 +1436,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         return { ...s, doc };
       }),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 
@@ -1189,7 +1452,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         r.id === relationId ? { ...r, aiGenerated: undefined, confidence: 1 } : r,
       ),
     };
-    set({ graph: updated });
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
     get().syncGraphToServer();
   },
 

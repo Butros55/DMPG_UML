@@ -398,10 +398,10 @@ function buildGraphFromScan(
   }
 
   // Only keep domain groups that received at least one classified top-level group.
-  const classifiedDomainGroups = domainGroups.filter((domainGroup) =>
+  const classified = domainGroups.filter((domainGroup) =>
     sectionGroups.some((group) => group.parentId === domainGroup.id),
   );
-  sectionGroups = [...classifiedDomainGroups, ...sectionGroups];
+  sectionGroups = [...classified, ...sectionGroups];
 
   // ── Build multi-level views ──
 

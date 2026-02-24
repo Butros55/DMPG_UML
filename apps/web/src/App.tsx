@@ -6,6 +6,7 @@ import { Inspector } from "./components/Inspector";
 import { Breadcrumb } from "./components/Breadcrumb";
 import { SourceViewer } from "./components/SourceViewer";
 import { CommandPalette } from "./components/CommandPalette";
+import { ActionPalette } from "./components/ActionPalette";
 import { ValidatePanel } from "./components/ValidatePanel";
 import { DebugTransportPanel } from "./components/DebugTransportPanel";
 import { useAppStore } from "./store";
@@ -185,6 +186,8 @@ export function App() {
 
       {/* Command Palette (Ctrl+P) */}
       <CommandPalette />
+      {/* Action Palette (Ctrl+Shift+P) */}
+      <ActionPalette />
 
       {/* Debug Transport overlay */}
       <DebugTransportPanel />

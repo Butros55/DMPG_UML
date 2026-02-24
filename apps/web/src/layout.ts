@@ -1,10 +1,13 @@
 import ELK, { type ElkNode, type ElkExtendedEdge } from "elkjs/lib/elk.bundled.js";
 import type { Node, Edge } from "@xyflow/react";
+import {
+  DEFAULT_DIAGRAM_LAYOUT_SETTINGS,
+  type DiagramLayoutSettings,
+} from "./diagramSettings";
 
 const elk = new ELK();
 
 const DEFAULT_WIDTH = 200;
-const DEFAULT_HEIGHT = 80;
 
 /* ── Dynamic node sizing based on content ──────── */
 const LINE_HEIGHT = 20;
@@ -13,65 +16,92 @@ const COMPARTMENT_PADDING = 14;
 const MIN_HEIGHT = 48;
 const CHAR_WIDTH = 8.5; // average char width at 13px font
 
-function estimateNodeSize(node: Node): { width: number; height: number } {
+function estimateNodeSize(node: Node, compactMode: boolean): { width: number; height: number } {
   const data = node.data as Record<string, unknown>;
   const kind = (data.kind as string) ?? "";
   const children = (data.children as unknown[]) ?? [];
   const label = (data.label as string) ?? "";
 
-  // If already measured by React Flow, prefer that (with padding for safety)
+  // If already measured by React Flow, prefer that (with a small guard padding).
   if (node.measured?.width && node.measured?.height) {
     return {
-      width: (node.measured.width as number) + 8,
-      height: (node.measured.height as number) + 4,
+      width: (node.measured.width as number) + (compactMode ? 4 : 8),
+      height: (node.measured.height as number) + (compactMode ? 2 : 4),
     };
   }
 
-  // UML class nodes: header + attributes compartment + methods compartment
+  // UML class nodes: header + attributes compartment + methods compartment.
   if (node.type === "umlClass" || kind === "class") {
     const attrs = children.filter((c: any) => c.kind === "constant" || c.kind === "variable");
     const methods = children.filter((c: any) => c.kind === "method" || c.kind === "function");
+    const visibleAttrs = compactMode ? attrs.slice(0, 4) : attrs;
+    const visibleMethods = compactMode ? methods.slice(0, 5) : methods;
+
     const h =
       HEADER_HEIGHT +
-      COMPARTMENT_PADDING + Math.max(1, attrs.length) * LINE_HEIGHT +
-      COMPARTMENT_PADDING + Math.max(1, methods.length) * LINE_HEIGHT +
-      (data.childViewId ? 28 : 0) + 8;
+      (compactMode ? 8 : COMPARTMENT_PADDING) + Math.max(1, visibleAttrs.length) * (compactMode ? 16 : LINE_HEIGHT) +
+      (compactMode ? 8 : COMPARTMENT_PADDING) + Math.max(1, visibleMethods.length) * (compactMode ? 16 : LINE_HEIGHT) +
+      (data.childViewId ? (compactMode ? 22 : 28) : 0) +
+      (compactMode ? 4 : 8);
+
     const maxLabelLen = Math.max(
       label.length,
-      ...children.map((c: any) => (c.label?.length ?? 0) + 6),
+      ...[...visibleAttrs, ...visibleMethods].map((c: any) => (c.label?.length ?? 0) + 6),
     );
-    return { width: Math.max(240, maxLabelLen * CHAR_WIDTH + 48), height: Math.max(MIN_HEIGHT, h) };
+
+    return {
+      width: Math.max(compactMode ? 210 : 240, maxLabelLen * CHAR_WIDTH + (compactMode ? 34 : 48)),
+      height: Math.max(compactMode ? 44 : MIN_HEIGHT, h),
+    };
   }
 
-  // Function/method nodes
+  // Function/method nodes.
   if (node.type === "umlFunction" || kind === "method" || kind === "function") {
     const inputs = (data.inputs as unknown[]) ?? [];
-    const h = HEADER_HEIGHT + (inputs.length > 0 ? 22 : 0) + 8;
+    const h = HEADER_HEIGHT + (inputs.length > 0 ? (compactMode ? 16 : 22) : 0) + (compactMode ? 4 : 8);
     const labelPart = label.split(".").pop() ?? label;
-    return { width: Math.max(180, labelPart.length * CHAR_WIDTH + 60), height: Math.max(MIN_HEIGHT, h) };
+    return {
+      width: Math.max(compactMode ? 160 : 180, labelPart.length * CHAR_WIDTH + (compactMode ? 48 : 60)),
+      height: Math.max(compactMode ? 44 : MIN_HEIGHT, h),
+    };
   }
 
-  // Group nodes
+  // Group nodes.
   if (node.type === "umlGroup" || kind === "group" || kind === "module") {
-    return { width: Math.max(220, label.length * CHAR_WIDTH + 48), height: 66 };
+    return {
+      width: Math.max(compactMode ? 190 : 220, label.length * CHAR_WIDTH + (compactMode ? 34 : 48)),
+      height: compactMode ? 56 : 66,
+    };
   }
 
-  // Artifact/external — label can be long paths
+  // Artifact/external — label can be long paths.
   if (node.type === "umlArtifact" || kind === "external") {
     const shortLabel = label.split("/").pop() ?? label;
-    return { width: Math.max(160, shortLabel.length * CHAR_WIDTH + 56), height: 52 };
+    return {
+      width: Math.max(compactMode ? 145 : 160, shortLabel.length * CHAR_WIDTH + (compactMode ? 44 : 56)),
+      height: compactMode ? 46 : 52,
+    };
   }
 
-  return { width: Math.max(DEFAULT_WIDTH, label.length * CHAR_WIDTH + 40), height: 60 };
+  return {
+    width: Math.max(compactMode ? 170 : DEFAULT_WIDTH, label.length * CHAR_WIDTH + (compactMode ? 30 : 40)),
+    height: compactMode ? 52 : 60,
+  };
 }
 
 export async function layoutNodes(
   nodes: Node[],
   edges: Edge[],
-  direction: "DOWN" | "RIGHT" = "DOWN",
+  layoutSettings: DiagramLayoutSettings = DEFAULT_DIAGRAM_LAYOUT_SETTINGS,
+  compactMode = false,
 ): Promise<Node[]> {
+  const settings = {
+    ...DEFAULT_DIAGRAM_LAYOUT_SETTINGS,
+    ...layoutSettings,
+  } satisfies DiagramLayoutSettings;
+
   const elkNodes: ElkNode[] = nodes.map((n) => {
-    const size = estimateNodeSize(n);
+    const size = estimateNodeSize(n, compactMode);
     return {
       id: n.id,
       width: size.width,
@@ -113,50 +143,33 @@ export async function layoutNodes(
       };
     });
 
-  // Adaptive spacing: more nodes → more space between layers
-  const nodeCount = nodes.length;
-  const spacingFactor = Math.max(1, Math.log2(Math.max(2, nodeCount)));
-  const baseNodeSpacing = `${Math.round(40 + spacingFactor * 10)}`;
-  const baseLayerSpacing = `${Math.round(55 + spacingFactor * 14)}`;
-  const edgeNodeSpacing = `${Math.round(35 + spacingFactor * 8)}`;
-
   const layout = await elk.layout({
     id: "root",
     children: elkNodes,
     edges: elkEdges,
     layoutOptions: {
       "elk.algorithm": "layered",
-      "elk.direction": direction,
-      // ── Node spacing ──
-      "elk.spacing.nodeNode": baseNodeSpacing,
-      "elk.layered.spacing.nodeNodeBetweenLayers": baseLayerSpacing,
+      "elk.direction": settings.direction,
+      "elk.spacing.nodeNode": `${settings.nodeNodeSpacing}`,
+      "elk.layered.spacing.nodeNodeBetweenLayers": `${settings.betweenLayersSpacing}`,
       "elk.padding": "[top=60,left=60,bottom=60,right=60]",
-      // ── Crossing minimization — thorough sweep for fewer edge crossings ──
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
       "elk.layered.crossingMinimization.greedySwitch.type": "TWO_SIDED",
-      // ── Node placement — NETWORK_SIMPLEX gives good layered results ──
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
       "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
-      // ── Port constraints — ports follow fixed ordering per node side ──
       "elk.portConstraints": "FIXED_ORDER",
-      // ── Edge routing — orthogonal (right-angle) for clean UML look ──
-      "elk.edgeRouting": "ORTHOGONAL",
-      "elk.layered.mergeEdges": "true",
-      // ── Edge spacing — keep edges clear of nodes ──
-      "elk.layered.spacing.edgeNodeBetweenLayers": edgeNodeSpacing,
-      "elk.layered.spacing.edgeEdgeBetweenLayers": "35",
-      "elk.spacing.edgeNode": edgeNodeSpacing,
-      "elk.spacing.edgeEdge": "20",
-      // ── Connected components ──
+      "elk.edgeRouting": settings.routing,
+      "elk.layered.mergeEdges": settings.mergeEdges ? "true" : "false",
+      "elk.layered.spacing.edgeNodeBetweenLayers": `${settings.edgeNodeSpacing}`,
+      "elk.layered.spacing.edgeEdgeBetweenLayers": `${settings.edgeEdgeSpacing}`,
+      "elk.spacing.edgeNode": `${settings.edgeNodeSpacing}`,
+      "elk.spacing.edgeEdge": `${settings.edgeEdgeSpacing}`,
       "elk.separateConnectedComponents": "true",
-      "elk.spacing.componentComponent": "140",
-      // ── Model order + edge self-loops ──
+      "elk.spacing.componentComponent": `${settings.componentComponentSpacing}`,
       "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
       "elk.layered.edgeRouting.selfLoopDistribution": "EQUALLY",
-      // ── Wrapping for very wide diagrams ──
-      "elk.layered.wrapping.strategy": nodeCount > 50 ? "MULTI_EDGE" : "OFF",
-      // ── Thoroughness: higher = better results but slower ──
-      "elk.layered.thoroughness": nodeCount > 40 ? "20" : "10",
+      "elk.layered.wrapping.strategy": nodes.length > 80 ? "MULTI_EDGE" : "OFF",
+      "elk.layered.thoroughness": `${settings.thoroughness}`,
     },
   });
 

@@ -6,7 +6,6 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
-  addEdge,
   useNodesInitialized,
   type Connection,
   type Node,
@@ -24,8 +23,14 @@ import { SymbolHoverCard } from "./SymbolHoverCard";
 import { layoutNodes } from "../layout";
 import { exportDiagramAsHtml, exportProjectAsHtml } from "../exportHtml";
 import type { UmlNodeData } from "./UmlNode";
-import type { Relation, Symbol as Sym } from "@dmpg/shared";
+import type { ProjectedEdge, Relation, RelationType, Symbol as Sym } from "@dmpg/shared";
 import { projectEdgesForView } from "@dmpg/shared";
+import {
+  EDGE_ANIMATED_BY_RELATION,
+  EDGE_CLASS_BY_RELATION,
+  RELATION_VERBS,
+  type DiagramLabelMode,
+} from "../diagramSettings";
 
 const nodeTypes = {
   uml: UmlNode,
@@ -46,6 +51,168 @@ function positionFromHandle(handle: string): Position {
   return Position.Bottom;
 }
 
+type PreparedProjectedEdge = {
+  key: string;
+  source: string;
+  target: string;
+  type: RelationType;
+  count: number;
+  label?: string;
+  relationIds: string[];
+  className: string;
+  animated: boolean;
+  confidence: number;
+  typeCounts: Partial<Record<RelationType, number>>;
+};
+
+function toTypeCounts(
+  relationIds: string[],
+  relationMap: Map<string, Relation>,
+): Partial<Record<RelationType, number>> {
+  const counts: Partial<Record<RelationType, number>> = {};
+  for (const relationId of relationIds) {
+    const rel = relationMap.get(relationId);
+    if (!rel) continue;
+    counts[rel.type] = (counts[rel.type] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function dominantType(
+  typeCounts: Partial<Record<RelationType, number>>,
+  fallback: RelationType,
+): RelationType {
+  let best = fallback;
+  let bestCount = -1;
+  for (const [type, count] of Object.entries(typeCounts) as Array<[RelationType, number]>) {
+    if (count > bestCount) {
+      best = type;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function edgeLabelForMode(
+  mode: DiagramLabelMode,
+  typeCounts: Partial<Record<RelationType, number>>,
+  totalCount: number,
+  dominant: RelationType,
+  fallbackLabel?: string,
+): string | undefined {
+  if (mode === "off") return undefined;
+
+  const entries = Object.entries(typeCounts)
+    .filter((entry): entry is [RelationType, number] => entry[1] > 0);
+  if (entries.length === 0) return undefined;
+
+  if (mode === "compact") {
+    if (totalCount > 1) return `${totalCount}x`;
+    return RELATION_VERBS[dominant] ?? dominant;
+  }
+
+  if (totalCount === 1) {
+    return fallbackLabel?.trim() || RELATION_VERBS[dominant] || dominant;
+  }
+
+  if (entries.length === 1) {
+    return `${totalCount}x ${RELATION_VERBS[dominant] ?? dominant}`;
+  }
+
+  return entries
+    .sort((a, b) => b[1] - a[1])
+    .map(([type, count]) => `${count}x ${RELATION_VERBS[type] ?? type}`)
+    .join(", ");
+}
+
+function toPreparedEdges(
+  projected: ProjectedEdge[],
+  relationMap: Map<string, Relation>,
+  relationFilters: Record<RelationType, boolean>,
+  labelsMode: DiagramLabelMode,
+  aggregate: boolean,
+): PreparedProjectedEdge[] {
+  const prepared: PreparedProjectedEdge[] = [];
+
+  for (const pe of projected) {
+    const visibleRelationIds = pe.relationIds.filter((relationId) => {
+      const rel = relationMap.get(relationId);
+      return !!rel && relationFilters[rel.type];
+    });
+    if (visibleRelationIds.length === 0) continue;
+
+    if (!aggregate) {
+      for (const relationId of visibleRelationIds) {
+        const rel = relationMap.get(relationId);
+        if (!rel) continue;
+        const typeCounts: Partial<Record<RelationType, number>> = { [rel.type]: 1 };
+        prepared.push({
+          key: `${pe.source}|${pe.target}|${rel.type}|${relationId}`,
+          source: pe.source,
+          target: pe.target,
+          type: rel.type,
+          count: 1,
+          relationIds: [relationId],
+          className: EDGE_CLASS_BY_RELATION[rel.type],
+          animated: EDGE_ANIMATED_BY_RELATION[rel.type],
+          label: edgeLabelForMode(labelsMode, typeCounts, 1, rel.type, rel.label),
+          confidence: rel.confidence ?? pe.confidence ?? 1,
+          typeCounts,
+        });
+      }
+      continue;
+    }
+
+    const typeCounts = toTypeCounts(visibleRelationIds, relationMap);
+    const dominant = dominantType(typeCounts, pe.type);
+    const typeEntryCount = Object.values(typeCounts).filter(Boolean).length;
+    const lowConfidenceClass = (pe.confidence ?? 1) < 0.9 ? " edge-low-confidence" : "";
+    const multiClass = typeEntryCount > 1 ? " edge-multi" : "";
+    const animated = Object.entries(typeCounts).some(([type, count]) =>
+      (count ?? 0) > 0 && EDGE_ANIMATED_BY_RELATION[type as RelationType],
+    );
+
+    prepared.push({
+      key: `${pe.source}|${pe.target}`,
+      source: pe.source,
+      target: pe.target,
+      type: dominant,
+      count: visibleRelationIds.length,
+      relationIds: visibleRelationIds,
+      className: `${EDGE_CLASS_BY_RELATION[dominant]}${multiClass}${lowConfidenceClass}`,
+      animated,
+      label: edgeLabelForMode(labelsMode, typeCounts, visibleRelationIds.length, dominant, pe.label),
+      confidence: pe.confidence ?? 1,
+      typeCounts,
+    });
+  }
+
+  return prepared;
+}
+
+function neighborhoodNodeIds(rootId: string, edges: PreparedProjectedEdge[], depth: number): Set<string> {
+  const seen = new Set<string>([rootId]);
+  let frontier = new Set<string>([rootId]);
+
+  for (let hop = 0; hop < depth; hop++) {
+    const next = new Set<string>();
+    for (const edge of edges) {
+      if (frontier.has(edge.source) && !seen.has(edge.target)) {
+        seen.add(edge.target);
+        next.add(edge.target);
+      }
+      if (frontier.has(edge.target) && !seen.has(edge.source)) {
+        seen.add(edge.source);
+        next.add(edge.source);
+      }
+    }
+    if (next.size === 0) break;
+    frontier = next;
+  }
+
+  return seen;
+}
+
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
@@ -61,6 +228,10 @@ export function Canvas() {
   const removeSymbol = useAppStore((s) => s.removeSymbol);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const saveNodePositions = useAppStore((s) => s.saveNodePositions);
+  const undoGraphChange = useAppStore((s) => s.undoGraphChange);
+  const redoGraphChange = useAppStore((s) => s.redoGraphChange);
+  const diagramSettings = useAppStore((s) => s.diagramSettings);
+  const layoutVersion = useAppStore((s) => s.diagramLayoutVersion);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -100,12 +271,14 @@ export function Canvas() {
     if (!view) return { viewNodes: [] as Node[], viewEdges: [] as Edge[] };
 
     const scope = (view as any).scope as string | undefined;
+    const relationMap = new Map(graph.relations.map((rel) => [rel.id, rel]));
 
     // Pre-compute relation badges per symbol: which relation types touch each symbol?
     // Badges are directional: "out:<type>" for source, "in:<type>" for target
     const relBadgeMap = new Map<string, Set<string>>();
     for (const rel of graph.relations) {
       if (rel.type === "contains") continue;
+      if (!diagramSettings.relationFilters[rel.type]) continue;
       const srcSet = relBadgeMap.get(rel.source) ?? new Set();
       srcSet.add(`out:${rel.type}`);
       relBadgeMap.set(rel.source, srcSet);
@@ -114,7 +287,7 @@ export function Canvas() {
       relBadgeMap.set(rel.target, tgtSet);
     }
 
-    const vNodes: Node[] = view.nodeRefs.map((symId, i) => {
+    const allNodes: Node[] = view.nodeRefs.map((symId, i) => {
       const sym = graph.symbols.find((s) => s.id === symId);
       if (!sym) return null;
 
@@ -166,29 +339,72 @@ export function Canvas() {
           tags: sym.tags,
           relationBadges,
           location: sym.location,
+          compactMode: diagramSettings.nodeCompactMode,
+          labelsMode: diagramSettings.labels,
         } satisfies UmlNodeData,
       } satisfies Node;
     }).filter(Boolean) as Node[];
 
     // Use edge projection instead of strict endpoint filtering
     const projected = projectEdgesForView(view, graph.symbols, graph.relations);
+    const preparedEdges = toPreparedEdges(
+      projected,
+      relationMap,
+      diagramSettings.relationFilters,
+      diagramSettings.labels,
+      diagramSettings.edgeAggregation,
+    );
+
+    const selectedInView =
+      !!selectedSymbolId && allNodes.some((node) => node.id === selectedSymbolId);
+
+    let visibleNodeIds: Set<string> | null = null;
+    if (diagramSettings.focusMode && selectedInView && selectedSymbolId) {
+      visibleNodeIds = neighborhoodNodeIds(
+        selectedSymbolId,
+        preparedEdges,
+        Math.max(1, Math.round(diagramSettings.focusDepth)),
+      );
+    }
+
+    const scopedNodes = visibleNodeIds
+      ? allNodes.filter((node) => visibleNodeIds!.has(node.id))
+      : allNodes;
+    const scopedNodeIdSet = new Set(scopedNodes.map((node) => node.id));
+    const scopedEdges = preparedEdges.filter((edge) =>
+      scopedNodeIdSet.has(edge.source) && scopedNodeIdSet.has(edge.target),
+    );
 
     // Detect bidirectional pairs: if both A→B and B→A exist, route the
     // "reverse" edge through Left/Right handles to avoid overlapping paths
-    const edgeKeys = new Set(projected.map((pe) => pe.key));
+    const edgeKeys = new Set(scopedEdges.map((pe) => `${pe.source}|${pe.target}`));
     const reverseSet = new Set<string>(); // keys that are the "reverse" direction
-    for (const pe of projected) {
+    for (const pe of scopedEdges) {
+      const pair = `${pe.source}|${pe.target}`;
       const reverse = `${pe.target}|${pe.source}`;
-      if (edgeKeys.has(reverse) && !reverseSet.has(pe.key)) {
+      if (edgeKeys.has(reverse) && !reverseSet.has(reverse)) {
         // Mark the reverse direction (the one we encounter second) for alt routing
-        reverseSet.add(reverse);
+        reverseSet.add(pair);
       }
     }
 
-    const vEdges: Edge[] = projected.map((pe) => {
-      const isReverse = reverseSet.has(pe.key);
+    const hasSelectedNodeEmphasis =
+      !!selectedSymbolId && scopedNodeIdSet.has(selectedSymbolId);
+
+    const vEdges: Edge[] = scopedEdges.map((pe) => {
+      const pair = `${pe.source}|${pe.target}`;
+      const isReverse = reverseSet.has(pair);
       const sourceHandle = isReverse ? "out-right" : "out-bottom";
       const targetHandle = isReverse ? "in-left" : "in-top";
+      const isSelectedConnection =
+        hasSelectedNodeEmphasis &&
+        selectedSymbolId !== null &&
+        (pe.source === selectedSymbolId || pe.target === selectedSymbolId);
+      const edgeVisibilityClass = hasSelectedNodeEmphasis
+        ? isSelectedConnection
+          ? " edge-related edge-related--active"
+          : " edge-related edge-related--dim"
+        : "";
       return {
         id: pe.key,
         source: pe.source,
@@ -197,16 +413,21 @@ export function Canvas() {
         targetHandle,
         sourcePosition: positionFromHandle(sourceHandle),
         targetPosition: positionFromHandle(targetHandle),
-        type: "step",
-        label: pe.label,
+        type: diagramSettings.edgeType,
+        label: hasSelectedNodeEmphasis
+          ? isSelectedConnection
+            ? pe.label
+            : undefined
+          : pe.label,
         animated: pe.animated,
-        className: pe.className,
+        className: `${pe.className}${edgeVisibilityClass}`,
+        style: { strokeWidth: diagramSettings.edgeStrokeWidth },
         data: { relationIds: pe.relationIds, relationType: pe.type },
       };
     });
 
-    return { viewNodes: vNodes, viewEdges: vEdges };
-  }, [graph, currentViewId]);
+    return { viewNodes: scopedNodes, viewEdges: vEdges };
+  }, [graph, currentViewId, diagramSettings, selectedSymbolId]);
 
   // Apply ELK layout — Pass 1 (estimate)
   // Only re-layout when the view or node set actually changes (not on position/data-only updates)
@@ -228,7 +449,7 @@ export function Canvas() {
       })
       .sort()
       .join(",");
-    const layoutKey = `${currentViewId}|${nodeFingerprint}`;
+    const layoutKey = `${currentViewId}|${nodeFingerprint}|${layoutVersion}`;
 
     if (layoutKey === prevLayoutKeyRef.current) {
       // Node structure unchanged — update node data & edges without repositioning
@@ -268,7 +489,12 @@ export function Canvas() {
     layoutRef.current = false;
     layoutPassRef.current = 0;
 
-    layoutNodes(viewNodes, viewEdges).then((laid) => {
+    layoutNodes(
+      viewNodes,
+      viewEdges,
+      diagramSettings.layout,
+      diagramSettings.nodeCompactMode,
+    ).then((laid) => {
       // Preserve saved positions; use ELK only for new/unsaved nodes
       const result = laid.map((n) => {
         const saved = savedMap.get(n.id);
@@ -281,7 +507,17 @@ export function Canvas() {
       layoutPassRef.current = 1;
       setLayoutDone(true);
     });
-  }, [viewNodes, viewEdges, setNodes, setEdges, graph, currentViewId]);
+  }, [
+    viewNodes,
+    viewEdges,
+    setNodes,
+    setEdges,
+    graph,
+    currentViewId,
+    layoutVersion,
+    diagramSettings.layout,
+    diagramSettings.nodeCompactMode,
+  ]);
 
   // Pass 2: re-layout with measured sizes (React Flow measures after first render)
   useEffect(() => {
@@ -298,7 +534,12 @@ export function Canvas() {
       (view?.nodePositions ?? []).map((p) => [p.symbolId, p]),
     );
 
-    layoutNodes(nodes, edges).then((laid) => {
+    layoutNodes(
+      nodes,
+      edges,
+      diagramSettings.layout,
+      diagramSettings.nodeCompactMode,
+    ).then((laid) => {
       const result = laid.map((n) => {
         const saved = savedMap.get(n.id);
         return saved
@@ -311,7 +552,17 @@ export function Canvas() {
         reactFlowInstance.fitView({ padding: 0.12, duration: 300 });
       }, 60);
     });
-  }, [nodes, edges, layoutDone, setNodes, reactFlowInstance, graph, currentViewId]);
+  }, [
+    nodes,
+    edges,
+    layoutDone,
+    setNodes,
+    reactFlowInstance,
+    graph,
+    currentViewId,
+    diagramSettings.layout,
+    diagramSettings.nodeCompactMode,
+  ]);
 
   // Fit view after first layout pass
   useEffect(() => {
@@ -543,6 +794,15 @@ export function Canvas() {
       // Don't trigger when typing in inputs/textareas/selects
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redoGraphChange();
+        } else {
+          undoGraphChange();
+        }
+        return;
+      }
       if (e.key === "Delete" || e.key === "Backspace") {
         if (selectedSymbolId) {
           removeSymbol(selectedSymbolId);
@@ -568,7 +828,17 @@ export function Canvas() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedSymbolId, selectedEdgeId, removeSymbol, removeRelation, selectSymbol, selectEdge, graph]);
+  }, [
+    selectedSymbolId,
+    selectedEdgeId,
+    removeSymbol,
+    removeRelation,
+    selectSymbol,
+    selectEdge,
+    graph,
+    undoGraphChange,
+    redoGraphChange,
+  ]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -693,6 +963,27 @@ export function Canvas() {
     [saveNodePositions],
   );
 
+  useEffect(() => {
+    const onCanvasCommand = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: string }>).detail;
+      const action = detail?.action;
+      if (!action) return;
+
+      if (action === "export-project" && graph) {
+        exportProjectAsHtml(graph, diagramSettings);
+        return;
+      }
+
+      if (action === "export-view") {
+        const view = graph?.views.find((v) => v.id === currentViewId);
+        exportDiagramAsHtml(nodes, edges, view?.title ?? "diagram", diagramSettings);
+      }
+    };
+
+    window.addEventListener("dmpg:canvas-command", onCanvasCommand as EventListener);
+    return () => window.removeEventListener("dmpg:canvas-command", onCanvasCommand as EventListener);
+  }, [currentViewId, diagramSettings, edges, graph, nodes]);
+
   return (
     <div className="canvas-area">
       <ReactFlow
@@ -711,7 +1002,7 @@ export function Canvas() {
         onDrop={onDrop}
         onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
-        defaultEdgeOptions={{ type: "step" }}
+        defaultEdgeOptions={{ type: diagramSettings.edgeType }}
         fitView
         minZoom={0.05}
         proOptions={proOptions}
@@ -748,7 +1039,7 @@ export function Canvas() {
         <button
           className="export-btn"
           onClick={() => {
-            if (graph) exportProjectAsHtml(graph);
+            if (graph) exportProjectAsHtml(graph, diagramSettings);
           }}
           title="Komplettes UML-Projekt als HTML exportieren (alle Views + Navigation)"
         >
@@ -758,7 +1049,7 @@ export function Canvas() {
           className="export-btn"
           onClick={() => {
             const view = graph?.views.find((v) => v.id === currentViewId);
-            exportDiagramAsHtml(nodes, edges, view?.title ?? "diagram");
+            exportDiagramAsHtml(nodes, edges, view?.title ?? "diagram", diagramSettings);
           }}
           title="Nur aktuelle Ansicht als HTML exportieren"
         >

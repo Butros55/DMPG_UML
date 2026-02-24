@@ -70,9 +70,38 @@ function KindBadge({ kind }: { kind: string }) {
   );
 }
 
+function queryMatches(text: string | undefined, query: string): boolean {
+  if (!query) return false;
+  return (text ?? "").toLowerCase().includes(query);
+}
+
+function HighlightText({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  const lowerText = text.toLowerCase();
+  const idx = lowerText.indexOf(query);
+  if (idx < 0) return <>{text}</>;
+  const before = text.slice(0, idx);
+  const match = text.slice(idx, idx + query.length);
+  const after = text.slice(idx + query.length);
+  return (
+    <>
+      {before}
+      <mark className="view-tree-highlight">{match}</mark>
+      {after}
+    </>
+  );
+}
+
 /* ─── Global Symbol Search ─── */
-function SymbolSearch({ symbols }: { symbols: Sym[] }) {
-  const [query, setQuery] = useState("");
+function SymbolSearch({
+  symbols,
+  query,
+  onQueryChange,
+}: {
+  symbols: Sym[];
+  query: string;
+  onQueryChange: (value: string) => void;
+}) {
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -100,18 +129,18 @@ function SymbolSearch({ symbols }: { symbols: Sym[] }) {
           type="text"
           placeholder="Suche nach Symbolen…"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => onQueryChange(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => setFocused(false), 200)}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
-              setQuery("");
+              onQueryChange("");
               inputRef.current?.blur();
             }
           }}
         />
         {query && (
-          <button className="symbol-search__clear" onClick={() => setQuery("")}><i className="bi bi-x-lg" /></button>
+          <button className="symbol-search__clear" onClick={() => onQueryChange("")}><i className="bi bi-x-lg" /></button>
         )}
       </div>
       {showDropdown && (
@@ -126,7 +155,7 @@ function SymbolSearch({ symbols }: { symbols: Sym[] }) {
                 onMouseDown={(e) => {
                   e.preventDefault(); // prevent blur before click
                   goToSymbol(sym.id);
-                  setQuery("");
+                  onQueryChange("");
                 }}
               >
                 <KindBadge kind={sym.kind} />
@@ -152,6 +181,11 @@ function ViewTreeItem({
   toggleCollapse,
   deadSymbolIds,
   level,
+  searchQuery,
+  searchActive,
+  visibleViewIds,
+  matchedViewIds,
+  matchedSymbolIds,
 }: {
   view: DiagramView;
   childMap: Map<string, DiagramView[]>;
@@ -162,12 +196,23 @@ function ViewTreeItem({
   toggleCollapse: (id: string) => void;
   deadSymbolIds: Set<string>;
   level: number;
+  searchQuery: string;
+  searchActive: boolean;
+  visibleViewIds: Set<string> | null;
+  matchedViewIds: Set<string>;
+  matchedSymbolIds: Set<string>;
 }) {
-  const childViews = childMap.get(view.id) ?? [];
+  if (searchActive && visibleViewIds && !visibleViewIds.has(view.id)) return null;
+
+  const rawChildViews = childMap.get(view.id) ?? [];
+  const childViews = searchActive && visibleViewIds
+    ? rawChildViews.filter((child) => visibleViewIds.has(child.id))
+    : rawChildViews;
   const viewSymbols = symbolsByView.get(view.id) ?? [];
   const hasChildren = childViews.length > 0 || viewSymbols.length > 0;
-  const isCollapsed = collapsed[view.id] ?? (level > 1);
+  const isCollapsed = searchActive ? false : (collapsed[view.id] ?? (level > 1));
   const isActive = view.id === currentViewId;
+  const isSearchMatch = searchActive && matchedViewIds.has(view.id);
   const scope = (view as any).scope as string | undefined;
   const icon = SCOPE_ICONS[scope ?? ""] ?? "bi-folder";
 
@@ -177,7 +222,7 @@ function ViewTreeItem({
   return (
     <>
       <div
-        className={`view-tree-item ${isActive ? "view-tree-item--active" : ""} ${hasDeadCode ? "view-tree-item--has-dead" : ""}`}
+        className={`view-tree-item ${isActive ? "view-tree-item--active" : ""} ${hasDeadCode ? "view-tree-item--has-dead" : ""}${isSearchMatch ? " view-tree-item--search-match" : ""}`}
         style={{ paddingLeft: 8 + level * 16 }}
         onClick={() => navigateToView(view.id)}
       >
@@ -192,7 +237,9 @@ function ViewTreeItem({
           <span className="view-tree-chevron view-tree-chevron--leaf" />
         )}
         <span className="view-tree-icon"><i className={`bi ${icon}`} /></span>
-        <span className="view-tree-label">{view.title}</span>
+        <span className="view-tree-label">
+          <HighlightText text={view.title} query={searchQuery} />
+        </span>
       </div>
       {hasChildren && !isCollapsed && (
         <>
@@ -209,13 +256,18 @@ function ViewTreeItem({
               toggleCollapse={toggleCollapse}
               deadSymbolIds={deadSymbolIds}
               level={level + 1}
+              searchQuery={searchQuery}
+              searchActive={searchActive}
+              visibleViewIds={visibleViewIds}
+              matchedViewIds={matchedViewIds}
+              matchedSymbolIds={matchedSymbolIds}
             />
           ))}
           {/* Then symbols belonging to this view that are NOT sub-views */}
           {viewSymbols.map((sym) => (
             <div
               key={sym.id}
-              className={`view-tree-item view-tree-symbol ${deadSymbolIds.has(sym.id) ? "view-tree-symbol--dead" : ""}`}
+              className={`view-tree-item view-tree-symbol ${deadSymbolIds.has(sym.id) ? "view-tree-symbol--dead" : ""}${searchActive && matchedSymbolIds.has(sym.id) ? " view-tree-item--search-match" : ""}`}
               style={{ paddingLeft: 8 + (level + 1) * 16 }}
               onClick={(e) => {
                 e.stopPropagation();
@@ -224,7 +276,9 @@ function ViewTreeItem({
             >
               <span className="view-tree-chevron view-tree-chevron--leaf" />
               <KindBadge kind={sym.kind} />
-              <span className="view-tree-label">{sym.label.split(".").pop()}</span>
+              <span className="view-tree-label">
+                <HighlightText text={sym.label.split(".").pop() ?? sym.label} query={searchQuery} />
+              </span>
             </div>
           ))}
         </>
@@ -342,6 +396,7 @@ export function Sidebar() {
   const [ollamaModel, setOllamaModel] = useState("");
   const [canResume, setCanResume] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const [viewSearchQuery, setViewSearchQuery] = useState("");
 
   // Load default scan path, AI config, and project list on mount
   useEffect(() => {
@@ -423,6 +478,10 @@ export function Sidebar() {
           selectedSymbolId: null,
           selectedEdgeId: null,
           breadcrumb: [],
+          graphHistoryPast: [],
+          graphHistoryFuture: [],
+          historyCanUndo: false,
+          historyCanRedo: false,
           focusNodeId: null,
           aiAnalysis: null,
           validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
@@ -504,6 +563,58 @@ export function Sidebar() {
     // Don't abort the SSE — let it receive the "paused" event naturally
   }, []);
 
+  useEffect(() => {
+    const onSidebarCommand = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: string; projectPath?: string }>).detail;
+      const action = detail?.action;
+      if (!action) return;
+
+      switch (action) {
+        case "scan":
+          void handleScan();
+          break;
+        case "open-folder-browser":
+          setShowBrowser(true);
+          break;
+        case "switch-project":
+          if (detail.projectPath) void handleSwitchProject(detail.projectPath);
+          break;
+        case "delete-project":
+          if (detail.projectPath) void handleDeleteProject(detail.projectPath);
+          break;
+        case "delete-active-project":
+          if (activeProjectPath) void handleDeleteProject(activeProjectPath);
+          break;
+        case "ai-start":
+          void handleStartAnalysis(false);
+          break;
+        case "ai-resume":
+          void handleStartAnalysis(canResume ? true : false);
+          break;
+        case "ai-pause":
+          handlePauseAnalysis();
+          break;
+        case "ai-stop":
+          handleStopAnalysis();
+          break;
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener("dmpg:sidebar-command", onSidebarCommand as EventListener);
+    return () => window.removeEventListener("dmpg:sidebar-command", onSidebarCommand as EventListener);
+  }, [
+    activeProjectPath,
+    canResume,
+    handleDeleteProject,
+    handlePauseAnalysis,
+    handleScan,
+    handleStartAnalysis,
+    handleStopAnalysis,
+    handleSwitchProject,
+  ]);
+
   const onDragStart = (e: React.DragEvent, kind: string) => {
     e.dataTransfer.setData("application/uml-kind", kind);
     e.dataTransfer.effectAllowed = "move";
@@ -566,6 +677,75 @@ export function Sidebar() {
     return map;
   }, [views, allSymbols]);
 
+  const normalizedViewSearch = viewSearchQuery.trim().toLowerCase();
+  const viewSearchActive = normalizedViewSearch.length > 0;
+  const {
+    filteredRootViews,
+    filteredSymbolsByView,
+    visibleViewIds,
+    matchedViewIds,
+    matchedSymbolIds,
+  } = useMemo(() => {
+    if (!viewSearchActive) {
+      return {
+        filteredRootViews: rootViews,
+        filteredSymbolsByView: symbolsByView,
+        visibleViewIds: null as Set<string> | null,
+        matchedViewIds: new Set<string>(),
+        matchedSymbolIds: new Set<string>(),
+      };
+    }
+
+    const isViewMatch = (view: DiagramView) =>
+      queryMatches(view.title, normalizedViewSearch) ||
+      queryMatches((view as any).scope as string | undefined, normalizedViewSearch);
+    const isSymbolMatch = (sym: Sym) =>
+      queryMatches(sym.label, normalizedViewSearch) ||
+      queryMatches(sym.kind, normalizedViewSearch) ||
+      queryMatches(sym.doc?.summary ?? "", normalizedViewSearch);
+
+    const matchedViewIds = new Set<string>();
+    const matchedSymbolIds = new Set<string>();
+    for (const sym of allSymbols) {
+      if (isSymbolMatch(sym)) matchedSymbolIds.add(sym.id);
+    }
+
+    const visibleViewIds = new Set<string>();
+    const filteredSymbolsByView = new Map<string, Sym[]>();
+
+    const visit = (view: DiagramView): boolean => {
+      const selfMatch = isViewMatch(view);
+      if (selfMatch) matchedViewIds.add(view.id);
+
+      const children = childMap.get(view.id) ?? [];
+      const childVisible = children.some((child) => visit(child));
+
+      const viewSymbols = symbolsByView.get(view.id) ?? [];
+      const visibleSymbols = viewSymbols.filter((sym) => matchedSymbolIds.has(sym.id));
+      if (visibleSymbols.length > 0) filteredSymbolsByView.set(view.id, visibleSymbols);
+
+      const visible = selfMatch || childVisible || visibleSymbols.length > 0;
+      if (visible) visibleViewIds.add(view.id);
+      return visible;
+    };
+
+    const filteredRootViews = rootViews.filter((root) => visit(root));
+    return {
+      filteredRootViews,
+      filteredSymbolsByView,
+      visibleViewIds,
+      matchedViewIds,
+      matchedSymbolIds,
+    };
+  }, [
+    viewSearchActive,
+    rootViews,
+    symbolsByView,
+    allSymbols,
+    childMap,
+    normalizedViewSearch,
+  ]);
+
   // Auto-expand sidebar tree to reveal the current view
   useEffect(() => {
     if (!currentViewId || views.length === 0) return;
@@ -608,7 +788,11 @@ export function Sidebar() {
       {/* ── Global Symbol Search ── */}
       {allSymbols.length > 0 && (
         <div className="sidebar-section sidebar-section--search">
-          <SymbolSearch symbols={allSymbols} />
+          <SymbolSearch
+            symbols={allSymbols}
+            query={viewSearchQuery}
+            onQueryChange={setViewSearchQuery}
+          />
         </div>
       )}
 
@@ -647,20 +831,29 @@ export function Sidebar() {
         </h2>
         {!sectionCollapsed.views && (
           <div className="view-tree">
-            {rootViews.map((v) => (
-              <ViewTreeItem
-                key={v.id}
-                view={v}
-                childMap={childMap}
-                symbolsByView={symbolsByView}
-                currentViewId={currentViewId}
-                navigateToView={navigateToView}
-                collapsed={collapsed}
-                toggleCollapse={toggleCollapse}
-                deadSymbolIds={deadSymbolIds}
-                level={0}
-              />
-            ))}
+            {filteredRootViews.length === 0 ? (
+              <div className="view-tree-empty">Keine passenden Views</div>
+            ) : (
+              filteredRootViews.map((v) => (
+                <ViewTreeItem
+                  key={v.id}
+                  view={v}
+                  childMap={childMap}
+                  symbolsByView={filteredSymbolsByView}
+                  currentViewId={currentViewId}
+                  navigateToView={navigateToView}
+                  collapsed={collapsed}
+                  toggleCollapse={toggleCollapse}
+                  deadSymbolIds={deadSymbolIds}
+                  level={0}
+                  searchQuery={normalizedViewSearch}
+                  searchActive={viewSearchActive}
+                  visibleViewIds={visibleViewIds}
+                  matchedViewIds={matchedViewIds}
+                  matchedSymbolIds={matchedSymbolIds}
+                />
+              ))
+            )}
           </div>
         )}
       </div>

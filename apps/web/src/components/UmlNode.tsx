@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useAppStore } from "../store";
 import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
 import type { Symbol as Sym } from "@dmpg/shared";
+import type { DiagramLabelMode } from "../diagramSettings";
 
 export interface UmlNodeData {
   label: string;
@@ -15,6 +16,8 @@ export interface UmlNodeData {
   children?: Sym[];
   tags?: string[];
   relationBadges?: string[];
+  compactMode?: boolean;
+  labelsMode?: DiagramLabelMode;
   location?: { file: string; startLine?: number; endLine?: number };
   [key: string]: unknown;
 }
@@ -39,8 +42,17 @@ const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: stri
   "in:uses_config":  { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
 };
 
-function RelationBadges({ badges }: { badges?: string[] }) {
-  if (!badges || badges.length === 0) return null;
+function RelationBadges({
+  badges,
+  compactMode = false,
+  labelsMode = "detailed",
+}: {
+  badges?: string[];
+  compactMode?: boolean;
+  labelsMode?: DiagramLabelMode;
+}) {
+  if (!badges || badges.length === 0 || labelsMode === "off") return null;
+  const showText = labelsMode === "detailed" && !compactMode;
   return (
     <div className="rel-badges">
       {badges.map((t) => {
@@ -50,7 +62,8 @@ function RelationBadges({ badges }: { badges?: string[] }) {
         return (
           <span key={t} className={`rel-badge rel-badge--${meta.cls}`}>
             {isIn && <i className="bi bi-arrow-left" style={{ fontSize: 9, marginRight: 2 }} />}
-            <i className={`bi ${meta.iconCls}`} /> {meta.label}
+            <i className={`bi ${meta.iconCls}`} />
+            {showText && <> {meta.label}</>}
           </span>
         );
       })}
@@ -131,10 +144,12 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
   const isDead = d.tags?.includes("dead-code");
   const animClass = useAiChangeDetection(d);
   const fileName = shortFileName(d.location);
+  const compactMode = !!d.compactMode;
+  const labelsMode = d.labelsMode ?? "detailed";
 
   return (
     <div
-      className={`uml-node kind-${d.kind} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
+      className={`uml-node kind-${d.kind} ${compactMode ? "node-compact" : ""} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -146,8 +161,8 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
         <span className="node-label">{d.label}</span>
         {isDead && <span className="dead-code-badge" title="Unused — no callers"><i className="bi bi-x-circle" /></span>}
       </div>
-      {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
-      <RelationBadges badges={d.relationBadges} />
+      {!compactMode && fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
+      <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
           <i className="bi bi-caret-right-fill" /> Drill down
@@ -166,6 +181,8 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
   const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
   const animClass = useAiChangeDetection(d);
   const fileName = shortFileName(d.location);
+  const compactMode = !!d.compactMode;
+  const labelsMode = d.labelsMode ?? "detailed";
 
   const children = d.children ?? [];
   const classes = children.filter((c) => c.kind === "class");
@@ -179,7 +196,7 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
 
   return (
     <div
-      className={`uml-node kind-${d.kind} group-node ${selected ? "selected" : ""} ${animClass}`}
+      className={`uml-node kind-${d.kind} group-node ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -190,8 +207,8 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
         <span className="kind-badge">{d.kind}</span>
         <span className="node-label">{d.label}</span>
       </div>
-      {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
-      <RelationBadges badges={d.relationBadges} />
+      {!compactMode && fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
+      <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
       {countParts.length > 0 && (
         <div className="node-count-badge">{countParts.join(", ")}</div>
       )}
@@ -213,14 +230,17 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
   const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
   const animClass = useAiChangeDetection(d);
   const fileName = shortFileName(d.location);
+  const compactMode = !!d.compactMode;
 
   const children = d.children ?? [];
   const attributes = children.filter((c) => c.kind === "constant" || c.kind === "variable");
   const methods = children.filter((c) => c.kind === "method" || c.kind === "function");
+  const shownAttributes = compactMode ? attributes.slice(0, 4) : attributes;
+  const shownMethods = compactMode ? methods.slice(0, 5) : methods;
 
   return (
     <div
-      className={`uml-node uml-class-node kind-class ${selected ? "selected" : ""} ${animClass}`}
+      className={`uml-node uml-class-node kind-class ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -232,16 +252,16 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
       <div className="node-header class-header">
         <div className="stereotype">«class»</div>
         <span className="node-label">{d.label}</span>
-        {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
+        {!compactMode && fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
       </div>
 
       {/* Attributes compartment */}
       <div className="compartment">
-        {attributes.length > 0 ? (
-          attributes.map((a) => (
+        {shownAttributes.length > 0 ? (
+          shownAttributes.map((a) => (
             <div key={a.id} className="compartment-item">
               <span className="attr-icon">−</span> {a.label}
-              {a.doc?.inputs?.[0]?.type && (
+              {!compactMode && a.doc?.inputs?.[0]?.type && (
                 <span className="type-hint"> : {a.doc.inputs[0].type}</span>
               )}
             </div>
@@ -253,11 +273,11 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
 
       {/* Methods compartment */}
       <div className="compartment">
-        {methods.length > 0 ? (
-          methods.map((m) => (
+        {shownMethods.length > 0 ? (
+          shownMethods.map((m) => (
             <div key={m.id} className="compartment-item method-item">
               <span className="method-icon">+</span> {m.label.split(".").pop()}()
-              {m.doc?.inputs && m.doc.inputs.length > 0 && (
+              {!compactMode && m.doc?.inputs && m.doc.inputs.length > 0 && (
                 <span className="type-hint">
                   ({m.doc.inputs.map((p) => p.name).join(", ")})
                 </span>
@@ -289,13 +309,15 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
   const isDead = d.tags?.includes("dead-code");
   const animClass = useAiChangeDetection(d);
   const fileName = shortFileName(d.location);
+  const compactMode = !!d.compactMode;
+  const labelsMode = d.labelsMode ?? "detailed";
 
   const inputs = d.inputs ?? [];
   const outputs = d.outputs ?? [];
 
   return (
     <div
-      className={`uml-node uml-function-node kind-${d.kind} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
+      className={`uml-node uml-function-node kind-${d.kind} ${compactMode ? "node-compact" : ""} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -309,10 +331,10 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
         {isDead && <span className="dead-code-badge" title="Unused — no callers"><i className="bi bi-x-circle" /></span>}
       </div>
 
-      {fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
+      {!compactMode && fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
 
       {/* Signature */}
-      {inputs.length > 0 && (
+      {!compactMode && inputs.length > 0 && (
         <div className="fn-signature">
           ({inputs.map((p, i) => (
             <span key={i}>
@@ -324,13 +346,13 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
         </div>
       )}
 
-      {outputs.length > 0 && (
+      {!compactMode && outputs.length > 0 && (
         <div className="fn-return">
           <i className="bi bi-arrow-return-right" /> {outputs.map((o) => o.type ?? o.name).join(", ")}
         </div>
       )}
 
-      <RelationBadges badges={d.relationBadges} />
+      <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
 
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
@@ -349,6 +371,8 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
 export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }: NodeProps) {
   const d = data as unknown as UmlNodeData;
   const { handleClick, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
+  const compactMode = !!d.compactMode;
+  const labelsMode = d.labelsMode ?? "detailed";
 
   // Determine icon based on label
   const label = d.label.toLowerCase();
@@ -361,7 +385,7 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
 
   return (
     <div
-      className={`uml-node uml-artifact-node kind-external ${selected ? "selected" : ""}`}
+      className={`uml-node uml-artifact-node kind-external ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -374,7 +398,7 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
         <span className="node-label">{d.label}</span>
       </div>
 
-      <RelationBadges badges={d.relationBadges} />
+      <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
 
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
       <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />

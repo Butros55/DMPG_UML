@@ -16,10 +16,20 @@
 
 import type { Node, Edge } from "@xyflow/react";
 import type { ProjectGraph, Symbol as Sym, Relation, DiagramView } from "@dmpg/shared";
+import {
+  DEFAULT_DIAGRAM_SETTINGS,
+  sanitizeDiagramSettings,
+  type DiagramSettings,
+} from "./diagramSettings";
 
 /* ──────────── Single-view export (legacy compat) ──────────── */
 
-export function exportDiagramAsHtml(nodes: Node[], edges: Edge[], title: string) {
+export function exportDiagramAsHtml(
+  nodes: Node[],
+  edges: Edge[],
+  title: string,
+  settings: DiagramSettings = DEFAULT_DIAGRAM_SETTINGS,
+) {
   const symbols: Sym[] = nodes.map((n) => ({
     id: n.id,
     label: (n.data as any).label ?? n.id,
@@ -31,7 +41,7 @@ export function exportDiagramAsHtml(nodes: Node[], edges: Edge[], title: string)
 
   const relations: Relation[] = edges.map((e) => ({
     id: e.id,
-    type: "calls" as any,
+    type: ((e.data as { relationType?: Relation["type"] } | undefined)?.relationType ?? "calls") as Relation["type"],
     source: e.source,
     target: e.target,
     label: typeof e.label === "string" ? e.label : undefined,
@@ -51,13 +61,17 @@ export function exportDiagramAsHtml(nodes: Node[], edges: Edge[], title: string)
     rootViewId: "export-view",
   };
 
-  exportProjectAsHtml(graph);
+  exportProjectAsHtml(graph, settings);
 }
 
 /* ──────────── Full project export ──────────── */
 
-export function exportProjectAsHtml(graph: ProjectGraph) {
+export function exportProjectAsHtml(
+  graph: ProjectGraph,
+  settings: DiagramSettings = DEFAULT_DIAGRAM_SETTINGS,
+) {
   const data = JSON.stringify(graph);
+  const settingsData = JSON.stringify(sanitizeDiagramSettings(settings));
   const projectName = graph.projectPath?.split(/[\\/]/).pop() ?? "UML Project";
   const exportDate = new Date().toLocaleString("de-DE");
 
@@ -102,6 +116,7 @@ export function exportProjectAsHtml(graph: ProjectGraph) {
 <script>
 // ── Embedded graph data ──
 const G = ${data};
+const EXPORTED_DIAGRAM_SETTINGS = ${settingsData};
 
 ${RUNTIME_JS}
 </script>
@@ -293,6 +308,17 @@ html,body{height:100%;overflow:hidden}
 .nk-external{background:rgba(139,143,167,.08);border-style:dashed;border-color:var(--text-dim)}
 .nk-external:hover,.nk-external.selected{border-color:var(--text-dim);box-shadow:0 0 0 2px rgba(139,143,167,.2),0 4px 12px rgba(0,0,0,.3)}
 .nk-function,.nk-method{border-radius:16px;min-width:140px}
+.node.node-compact{border-radius:12px}
+.node.node-compact .node-hdr{padding:5px 9px 4px}
+.node.node-compact .kbadge{font-size:8px;padding:1px 4px}
+.node.node-compact .nlbl{font-size:12px}
+.node.node-compact .compart{padding:3px 9px}
+.node.node-compact .compart-item{font-size:10px}
+.node.node-compact .compart-empty{font-size:10px}
+.node.node-compact .fn-sig,.node.node-compact .fn-ret{padding-left:9px;padding-right:9px;font-size:10px}
+.node.node-compact .rbadges{padding:3px 9px 4px}
+.node.node-compact .rbadge{font-size:9px;padding:1px 4px}
+.node.node-compact .drilldown{padding:3px 9px 6px;font-size:10px}
 
 /* Class compartments */
 .cls-node .class-hdr{flex-direction:column;align-items:center;text-align:center;gap:2px;padding:6px 12px}
@@ -338,6 +364,7 @@ html,body{height:100%;overflow:hidden}
 .et-instantiates{stroke:var(--yellow);stroke-dasharray:4 2}
 .et-uses_config,.et-uses-config{stroke:var(--text-dim);stroke-dasharray:3 6}
 .et-multi{stroke-width:2.5;stroke-dasharray:10 4}
+.et-low-confidence{opacity:.65;stroke-dasharray:4 4}
 .edge-label{font-size:10px;fill:var(--text-dim);pointer-events:none}
 
 /* ── Inspector ── */
@@ -425,6 +452,14 @@ const viewMap = new Map();
 G.symbols.forEach(s => symMap.set(s.id, s));
 G.relations.forEach(r => relMap.set(r.id, r));
 G.views.forEach(v => viewMap.set(v.id, v));
+
+const SETTINGS = EXPORTED_DIAGRAM_SETTINGS || {};
+const REL_FILTERS = SETTINGS.relationFilters || {};
+const EDGE_LABEL_MODE = SETTINGS.labels || "detailed";
+const EDGE_TYPE = SETTINGS.edgeType || "step";
+const EDGE_STROKE_WIDTH = Number(SETTINGS.edgeStrokeWidth || 1.8);
+const NODE_COMPACT_MODE = !!SETTINGS.nodeCompactMode;
+const EDGE_AGGREGATION = SETTINGS.edgeAggregation !== false;
 
 let currentViewId = G.rootViewId;
 let selectedNodeId = null;
@@ -600,11 +635,37 @@ function layoutView(view) {
   const remaining = nodeIds.filter(id => !visited.has(id));
   if (remaining.length > 0) layers.push(remaining);
 
-  const GAP_X = 80, GAP_Y = 100;
+  const layoutCfg = SETTINGS.layout || {};
+  const GAP_X = Number(layoutCfg.nodeNodeSpacing || 80);
+  const GAP_Y = Number(layoutCfg.betweenLayersSpacing || 100);
+  const direction = layoutCfg.direction === "RIGHT" ? "RIGHT" : "DOWN";
   const positions = {};
-  let y = 60, globalMaxX = 0;
+
+  if (direction === "RIGHT") {
+    let x = 60;
+    let globalMaxY = 0;
+    layers.forEach(layer => {
+      let y = 60;
+      let maxW = 0;
+      layer.forEach(id => {
+        const sym = symMap.get(id);
+        positions[id] = { x, y };
+        const width = estimateWidth(sym);
+        const height = estimateHeight(sym);
+        y += height + GAP_Y;
+        maxW = Math.max(maxW, width);
+      });
+      globalMaxY = Math.max(globalMaxY, y);
+      x += maxW + GAP_X;
+    });
+    return { positions, width: x + 60, height: globalMaxY + 60 };
+  }
+
+  let y = 60;
+  let globalMaxX = 0;
   layers.forEach(layer => {
-    let x = 60, maxH = 0;
+    let x = 60;
+    let maxH = 0;
     layer.forEach(id => {
       const sym = symMap.get(id);
       positions[id] = { x, y };
@@ -619,27 +680,30 @@ function layoutView(view) {
 
 function estimateWidth(sym) {
   if (!sym) return 200;
-  const base = Math.max(160, (sym.label || "").length * 8.5 + 48);
+  const compact = NODE_COMPACT_MODE;
+  const base = Math.max(compact ? 140 : 160, (sym.label || "").length * 8.5 + (compact ? 34 : 48));
   if (sym.kind === "class") {
     const ch = G.symbols.filter(s => s.parentId === sym.id);
-    const maxChild = Math.max(0, ...ch.map(c => (c.label || "").length * 8.5 + 48));
-    return Math.max(240, base, maxChild);
+    const shown = compact ? ch.slice(0, 9) : ch;
+    const maxChild = Math.max(0, ...shown.map(c => (c.label || "").length * 8.5 + (compact ? 34 : 48)));
+    return Math.max(compact ? 210 : 240, base, maxChild);
   }
   return base;
 }
 
 function estimateHeight(sym) {
   if (!sym) return 60;
+  const compact = NODE_COMPACT_MODE;
   if (sym.kind === "class") {
     const ch = G.symbols.filter(s => s.parentId === sym.id);
-    const attrs = ch.filter(c => c.kind === "constant" || c.kind === "variable");
-    const meths = ch.filter(c => c.kind === "method" || c.kind === "function");
-    return 40 + 14 + Math.max(1, attrs.length) * 20 + 14 + Math.max(1, meths.length) * 20 + 8;
+    const attrs = ch.filter(c => c.kind === "constant" || c.kind === "variable").slice(0, compact ? 4 : 999);
+    const meths = ch.filter(c => c.kind === "method" || c.kind === "function").slice(0, compact ? 5 : 999);
+    return 40 + (compact ? 8 : 14) + Math.max(1, attrs.length) * (compact ? 16 : 20) + (compact ? 8 : 14) + Math.max(1, meths.length) * (compact ? 16 : 20) + (compact ? 4 : 8);
   }
   if (sym.kind === "function" || sym.kind === "method") {
-    return 40 + ((sym.doc?.inputs || []).length > 0 ? 22 : 0) + 8;
+    return 40 + ((sym.doc?.inputs || []).length > 0 ? (compact ? 16 : 22) : 0) + (compact ? 4 : 8);
   }
-  return 66;
+  return compact ? 56 : 66;
 }
 
 // ══════════════ Edge Projection ══════════════
@@ -661,33 +725,79 @@ function projectEdgesForViewLocal(view) {
 
   const TYPE_VERBS = {calls:"calls",imports:"imports",reads:"reads",writes:"writes to",inherits:"inherits",instantiates:"creates",uses_config:"config"};
   const edgeMap = new Map();
+  const isVisibleType = (type) => REL_FILTERS[type] !== false;
 
   G.relations.forEach(rel => {
     if (rel.type === "contains") return;
+    if (!isVisibleType(rel.type)) return;
     const src = findVisible(rel.source);
     const tgt = findVisible(rel.target);
     if (!src || !tgt || src === tgt) return;
+
+    if (!EDGE_AGGREGATION) {
+      const singleKey = src + "|" + tgt + "|" + rel.type + "|" + rel.id;
+      edgeMap.set(singleKey, {
+        source: src,
+        target: tgt,
+        count: 1,
+        relationIds: [rel.id],
+        typeCounts: { [rel.type]: 1 },
+        label: rel.label || TYPE_VERBS[rel.type] || rel.type,
+        confidence: rel.confidence || 1,
+      });
+      return;
+    }
+
     const key = src + "|" + tgt;
     if (edgeMap.has(key)) {
       const e = edgeMap.get(key);
       e.count++;
       e.relationIds.push(rel.id);
       e.typeCounts[rel.type] = (e.typeCounts[rel.type] || 0) + 1;
+      e.confidence = Math.min(e.confidence || 1, rel.confidence || 1);
     } else {
-      edgeMap.set(key, {source:src,target:tgt,count:1,relationIds:[rel.id],typeCounts:{[rel.type]:1}});
+      edgeMap.set(key, {
+        source: src,
+        target: tgt,
+        count: 1,
+        relationIds: [rel.id],
+        typeCounts: { [rel.type]: 1 },
+        label: rel.label,
+        confidence: rel.confidence || 1,
+      });
     }
   });
+
+  function labelForMode(typeCounts, total, dominant, fallbackLabel) {
+    if (EDGE_LABEL_MODE === "off") return null;
+    const entries = Object.entries(typeCounts);
+    if (EDGE_LABEL_MODE === "compact") {
+      if (total > 1) return total + "x";
+      return TYPE_VERBS[dominant] || dominant;
+    }
+    if (total === 1) return fallbackLabel || TYPE_VERBS[dominant] || dominant;
+    if (entries.length === 1) return total + "x " + (TYPE_VERBS[dominant] || dominant);
+    return entries
+      .sort((a, b) => b[1] - a[1])
+      .map(([t, c]) => c + "x " + (TYPE_VERBS[t] || t))
+      .join(", ");
+  }
 
   const result = [];
   edgeMap.forEach(agg => {
     let domType = "calls", maxC = 0;
     for (const [t,c] of Object.entries(agg.typeCounts)) { if (c > maxC) { maxC = c; domType = t; } }
     const entries = Object.entries(agg.typeCounts);
-    let label;
-    if (agg.count === 1) label = TYPE_VERBS[domType] || domType;
-    else if (entries.length === 1) label = agg.count + "× " + (TYPE_VERBS[domType] || domType);
-    else label = entries.sort((a,b) => b[1]-a[1]).map(([t,c]) => c+"× "+(TYPE_VERBS[t]||t)).join(", ");
-    result.push({source:agg.source,target:agg.target,type:domType,count:agg.count,label,className:"et-"+domType+(entries.length>1?" et-multi":"")});
+    const label = labelForMode(agg.typeCounts, agg.count, domType, agg.label);
+    const lowConfidenceClass = (agg.confidence || 1) < 0.9 ? " et-low-confidence" : "";
+    result.push({
+      source: agg.source,
+      target: agg.target,
+      type: domType,
+      count: agg.count,
+      label,
+      className: "et-" + domType + (entries.length > 1 ? " et-multi" : "") + lowConfidenceClass,
+    });
   });
   return result;
 }
@@ -737,30 +847,59 @@ function renderView(viewId) {
   svg.appendChild(defs);
 
   const typeToArrow = {calls:"acc",imports:"grn",reads:"grn",writes:"org",inherits:"yel",instantiates:"yel",uses_config:"dim",contains:"dim"};
+  const layoutDirection = (SETTINGS.layout && SETTINGS.layout.direction === "RIGHT") ? "RIGHT" : "DOWN";
 
   edges.forEach(e => {
     const sp = positions[e.source], tp = positions[e.target];
     if (!sp || !tp) return;
     const srcSym = symMap.get(e.source), tgtSym = symMap.get(e.target);
     const sw = estimateWidth(srcSym), sh = estimateHeight(srcSym);
-    const tw = estimateWidth(tgtSym);
+    const tw = estimateWidth(tgtSym), th = estimateHeight(tgtSym);
 
-    const sx = sp.x + sw / 2, sy = sp.y + sh;
-    const tx = tp.x + tw / 2, ty = tp.y;
+    const sx = layoutDirection === "RIGHT" ? sp.x + sw : sp.x + sw / 2;
+    const sy = layoutDirection === "RIGHT" ? sp.y + sh / 2 : sp.y + sh;
+    const tx = layoutDirection === "RIGHT" ? tp.x : tp.x + tw / 2;
+    const ty = layoutDirection === "RIGHT" ? tp.y + th / 2 : tp.y;
+
+    const dx = Math.abs(tx - sx);
     const dy = Math.abs(ty - sy);
-    const cp = Math.max(40, dy * 0.4);
-    const d = "M "+sx+" "+sy+" C "+sx+" "+(sy+cp)+" "+tx+" "+(ty-cp)+" "+tx+" "+ty;
+    const cp = Math.max(28, (layoutDirection === "RIGHT" ? dx : dy) * 0.42);
+
+    let d = "";
+    let labelX = (sx + tx) / 2;
+    let labelY = (sy + ty) / 2 - 6;
+
+    if (EDGE_TYPE === "straight") {
+      d = "M " + sx + " " + sy + " L " + tx + " " + ty;
+    } else if (EDGE_TYPE === "smoothstep") {
+      if (layoutDirection === "RIGHT") {
+        d = "M " + sx + " " + sy + " C " + (sx + cp) + " " + sy + " " + (tx - cp) + " " + ty + " " + tx + " " + ty;
+      } else {
+        d = "M " + sx + " " + sy + " C " + sx + " " + (sy + cp) + " " + tx + " " + (ty - cp) + " " + tx + " " + ty;
+      }
+    } else {
+      if (layoutDirection === "RIGHT") {
+        const midX = sx + (tx - sx) / 2;
+        d = "M " + sx + " " + sy + " L " + midX + " " + sy + " L " + midX + " " + ty + " L " + tx + " " + ty;
+        labelX = midX;
+      } else {
+        const midY = sy + (ty - sy) / 2;
+        d = "M " + sx + " " + sy + " L " + sx + " " + midY + " L " + tx + " " + midY + " L " + tx + " " + ty;
+        labelY = midY - 6;
+      }
+    }
 
     const path = document.createElementNS(svgNS, "path");
     path.setAttribute("d", d);
     path.setAttribute("class", "edge-path " + (e.className || ""));
+    path.setAttribute("stroke-width", String(EDGE_STROKE_WIDTH));
     path.setAttribute("marker-end", "url(#arrow-" + (typeToArrow[e.type] || "dim") + ")");
     svg.appendChild(path);
 
     if (e.label) {
       const text = document.createElementNS(svgNS, "text");
-      text.setAttribute("x", (sx + tx) / 2);
-      text.setAttribute("y", (sy + ty) / 2 - 6);
+      text.setAttribute("x", String(labelX));
+      text.setAttribute("y", String(labelY));
       text.setAttribute("class", "edge-label");
       text.setAttribute("text-anchor", "middle");
       text.textContent = e.label;
@@ -777,7 +916,7 @@ function renderView(viewId) {
     if (!pos) return;
 
     const el = document.createElement("div");
-    el.className = "node nk-"+sym.kind+(sym.kind==="class"?" cls-node":"")+(sym.kind==="module"&&(scope==="root"||scope==="group")?" is-overview":"");
+    el.className = "node nk-"+sym.kind+(sym.kind==="class"?" cls-node":"")+(sym.kind==="module"&&(scope==="root"||scope==="group")?" is-overview":"")+(NODE_COMPACT_MODE?" node-compact":"");
     el.style.left = pos.x + "px";
     el.style.top = pos.y + "px";
     el.style.width = estimateWidth(sym) + "px";
@@ -811,12 +950,13 @@ function renderView(viewId) {
 // ── Node renderers ──
 
 function renderDefaultNode(sym, scope) {
+  const compact = NODE_COMPACT_MODE;
   let html = '<div class="node-hdr"><span class="kbadge kb-'+sym.kind+'">'+sym.kind+'</span><span class="nlbl">'+esc(sym.label)+'</span>';
   if (sym.tags && sym.tags.includes("dead-code")) html += '<span class="dead-tag" title="Dead code"><i class="bi bi-x-circle"></i></span>';
   html += '</div>';
   html += renderRelBadges(sym);
   if (sym.childViewId) html += renderDrilldown(sym);
-  if (sym.kind === "group" || sym.kind === "module") {
+  if (!compact && (sym.kind === "group" || sym.kind === "module")) {
     const ch = G.symbols.filter(s => s.parentId === sym.id);
     const cls = ch.filter(c => c.kind === "class").length;
     const fn = ch.filter(c => c.kind === "function" || c.kind === "method").length;
@@ -831,27 +971,32 @@ function renderDefaultNode(sym, scope) {
 }
 
 function renderClassNode(sym) {
+  const compact = NODE_COMPACT_MODE;
   const children = G.symbols.filter(s => s.parentId === sym.id);
   const attrs = children.filter(c => c.kind === "constant" || c.kind === "variable");
   const meths = children.filter(c => c.kind === "method" || c.kind === "function");
+  const shownAttrs = compact ? attrs.slice(0, 4) : attrs;
+  const shownMeths = compact ? meths.slice(0, 5) : meths;
 
   let html = '<div class="node-hdr class-hdr"><div class="stereo">«class»</div><span class="nlbl">'+esc(sym.label)+'</span></div>';
   html += '<div class="compart">';
-  if (attrs.length > 0) {
-    attrs.forEach(a => {
+  if (shownAttrs.length > 0) {
+    shownAttrs.forEach(a => {
       html += '<div class="compart-item"><span class="attr-i">−</span> '+esc(a.label);
-      if (a.doc?.inputs?.[0]?.type) html += '<span class="type-h"> : '+esc(a.doc.inputs[0].type)+'</span>';
+      if (!compact && a.doc?.inputs?.[0]?.type) html += '<span class="type-h"> : '+esc(a.doc.inputs[0].type)+'</span>';
       html += '</div>';
     });
+    if (compact && attrs.length > shownAttrs.length) html += '<div class="compart-empty">…</div>';
   } else html += '<div class="compart-empty">—</div>';
   html += '</div><div class="compart">';
-  if (meths.length > 0) {
-    meths.forEach(m => {
+  if (shownMeths.length > 0) {
+    shownMeths.forEach(m => {
       const short = (m.label||"").split(".").pop()||m.label;
       html += '<div class="compart-item"><span class="meth-i">+</span> '+esc(short)+'()';
-      if (m.doc?.inputs?.length > 0) html += '<span class="type-h">('+m.doc.inputs.map(p=>p.name).join(", ")+')</span>';
+      if (!compact && m.doc?.inputs?.length > 0) html += '<span class="type-h">('+m.doc.inputs.map(p=>p.name).join(", ")+')</span>';
       html += '</div>';
     });
+    if (compact && meths.length > shownMeths.length) html += '<div class="compart-empty">…</div>';
   } else html += '<div class="compart-empty">—</div>';
   html += '</div>';
   if (sym.childViewId) html += renderDrilldown(sym);
@@ -859,15 +1004,16 @@ function renderClassNode(sym) {
 }
 
 function renderFunctionNode(sym) {
+  const compact = NODE_COMPACT_MODE;
   let html = '<div class="node-hdr"><span class="kbadge kb-'+sym.kind+'">'+(sym.kind==="method"?"method":"fn")+'</span><span class="nlbl">'+esc((sym.label||"").split(".").pop()||sym.label)+'</span>';
   if (sym.tags && sym.tags.includes("dead-code")) html += '<span class="dead-tag" title="Dead code"><i class="bi bi-x-circle"></i></span>';
   html += '</div>';
   const inputs = sym.doc?.inputs || [];
-  if (inputs.length > 0) {
+  if (!compact && inputs.length > 0) {
     html += '<div class="fn-sig">('+inputs.map(p=>'<span class="pn">'+esc(p.name)+'</span>'+(p.type?'<span class="type-h">: '+esc(p.type)+'</span>':'')).join(", ")+')</div>';
   }
   const outputs = sym.doc?.outputs || [];
-  if (outputs.length > 0) html += '<div class="fn-ret">→ '+outputs.map(o=>o.type||o.name).join(", ")+'</div>';
+  if (!compact && outputs.length > 0) html += '<div class="fn-ret">→ '+outputs.map(o=>o.type||o.name).join(", ")+'</div>';
   html += renderRelBadges(sym);
   if (sym.childViewId) html += renderDrilldown(sym);
   return html;
@@ -887,15 +1033,20 @@ function renderArtifactNode(sym) {
 }
 
 function renderRelBadges(sym) {
-  const rels = G.relations.filter(r => (r.source === sym.id || r.target === sym.id) && r.type !== "contains");
+  const rels = G.relations.filter(r =>
+    (r.source === sym.id || r.target === sym.id) &&
+    r.type !== "contains" &&
+    REL_FILTERS[r.type] !== false,
+  );
   const types = new Set(rels.map(r => r.type));
   if (types.size === 0) return "";
   const META = {reads:{icon:'<i class="bi bi-book"></i>',label:"reads"},writes:{icon:'<i class="bi bi-pencil-square"></i>',label:"writes"},calls:{icon:'<i class="bi bi-telephone-outbound"></i>',label:"calls"},imports:{icon:'<i class="bi bi-box-arrow-in-down"></i>',label:"imports"},inherits:{icon:'<i class="bi bi-diagram-3"></i>',label:"inherits"},instantiates:{icon:'<i class="bi bi-lightning"></i>',label:"creates"},uses_config:{icon:'<i class="bi bi-gear"></i>',label:"config"}};
+  const showText = EDGE_LABEL_MODE === "detailed" && !NODE_COMPACT_MODE;
   let html = '<div class="rbadges">';
   types.forEach(t => {
     if (t === "imports") return;
     const m = META[t];
-    if (m) html += '<span class="rbadge rb-'+t+'">'+m.icon+" "+m.label+'</span>';
+    if (m) html += '<span class="rbadge rb-'+t+'">'+m.icon+(showText ? " " + m.label : "")+'</span>';
   });
   return html + '</div>';
 }

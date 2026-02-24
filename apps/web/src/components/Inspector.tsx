@@ -2,6 +2,7 @@ import { useCallback, useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore } from "../store";
 import { summarizeSymbol } from "../api";
 import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
+import { DiagramSettingsPanel } from "./DiagramSettingsPanel";
 import type { Relation, RelationType } from "@dmpg/shared";
 
 const RELATION_TYPES: RelationType[] = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"];
@@ -547,6 +548,7 @@ export function Inspector() {
   const [connTarget, setConnTarget] = useState("");
   const [connType, setConnType] = useState<string>("calls");
   const [connLabel, setConnLabel] = useState("calls");
+  const [showDiagramSettings, setShowDiagramSettings] = useState(false);
 
   const sym = graph?.symbols.find((s) => s.id === selectedSymbolId);
   const inspectorAnimClass = useAiInspectorAnimation(sym);
@@ -564,6 +566,50 @@ export function Inspector() {
       setEditMode(false);
     }
   }, [sym?.id]);
+
+  useEffect(() => {
+    const onInspectorCommand = (event: Event) => {
+      const action = (event as CustomEvent<{ action?: string }>).detail?.action;
+      if (action === "open-settings") {
+        if (inspectorCollapsed) toggleInspector();
+        setShowDiagramSettings(true);
+      }
+    };
+
+    window.addEventListener("dmpg:inspector-command", onInspectorCommand as EventListener);
+    return () => window.removeEventListener("dmpg:inspector-command", onInspectorCommand as EventListener);
+  }, [inspectorCollapsed, toggleInspector]);
+
+  useEffect(() => {
+    if (!showDiagramSettings) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowDiagramSettings(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showDiagramSettings]);
+
+  const settingsOverlay = showDiagramSettings ? (
+    <div className="inspector-settings-overlay" onClick={() => setShowDiagramSettings(false)}>
+      <div className="inspector-settings-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="inspector-settings-modal__header">
+          <h3>Diagram Settings</h3>
+          <button
+            className="inspector-settings-modal__close"
+            onClick={() => setShowDiagramSettings(false)}
+            title="Diagram Settings schließen"
+          >
+            <i className="bi bi-x-lg" />
+          </button>
+        </div>
+        <div className="inspector-settings-modal__body">
+          <DiagramSettingsPanel />
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   const handleAiGenerate = useCallback(async () => {
     if (!sym) return;
@@ -760,10 +806,20 @@ export function Inspector() {
     return (
       <div className="inspector">
         <button className="inspector-toggle-btn inspector-toggle-btn--inside" onClick={toggleInspector} title="Inspector schließen">«</button>
-        <h2>Inspector</h2>
+        <div className="inspector-header-row">
+          <h2>Inspector</h2>
+          <button
+            className={`btn btn-xs inspector-settings-toggle${showDiagramSettings ? " inspector-settings-toggle--active" : ""}`}
+            onClick={() => setShowDiagramSettings(true)}
+            title="Diagram Settings öffnen"
+          >
+            <i className="bi bi-sliders" /> Diagram Settings
+          </button>
+        </div>
         <div className="empty-state">
           Click a node or edge to inspect it
         </div>
+        {settingsOverlay}
       </div>
     );
   }
@@ -826,13 +882,22 @@ export function Inspector() {
       <button className="inspector-toggle-btn inspector-toggle-btn--inside" onClick={toggleInspector} title="Inspector schließen">«</button>
       <div className="inspector-header-row">
         <h2>Inspector</h2>
-        <button
-          className={`btn btn-xs inspector-edit-toggle${editMode ? " inspector-edit-toggle--active" : ""}`}
-          onClick={() => { setEditMode(!editMode); if (editMode) { setIsEditing(false); setEditingSection(null); setShowAddConn(false); } }}
-          title={editMode ? "Bearbeitungsmodus deaktivieren" : "Bearbeitungsmodus aktivieren"}
-        >
-          <i className={editMode ? "bi bi-pencil-fill" : "bi bi-pencil"} />{editMode ? " Bearbeiten" : " Bearbeiten"}
-        </button>
+        <div className="inspector-header-actions">
+          <button
+            className={`btn btn-xs inspector-settings-toggle${showDiagramSettings ? " inspector-settings-toggle--active" : ""}`}
+            onClick={() => setShowDiagramSettings(true)}
+            title="Diagram Settings öffnen"
+          >
+            <i className="bi bi-sliders" /> Settings
+          </button>
+          <button
+            className={`btn btn-xs inspector-edit-toggle${editMode ? " inspector-edit-toggle--active" : ""}`}
+            onClick={() => { setEditMode(!editMode); if (editMode) { setIsEditing(false); setEditingSection(null); setShowAddConn(false); } }}
+            title={editMode ? "Bearbeitungsmodus deaktivieren" : "Bearbeitungsmodus aktivieren"}
+          >
+            <i className={editMode ? "bi bi-pencil-fill" : "bi bi-pencil"} />{editMode ? " Bearbeiten" : " Bearbeiten"}
+          </button>
+        </div>
       </div>
 
       {/* ─── Node Header / Edit Toggle ─── */}
@@ -1498,6 +1563,7 @@ export function Inspector() {
       {aiError && (
         <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4 }}>{aiError}</div>
       )}
+      {settingsOverlay}
     </div>
   );
 }
