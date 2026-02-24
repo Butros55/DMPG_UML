@@ -19,6 +19,19 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
+/** Expose non-secret config to the frontend */
+app.get("/api/config", (_req, res) => {
+  const provider = (process.env.AI_PROVIDER ?? "cloud").toLowerCase();
+  const model = provider === "local"
+    ? (process.env.OLLAMA_LOCAL_MODEL ?? process.env.OLLAMA_MODEL ?? "")
+    : (process.env.OLLAMA_CLOUD_MODEL ?? process.env.OLLAMA_MODEL ?? "");
+  res.json({
+    scanProjectPath: process.env.SCAN_PROJECT_PATH ?? "",
+    aiProvider: provider,
+    ollamaModel: model,
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`[server] listening on http://localhost:${PORT}`);
 });

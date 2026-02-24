@@ -12,6 +12,8 @@ export const SymbolKindEnum = z.enum([
   "constant",
   "external",
   "group",
+  "interface",
+  "variable",
 ]);
 export type SymbolKind = z.infer<typeof SymbolKindEnum>;
 
@@ -94,11 +96,14 @@ export const NodePositionSchema = z.object({
 });
 export type NodePosition = z.infer<typeof NodePositionSchema>;
 
+export const ViewScopeEnum = z.enum(["root", "group", "module", "class"]);
+export type ViewScope = z.infer<typeof ViewScopeEnum>;
+
 export const DiagramViewSchema = z.object({
   id: z.string(),
   title: z.string(),
   parentViewId: z.string().nullable().optional(),
-  scope: z.string().optional(),
+  scope: ViewScopeEnum.optional(),
   nodeRefs: z.array(z.string()),
   edgeRefs: z.array(z.string()),
   nodePositions: z.array(NodePositionSchema).optional(),
@@ -134,3 +139,22 @@ export const ScanRequestSchema = z.object({
   projectPath: z.string(),
 });
 export type ScanRequest = z.infer<typeof ScanRequestSchema>;
+
+/* ───────────── Section Config (Template) ───────────── */
+
+export const SectionConfigSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  patterns: z.array(z.string()),
+  relationPatterns: z.object({
+    reads: z.array(z.string()).optional(),
+    writes: z.array(z.string()).optional(),
+  }).optional(),
+});
+export type SectionConfig = z.infer<typeof SectionConfigSchema>;
+
+export const ProjectConfigSchema = z.object({
+  sections: z.array(SectionConfigSchema),
+  autoFallback: z.boolean().optional(),
+});
+export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;

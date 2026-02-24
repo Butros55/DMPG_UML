@@ -1,7 +1,10 @@
 """
-Python project scanner — extracts modules, classes, functions, imports and simple calls
-using the ast module. Outputs JSON to stdout.
+Python project scanner v2 — scope-aware extraction of modules, classes,
+functions, methods, imports, calls, inherits, reads, writes and instantiates.
+Optionally uses `jedi` for advanced resolution (graceful fallback).
+
 Usage: python python_scanner.py <project_directory>
+Outputs JSON to stdout.
 """
 
 import ast
@@ -9,22 +12,49 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, Optional
+
+# ── Optional jedi import ──────────────────────────
+try:
+    import jedi  # type: ignore
+    JEDI_AVAILABLE = True
+except ImportError:
+    JEDI_AVAILABLE = False
 
 
-def scan_directory(root: str):
+# ── File I/O patterns for reads/writes detection ──
+READ_CALL_PATTERNS = {
+    "read_csv", "read_excel", "read_json", "read_parquet", "read_sql",
+    "read_pickle", "read_text", "read_bytes",
+    "load", "loads", "loadtxt", "genfromtxt", "safe_load",
+}
+
+WRITE_CALL_PATTERNS = {
+    "to_csv", "to_excel", "to_json", "to_parquet", "to_pickle",
+    "dump", "dumps", "safe_dump",
+    "save", "savetxt", "savez", "write_text", "write_bytes",
+}
+
+
+def scan_directory(root: str) -> dict[str, Any]:
     root_path = Path(root).resolve()
-    symbols = []
-    edges = []
-    module_map = {}  # file -> module_id
+    symbols: list[dict] = []
+    edges: list[dict] = []
+    symbol_table: dict[str, str] = {}
+    class_ids: set[str] = set()
+    import_aliases: dict[str, dict[str, str]] = {}
+    module_sources: dict[str, str] = {}
+    meta = {"files_scanned": 0, "files_failed": 0, "jedi_available": JEDI_AVAILABLE}
 
     py_files = sorted(root_path.rglob("*.py"))
 
+    # ── Phase 1: Collect all definitions ──────────
     for py_file in py_files:
         rel = py_file.relative_to(root_path)
         mod_name = str(rel.with_suffix("")).replace(os.sep, ".")
-
         mod_id = f"mod:{mod_name}"
-        module_map[str(rel)] = mod_id
+
+        meta["files_scanned"] += 1
 
         symbols.append({
             "id": mod_id,
@@ -33,122 +63,388 @@ def scan_directory(root: str):
             "file": str(rel),
             "startLine": 1,
         })
+        symbol_table[mod_name] = mod_id
+        symbol_table[mod_name.split(".")[-1]] = mod_id
 
         try:
             source = py_file.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source, filename=str(rel))
         except SyntaxError:
+            meta["files_failed"] += 1
+            symbols[-1]["tags"] = ["parse_error"]
             continue
 
-        # Collect class-level function names to distinguish top-level vs methods
-        class_method_ids = set()
-        for node in ast.iter_child_nodes(tree):
+        module_sources[mod_id] = source
+        docstring = ast.get_docstring(tree)
+        if docstring:
+            symbols[-1]["doc"] = {"summary": docstring[:500]}
+
+        import_aliases[mod_id] = {}
+
+        for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 cls_id = f"{mod_id}:{node.name}"
-                symbols.append({
+                cls_doc = ast.get_docstring(node)
+                sym_entry: dict = {
                     "id": cls_id,
                     "label": node.name,
                     "kind": "class",
                     "file": str(rel),
                     "startLine": node.lineno,
-                    "endLine": node.end_lineno,
+                    "endLine": getattr(node, "end_lineno", None),
                     "parentId": mod_id,
-                })
-                edges.append({"source": mod_id, "target": cls_id, "type": "contains"})
+                }
+                if cls_doc:
+                    sym_entry["doc"] = {"summary": cls_doc[:500]}
 
-                # methods
+                bases = [_node_to_str(b) for b in node.bases]
+                sym_entry["bases"] = [b for b in bases if b]
+
+                symbols.append(sym_entry)
+                edges.append({"source": mod_id, "target": cls_id, "type": "contains"})
+                symbol_table[node.name] = cls_id
+                symbol_table[f"{mod_name}.{node.name}"] = cls_id
+                class_ids.add(cls_id)
+
                 for item in node.body:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         meth_id = f"{cls_id}.{item.name}"
-                        class_method_ids.add(meth_id)
-                        symbols.append({
+                        meth_doc = ast.get_docstring(item)
+                        meth_entry: dict = {
                             "id": meth_id,
                             "label": f"{node.name}.{item.name}",
                             "kind": "method",
                             "file": str(rel),
                             "startLine": item.lineno,
-                            "endLine": item.end_lineno,
+                            "endLine": getattr(item, "end_lineno", None),
                             "parentId": cls_id,
-                        })
+                        }
+                        params = _extract_params(item)
+                        if params or meth_doc:
+                            meth_entry["doc"] = {}
+                            if meth_doc:
+                                meth_entry["doc"]["summary"] = meth_doc[:500]
+                            if params:
+                                meth_entry["doc"]["inputs"] = params
+                        symbols.append(meth_entry)
                         edges.append({"source": cls_id, "target": meth_id, "type": "contains"})
+                        symbol_table[f"{node.name}.{item.name}"] = meth_id
+                        symbol_table[f"{mod_name}.{node.name}.{item.name}"] = meth_id
+                    elif isinstance(item, ast.AnnAssign) and item.target and isinstance(item.target, ast.Name):
+                        # Annotated class attribute: x: int = 5
+                        attr_name = item.target.id
+                        attr_id = f"{cls_id}.{attr_name}"
+                        attr_type = _node_to_str(item.annotation) if item.annotation else None
+                        attr_entry: dict = {
+                            "id": attr_id,
+                            "label": f"{node.name}.{attr_name}",
+                            "kind": "variable",
+                            "file": str(rel),
+                            "startLine": item.lineno,
+                            "endLine": getattr(item, "end_lineno", item.lineno),
+                            "parentId": cls_id,
+                        }
+                        if attr_type:
+                            attr_entry["doc"] = {"inputs": [{"name": attr_name, "type": attr_type}]}
+                        symbols.append(attr_entry)
+                        edges.append({"source": cls_id, "target": attr_id, "type": "contains"})
+                    elif isinstance(item, ast.Assign):
+                        # Class-level assignments: x = 5
+                        for target in item.targets:
+                            if isinstance(target, ast.Name):
+                                attr_name = target.id
+                                if attr_name.startswith("_") and not attr_name.startswith("__"):
+                                    continue  # skip private internals
+                                attr_id = f"{cls_id}.{attr_name}"
+                                attr_entry: dict = {
+                                    "id": attr_id,
+                                    "label": f"{node.name}.{attr_name}",
+                                    "kind": "constant" if attr_name.isupper() else "variable",
+                                    "file": str(rel),
+                                    "startLine": item.lineno,
+                                    "endLine": getattr(item, "end_lineno", item.lineno),
+                                    "parentId": cls_id,
+                                }
+                                symbols.append(attr_entry)
+                                edges.append({"source": cls_id, "target": attr_id, "type": "contains"})
 
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # top-level function (direct child of module)
                 func_id = f"{mod_id}:{node.name}"
-                if func_id not in class_method_ids and not any(s["id"] == func_id for s in symbols):
-                    symbols.append({
-                        "id": func_id,
-                        "label": node.name,
-                        "kind": "function",
-                        "file": str(rel),
-                        "startLine": node.lineno,
-                        "endLine": node.end_lineno,
-                        "parentId": mod_id,
-                    })
-                    edges.append({"source": mod_id, "target": func_id, "type": "contains"})
+                func_doc = ast.get_docstring(node)
+                func_entry: dict = {
+                    "id": func_id,
+                    "label": node.name,
+                    "kind": "function",
+                    "file": str(rel),
+                    "startLine": node.lineno,
+                    "endLine": getattr(node, "end_lineno", None),
+                    "parentId": mod_id,
+                }
+                params = _extract_params(node)
+                if params or func_doc:
+                    func_entry["doc"] = {}
+                    if func_doc:
+                        func_entry["doc"]["summary"] = func_doc[:500]
+                    if params:
+                        func_entry["doc"]["inputs"] = params
+                symbols.append(func_entry)
+                edges.append({"source": mod_id, "target": func_id, "type": "contains"})
+                symbol_table[node.name] = func_id
+                symbol_table[f"{mod_name}.{node.name}"] = func_id
 
-        # Extract imports and calls (walk full tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    target_id = f"mod:{alias.name}"
-                    edges.append({"source": mod_id, "target": target_id, "type": "imports"})
+    # ── Phase 2: Extract relations (scope-aware) ──
+    for py_file in py_files:
+        rel = py_file.relative_to(root_path)
+        mod_name = str(rel.with_suffix("")).replace(os.sep, ".")
+        mod_id = f"mod:{mod_name}"
+        if mod_id not in module_sources:
+            continue
+        source = module_sources[mod_id]
+        try:
+            tree = ast.parse(source, filename=str(rel))
+        except SyntaxError:
+            continue
 
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    target_id = f"mod:{node.module}"
-                    edges.append({"source": mod_id, "target": target_id, "type": "imports"})
+        visitor = _RelationVisitor(
+            mod_id=mod_id,
+            mod_name=mod_name,
+            rel_path=str(rel),
+            source=source,
+            symbol_table=symbol_table,
+            class_ids=class_ids,
+            import_aliases=import_aliases.get(mod_id, {}),
+        )
+        visitor.visit(tree)
+        edges.extend(visitor.edges)
+        import_aliases[mod_id] = visitor.local_aliases
 
-            elif isinstance(node, ast.Call):
-                callee = _resolve_call(node)
-                if callee:
-                    edges.append({
-                        "source": mod_id,
-                        "target": callee,
-                        "type": "calls",
-                    })
+    # ── Phase 3: Resolve inherits from collected bases ──
+    known_sym_ids = {s["id"] for s in symbols}
+    for sym in symbols:
+        bases = sym.pop("bases", [])
+        for base_name in bases:
+            target_id = _resolve_name(base_name, symbol_table, {})
+            if target_id and target_id in known_sym_ids:
+                edges.append({"source": sym["id"], "target": target_id, "type": "inherits"})
+            else:
+                ext_id = f"ext:{base_name}"
+                if not any(s["id"] == ext_id for s in symbols):
+                    symbols.append({"id": ext_id, "label": base_name, "kind": "external"})
+                edges.append({
+                    "source": sym["id"], "target": ext_id,
+                    "type": "inherits", "confidence": 0.5,
+                })
 
-    # Resolve call targets to known symbol IDs where possible
-    known_ids = {s["id"] for s in symbols}
-    known_labels = {}
-    for s in symbols:
-        known_labels.setdefault(s["label"], s["id"])
-        # also short name
-        short = s["label"].split(".")[-1]
-        known_labels.setdefault(short, s["id"])
-
-    resolved_edges = []
+    # ── Phase 4: Collect external symbols from unresolved edges ──
+    all_sym_ids = {s["id"] for s in symbols}
+    ext_to_add: dict[str, str] = {}
     for e in edges:
-        target = e["target"]
-        if target in known_ids:
-            resolved_edges.append(e)
-        elif target in known_labels:
-            e["target"] = known_labels[target]
-            resolved_edges.append(e)
-        elif target.startswith("mod:") or e["type"] == "contains":
-            resolved_edges.append(e)
-        # else: drop unresolved calls
+        for endpoint in ("source", "target"):
+            eid = e[endpoint]
+            if eid.startswith("ext:") and eid not in all_sym_ids and eid not in ext_to_add:
+                ext_to_add[eid] = e.get("artifactLabel") or e.get("externalLabel") or eid[4:]
+    for eid, elabel in ext_to_add.items():
+        symbols.append({"id": eid, "label": elabel, "kind": "external"})
 
-    # Deduplicate edges
-    seen = set()
-    unique_edges = []
-    for e in resolved_edges:
+    # ── Phase 5: Clean edges and deduplicate ──
+    for e in edges:
+        e.pop("artifactLabel", None)
+        e.pop("externalLabel", None)
+
+    seen: set[tuple] = set()
+    unique_edges: list[dict] = []
+    for e in edges:
         key = (e["source"], e["target"], e["type"])
         if key not in seen:
             seen.add(key)
             unique_edges.append(e)
 
-    return {"symbols": symbols, "edges": unique_edges}
+    meta["total_symbols"] = len(symbols)
+    meta["total_edges"] = len(unique_edges)
+
+    return {"symbols": symbols, "edges": unique_edges, "meta": meta}
 
 
-def _resolve_call(node: ast.Call) -> str | None:
-    """Try to extract the called name as a string."""
+class _RelationVisitor(ast.NodeVisitor):
+    """Scope-aware visitor that tracks module → class → function
+    and assigns every call/import to the correct source symbol."""
+
+    def __init__(self, mod_id: str, mod_name: str, rel_path: str, source: str,
+                 symbol_table: dict[str, str], class_ids: set[str],
+                 import_aliases: dict[str, str]):
+        self.mod_id = mod_id
+        self.mod_name = mod_name
+        self.rel_path = rel_path
+        self.source = source
+        self.symbol_table = symbol_table
+        self.class_ids = class_ids
+        self.local_aliases: dict[str, str] = dict(import_aliases)
+        self.edges: list[dict] = []
+        self._scope_stack: list[str] = [mod_id]
+
+    @property
+    def _current_scope(self) -> str:
+        return self._scope_stack[-1]
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        cls_id = f"{self.mod_id}:{node.name}"
+        self._scope_stack.append(cls_id)
+        self.generic_visit(node)
+        self._scope_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_func(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_func(node)
+
+    def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        parent = self._current_scope
+        if parent in self.class_ids:
+            func_id = f"{parent}.{node.name}"
+        else:
+            func_id = f"{self.mod_id}:{node.name}"
+        self._scope_stack.append(func_id)
+        self.generic_visit(node)
+        self._scope_stack.pop()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            target_id = f"mod:{alias.name}"
+            local_name = alias.asname or alias.name
+            self.local_aliases[local_name] = target_id
+            self.edges.append({
+                "source": self.mod_id, "target": target_id, "type": "imports",
+                "evidence": _make_evidence(self.rel_path, node),
+            })
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if not node.module:
+            self.generic_visit(node)
+            return
+        base_mod = node.module
+        if node.level and node.level > 0:
+            parts = self.mod_name.split(".")
+            if len(parts) >= node.level:
+                prefix = ".".join(parts[:-node.level]) if node.level < len(parts) else ""
+                base_mod = f"{prefix}.{node.module}" if prefix else node.module
+
+        for alias in (node.names or []):
+            if alias.name == "*":
+                target_id = f"mod:{base_mod}"
+                self.edges.append({
+                    "source": self.mod_id, "target": target_id, "type": "imports",
+                    "evidence": _make_evidence(self.rel_path, node),
+                })
+            else:
+                local_name = alias.asname or alias.name
+                full_name = f"{base_mod}.{alias.name}"
+                target_id = (
+                    self.symbol_table.get(full_name)
+                    or self.symbol_table.get(alias.name)
+                    or f"mod:{base_mod}"
+                )
+                self.local_aliases[local_name] = target_id
+                self.edges.append({
+                    "source": self.mod_id, "target": target_id, "type": "imports",
+                    "evidence": _make_evidence(self.rel_path, node),
+                })
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        callee_str = _resolve_call_name(node)
+        if callee_str:
+            self._process_call(node, callee_str)
+        self.generic_visit(node)
+
+    def _process_call(self, node: ast.Call, callee_str: str) -> None:
+        evidence = _make_evidence(self.rel_path, node)
+        source_id = self._current_scope
+
+        # Detect reads/writes
+        rw = _detect_read_write(callee_str)
+        if rw:
+            artifact_name = _extract_artifact_name(node, callee_str)
+            artifact_id = f"ext:{artifact_name}" if artifact_name else f"ext:{callee_str}"
+            self.edges.append({
+                "source": source_id, "target": artifact_id, "type": rw,
+                "confidence": 0.7, "evidence": evidence,
+                "artifactLabel": artifact_name or callee_str,
+            })
+
+        # Resolve the callee to a symbol ID
+        target_id = _resolve_name(callee_str, self.symbol_table, self.local_aliases)
+
+        # Handle self.method()
+        if not target_id and callee_str.startswith("self."):
+            method_name = callee_str[5:]
+            for scope in reversed(self._scope_stack):
+                if scope in self.class_ids:
+                    target_id = f"{scope}.{method_name}"
+                    break
+
+        if not target_id:
+            # Unresolved → external
+            if not callee_str.startswith("self."):
+                ext_id = f"ext:{callee_str}"
+                self.edges.append({
+                    "source": source_id, "target": ext_id, "type": "calls",
+                    "confidence": 0.5, "evidence": evidence,
+                    "externalLabel": callee_str,
+                })
+            return
+
+        # Check if target is a class → instantiates
+        is_instantiation = target_id in self.class_ids
+        edge_type = "instantiates" if is_instantiation else "calls"
+        self.edges.append({
+            "source": source_id, "target": target_id,
+            "type": edge_type, "confidence": 0.8, "evidence": evidence,
+        })
+
+
+# ── Helper functions ──────────────────────────────
+
+def _extract_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict]:
+    params: list[dict] = []
+    for arg in node.args.args:
+        if arg.arg in ("self", "cls"):
+            continue
+        p: dict[str, str] = {"name": arg.arg}
+        if arg.annotation:
+            ann = _node_to_str(arg.annotation)
+            if ann:
+                p["type"] = ann
+        params.append(p)
+    return params
+
+
+def _node_to_str(node: ast.expr) -> Optional[str]:
+    if isinstance(node, ast.Name):
+        return node.id
+    elif isinstance(node, ast.Attribute):
+        val = _node_to_str(node.value)
+        return f"{val}.{node.attr}" if val else node.attr
+    elif isinstance(node, ast.Constant):
+        return str(node.value)
+    elif isinstance(node, ast.Subscript):
+        val = _node_to_str(node.value)
+        sl = _node_to_str(node.slice)  # type: ignore
+        return f"{val}[{sl}]" if val else None
+    elif isinstance(node, ast.Tuple):
+        elts = [_node_to_str(e) for e in node.elts]
+        return ", ".join(e for e in elts if e)
+    return None
+
+
+def _resolve_call_name(node: ast.Call) -> Optional[str]:
     func = node.func
     if isinstance(func, ast.Name):
         return func.id
     elif isinstance(func, ast.Attribute):
-        parts = []
-        current = func
+        parts: list[str] = []
+        current: ast.expr = func
         while isinstance(current, ast.Attribute):
             parts.append(current.attr)
             current = current.value
@@ -158,6 +454,58 @@ def _resolve_call(node: ast.Call) -> str | None:
         return ".".join(parts)
     return None
 
+
+def _resolve_name(name: str, symbol_table: dict[str, str],
+                  local_aliases: dict[str, str]) -> Optional[str]:
+    if name in symbol_table:
+        return symbol_table[name]
+    if name in local_aliases:
+        return local_aliases[name]
+    if "." in name:
+        parts = name.split(".")
+        first = parts[0]
+        rest = ".".join(parts[1:])
+        if first in local_aliases:
+            resolved_prefix = local_aliases[first]
+            for candidate in [f"{resolved_prefix}.{rest}", f"{resolved_prefix}:{rest}"]:
+                if candidate in symbol_table:
+                    return symbol_table[candidate]
+            if rest in symbol_table:
+                return symbol_table[rest]
+        short = parts[-1]
+        if short in symbol_table:
+            return symbol_table[short]
+    return None
+
+
+def _detect_read_write(callee: str) -> Optional[str]:
+    """Check if a call is a file read or write operation."""
+    last_part = callee.split(".")[-1]
+    if last_part in READ_CALL_PATTERNS:
+        return "reads"
+    if last_part in WRITE_CALL_PATTERNS:
+        return "writes"
+    return None
+
+
+def _extract_artifact_name(node: ast.Call, callee: str) -> Optional[str]:
+    if node.args:
+        first_arg = node.args[0]
+        if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+            return first_arg.value
+    return None
+
+
+def _make_evidence(rel_path: str, node: ast.AST) -> dict:
+    ev: dict = {"file": rel_path}
+    if hasattr(node, "lineno"):
+        ev["startLine"] = node.lineno
+    if hasattr(node, "end_lineno"):
+        ev["endLine"] = node.end_lineno
+    return ev
+
+
+# ── Entry point ───────────────────────────────────
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
