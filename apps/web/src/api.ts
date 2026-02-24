@@ -160,11 +160,23 @@ export interface AnalyzeEvent {
   symbolId?: string;
   symbolLabel?: string;
   viewId?: string;
+  groupId?: string;
+  moduleId?: string;
+  moduleLabel?: string;
   old?: string;
   new_?: string;
   relationType?: string;
   sourceLabel?: string;
   targetLabel?: string;
+  fromGroup?: string;
+  toGroup?: string;
+  sourceGroup?: string;
+  targetGroup?: string;
+  groupLabel?: string;
+  subGroupCount?: number;
+  parentGroup?: string;
+  subGroupLabel?: string;
+  moduleCount?: number;
   reason?: string;
   summary?: string;
   message?: string;
@@ -172,7 +184,13 @@ export interface AnalyzeEvent {
   outputs?: Array<{ name: string; type?: string; description?: string }>;
   current?: number;
   total?: number;
-  stats?: { labelsFixed: number; docsGenerated: number; relationsAdded: number; deadCodeFound: number };
+  stats?: {
+    labelsFixed: number;
+    docsGenerated: number;
+    relationsAdded: number;
+    deadCodeFound: number;
+    groupsReviewed?: number;
+  };
   thought?: string;
   // Live graph update fields
   relationId?: string;
