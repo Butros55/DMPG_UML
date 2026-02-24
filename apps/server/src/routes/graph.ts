@@ -1,7 +1,9 @@
 import { Router, type Router as RouterType } from "express";
-import { getGraph, setGraph } from "../store.js";
+import { getGraph, setGraph, getCurrentProjectPath } from "../store.js";
 import { buildDemoGraph } from "../demo-graph.js";
 import { ProjectGraphSchema } from "@dmpg/shared";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 export const graphRouter: RouterType = Router();
 
@@ -41,4 +43,44 @@ graphRouter.patch("/symbol/:id/doc", (req, res) => {
   sym.doc = { ...sym.doc, ...req.body };
   setGraph(g);
   res.json({ ok: true, doc: sym.doc });
+});
+
+/** GET /api/graph/source/:id — return source code for a symbol */
+graphRouter.get("/source/:id", (req, res) => {
+  const g = getGraph();
+  if (!g) {
+    res.status(404).json({ error: "no graph loaded" });
+    return;
+  }
+  const sym = g.symbols.find((s) => s.id === req.params.id);
+  if (!sym) {
+    res.status(404).json({ error: "symbol not found" });
+    return;
+  }
+  const loc = sym.location;
+  if (!loc?.file) {
+    res.status(404).json({ error: "symbol has no file location" });
+    return;
+  }
+  const scanRoot = getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
+  const absPath = path.isAbsolute(loc.file) ? loc.file : path.join(scanRoot, loc.file);
+  try {
+    const src = fs.readFileSync(absPath, "utf-8");
+    const lines = src.split("\n");
+    const startLine = loc.startLine ?? 1;
+    const endLine = loc.endLine ?? lines.length;
+    const start = Math.max(0, startLine - 1);
+    const end = Math.min(endLine, lines.length);
+    const code = lines.slice(start, end).join("\n");
+    res.json({
+      code,
+      file: loc.file,
+      startLine,
+      endLine: end,
+      totalLines: lines.length,
+      language: loc.file.endsWith(".py") ? "python" : loc.file.endsWith(".ts") || loc.file.endsWith(".tsx") ? "typescript" : loc.file.endsWith(".js") || loc.file.endsWith(".jsx") ? "javascript" : "text",
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: `Could not read file: ${err.message}` });
+  }
 });

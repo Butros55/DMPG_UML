@@ -1,7 +1,8 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore } from "../store";
-import { scanProject, browseFolders, fetchConfig, startAnalysis, cancelAnalysis, pauseAnalysis, fetchAnalyzeStatus, fetchGraph } from "../api";
-import type { DiagramView } from "@dmpg/shared";
+import { scanProject, browseFolders, fetchConfig, startAnalysis, cancelAnalysis, pauseAnalysis, fetchAnalyzeStatus, fetchGraph, fetchProjects, switchProject as switchProjectApi, deleteProjectApi } from "../api";
+import type { ProjectMeta } from "../api";
+import type { DiagramView, Symbol as Sym } from "@dmpg/shared";
 
 const NODE_KINDS = [
   { kind: "module", label: "Module", color: "#6c8cff" },
@@ -14,6 +15,21 @@ const NODE_KINDS = [
   { kind: "group", label: "Group", color: "#6c8cff" },
 ];
 
+/** Short letter + color for each symbol kind */
+const KIND_BADGE: Record<string, { letter: string; color: string }> = {
+  module: { letter: "M", color: "#6c8cff" },
+  class: { letter: "C", color: "#ffd866" },
+  function: { letter: "F", color: "#80e0a0" },
+  method: { letter: "M", color: "#ffab70" },
+  package: { letter: "P", color: "#6c8cff" },
+  constant: { letter: "K", color: "#ff6b6b" },
+  script: { letter: "S", color: "#ffab70" },
+  group: { letter: "G", color: "#6c8cff" },
+  interface: { letter: "I", color: "#66d9ef" },
+  variable: { letter: "V", color: "#c792ea" },
+  external: { letter: "E", color: "#888" },
+};
+
 const SCOPE_ICONS: Record<string, string> = {
   root: "🌐",
   group: "📦",
@@ -21,10 +37,115 @@ const SCOPE_ICONS: Record<string, string> = {
   class: "🏛️",
 };
 
-/* ─── View Tree Item (recursive) ─── */
+/** Navigate to the deepest view containing a symbol and focus it */
+function goToSymbol(symbolId: string) {
+  const store = useAppStore.getState();
+  const g = store.graph;
+  if (!g) return;
+  let bestView: string | null = null;
+  for (const v of g.views) {
+    if (v.nodeRefs.includes(symbolId)) {
+      if (!bestView || (v.parentViewId && v.parentViewId !== g.rootViewId)) {
+        bestView = v.id;
+      }
+    }
+  }
+  if (bestView && bestView !== store.currentViewId) {
+    store.navigateToView(bestView);
+  }
+  store.setFocusNode(symbolId);
+}
+
+/** Small inline kind badge */
+function KindBadge({ kind }: { kind: string }) {
+  const b = KIND_BADGE[kind] ?? { letter: kind[0]?.toUpperCase() ?? "?", color: "#888" };
+  return (
+    <span
+      className="kind-badge"
+      style={{ background: `${b.color}22`, color: b.color }}
+      title={kind}
+    >
+      {b.letter}
+    </span>
+  );
+}
+
+/* ─── Global Symbol Search ─── */
+function SymbolSearch({ symbols }: { symbols: Sym[] }) {
+  const [query, setQuery] = useState("");
+  const [focused, setFocused] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return symbols
+      .filter((s) => {
+        const label = s.label.toLowerCase();
+        // Search label, kind, and doc.summary
+        return label.includes(q) || s.kind.includes(q) || (s.doc?.summary ?? "").toLowerCase().includes(q);
+      })
+      .slice(0, 50);
+  }, [query, symbols]);
+
+  const showDropdown = focused && query.trim().length >= 2;
+
+  return (
+    <div className="symbol-search">
+      <div className="symbol-search__input-wrap">
+        <span className="symbol-search__icon">🔍</span>
+        <input
+          ref={inputRef}
+          className="symbol-search__input"
+          type="text"
+          placeholder="Suche nach Symbolen…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 200)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setQuery("");
+              inputRef.current?.blur();
+            }
+          }}
+        />
+        {query && (
+          <button className="symbol-search__clear" onClick={() => setQuery("")}>✕</button>
+        )}
+      </div>
+      {showDropdown && (
+        <div className="symbol-search__dropdown">
+          {results.length === 0 ? (
+            <div className="symbol-search__empty">Keine Ergebnisse</div>
+          ) : (
+            results.map((sym) => (
+              <div
+                key={sym.id}
+                className="symbol-search__result"
+                onMouseDown={(e) => {
+                  e.preventDefault(); // prevent blur before click
+                  goToSymbol(sym.id);
+                  setQuery("");
+                }}
+              >
+                <KindBadge kind={sym.kind} />
+                <span className="symbol-search__result-label">{sym.label}</span>
+                <span className="symbol-search__result-kind">{sym.kind}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── View Tree Item (recursive) — shows child symbols too ─── */
 function ViewTreeItem({
   view,
   childMap,
+  symbolsByView,
   currentViewId,
   navigateToView,
   collapsed,
@@ -34,6 +155,7 @@ function ViewTreeItem({
 }: {
   view: DiagramView;
   childMap: Map<string, DiagramView[]>;
+  symbolsByView: Map<string, Sym[]>;
   currentViewId: string | null;
   navigateToView: (id: string) => void;
   collapsed: Record<string, boolean>;
@@ -41,8 +163,9 @@ function ViewTreeItem({
   deadSymbolIds: Set<string>;
   level: number;
 }) {
-  const children = childMap.get(view.id) ?? [];
-  const hasChildren = children.length > 0;
+  const childViews = childMap.get(view.id) ?? [];
+  const viewSymbols = symbolsByView.get(view.id) ?? [];
+  const hasChildren = childViews.length > 0 || viewSymbols.length > 0;
   const isCollapsed = collapsed[view.id] ?? (level > 1);
   const isActive = view.id === currentViewId;
   const scope = (view as any).scope as string | undefined;
@@ -71,19 +194,41 @@ function ViewTreeItem({
         <span className="view-tree-icon">{icon}</span>
         <span className="view-tree-label">{view.title}</span>
       </div>
-      {hasChildren && !isCollapsed && children.map((child) => (
-        <ViewTreeItem
-          key={child.id}
-          view={child}
-          childMap={childMap}
-          currentViewId={currentViewId}
-          navigateToView={navigateToView}
-          collapsed={collapsed}
-          toggleCollapse={toggleCollapse}
-          deadSymbolIds={deadSymbolIds}
-          level={level + 1}
-        />
-      ))}
+      {hasChildren && !isCollapsed && (
+        <>
+          {/* Child views first */}
+          {childViews.map((child) => (
+            <ViewTreeItem
+              key={child.id}
+              view={child}
+              childMap={childMap}
+              symbolsByView={symbolsByView}
+              currentViewId={currentViewId}
+              navigateToView={navigateToView}
+              collapsed={collapsed}
+              toggleCollapse={toggleCollapse}
+              deadSymbolIds={deadSymbolIds}
+              level={level + 1}
+            />
+          ))}
+          {/* Then symbols belonging to this view that are NOT sub-views */}
+          {viewSymbols.map((sym) => (
+            <div
+              key={sym.id}
+              className={`view-tree-item view-tree-symbol ${deadSymbolIds.has(sym.id) ? "view-tree-symbol--dead" : ""}`}
+              style={{ paddingLeft: 8 + (level + 1) * 16 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                goToSymbol(sym.id);
+              }}
+            >
+              <span className="view-tree-chevron view-tree-chevron--leaf" />
+              <KindBadge kind={sym.kind} />
+              <span className="view-tree-label">{sym.label.split(".").pop()}</span>
+            </div>
+          ))}
+        </>
+      )}
     </>
   );
 }
@@ -180,7 +325,14 @@ export function Sidebar() {
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
   const [showBrowser, setShowBrowser] = useState(false);
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  const [activeProjectPath, setActiveProjectPath] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Collapsible sidebar sections
+  const [sectionCollapsed, setSectionCollapsed] = useState<Record<string, boolean>>({});
+  const toggleSection = useCallback((key: string) => {
+    setSectionCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
   const abortRef = useCallback(() => {}, []);
   const [abortFn, setAbortFn] = useState<(() => void) | null>(null);
   const [analyzeScope, setAnalyzeScope] = useState<"all" | "view">("all");
@@ -188,10 +340,8 @@ export function Sidebar() {
   const [ollamaModel, setOllamaModel] = useState("");
   const [canResume, setCanResume] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
-  const lastNavTimeRef = useRef(0);
-  const NAV_THROTTLE_MS = 2000; // auto-navigate every 2 seconds
 
-  // Load default scan path and AI config from server on mount
+  // Load default scan path, AI config, and project list on mount
   useEffect(() => {
     fetchConfig().then((cfg) => {
       if (cfg.scanProjectPath) {
@@ -200,6 +350,10 @@ export function Sidebar() {
       setAiProvider(cfg.aiProvider ?? "cloud");
       setOllamaModel(cfg.ollamaModel ?? "");
     });
+    fetchProjects().then(({ projects: p, activeProject }) => {
+      setProjects(p);
+      setActiveProjectPath(activeProject);
+    }).catch(() => {});
     // Check if there is a resumable AI analysis from a previous session
     fetchAnalyzeStatus().then((status) => {
       if (status.canResume && !status.running) {
@@ -215,12 +369,41 @@ export function Sidebar() {
     try {
       const g = await scanProject(scanPath.trim());
       setGraph(g);
+      // Refresh project list after successful scan
+      fetchProjects().then(({ projects: p, activeProject }) => {
+        setProjects(p);
+        setActiveProjectPath(activeProject);
+      }).catch(() => {});
     } catch (err: any) {
       setScanError(err.message);
     } finally {
       setScanning(false);
     }
   }, [scanPath, setGraph]);
+
+  const handleSwitchProject = useCallback(async (projectPath: string) => {
+    try {
+      const { graph: g } = await switchProjectApi(projectPath);
+      if (g) {
+        setGraph(g);
+      }
+      setScanPath(projectPath);
+      setActiveProjectPath(projectPath);
+      setScanError("");
+    } catch (err: any) {
+      setScanError(err.message);
+    }
+  }, [setGraph]);
+
+  const handleDeleteProject = useCallback(async (projectPath: string) => {
+    try {
+      await deleteProjectApi(projectPath);
+      setProjects((prev) => prev.filter((p) => p.projectPath !== projectPath));
+      if (activeProjectPath === projectPath) {
+        setActiveProjectPath(null);
+      }
+    } catch { /* ignore */ }
+  }, [activeProjectPath]);
 
   // Auto-scroll AI log when new entries arrive
   useEffect(() => {
@@ -246,76 +429,34 @@ export function Sidebar() {
     const viewId = analyzeScope === "view" ? currentViewId ?? undefined : undefined;
     console.log(`[AI] Scope: ${viewId ? `view ${viewId}` : "all"}, resume: ${resume}`);
 
-    // Helper: navigate to the view containing a symbol so the user sees the change
-    const navigateToSymbol = (symbolId: string) => {
-      const now = Date.now();
-      if (now - lastNavTimeRef.current < NAV_THROTTLE_MS) return; // throttle
-      const g = useAppStore.getState().graph;
-      if (!g) return;
-      // Find the deepest view containing this symbol
-      let bestView: string | null = null;
-      for (const v of g.views) {
-        if (v.nodeRefs.includes(symbolId)) {
-          // Prefer deeper views (more specific)
-          if (!bestView || (v.parentViewId && v.parentViewId !== g.rootViewId)) {
-            bestView = v.id;
-          }
-        }
-      }
-      if (bestView) {
-        lastNavTimeRef.current = now;
-        if (bestView !== useAppStore.getState().currentViewId) {
-          navigateToView(bestView);
-        }
-        // Zoom + highlight the node
-        useAppStore.getState().setFocusNode(symbolId);
-      }
-    };
-
     const abort = startAnalysis(
       (event) => {
         console.log("[AI] SSE event:", event.phase, event.action ?? "", event.symbolLabel ?? event.symbolId ?? "", JSON.stringify(event));
         addAiEvent(event);
 
-        // Auto-navigate to the view containing the changed symbol (throttled)
-        if (event.symbolId && event.action !== "start" && event.action !== "error" && event.action !== "saved") {
-          navigateToSymbol(event.symbolId);
-        }
-
-        // Periodically refresh graph from server when a batch is saved
-        if (event.action === "saved" || event.action === "start") {
-          fetch("/api/graph").then((r) => r.json()).then((g) => updateGraph(g)).catch(() => {});
-        }
-
         if (event.phase === "done" || event.phase === "cancelled") {
           console.log("[AI] Analysis", event.phase, event.stats);
-          // Final refresh
-          fetch("/api/graph").then((r) => r.json()).then((g) => updateGraph(g)).catch(() => {});
         }
         if (event.phase === "paused") {
           console.log("[AI] Analysis paused", event.stats);
           setCanResume(true);
-          stopAiAnalysis();
-          fetch("/api/graph").then((r) => r.json()).then((g) => updateGraph(g)).catch(() => {});
         }
         if (event.phase === "error") {
           console.error("[AI] Analysis error:", event.message);
           setCanResume(true); // can resume after errors too
-          fetch("/api/graph").then((r) => r.json()).then((g) => updateGraph(g)).catch(() => {});
         }
       },
       (err) => {
         console.error("[AI] Connection error:", err);
         addAiEvent({ phase: "error", message: err.message ?? "Verbindungsfehler" });
         stopAiAnalysis();
-        // Re-fetch on error too
-        fetch("/api/graph").then((r) => r.json()).then((g) => updateGraph(g)).catch(() => {});
+        setCanResume(true);
       },
       viewId,
       resume,
     );
     setAbortFn(() => abort);
-  }, [startAiAnalysis, addAiEvent, stopAiAnalysis, updateGraph, navigateToView, analyzeScope, currentViewId]);
+  }, [startAiAnalysis, addAiEvent, stopAiAnalysis, updateGraph, analyzeScope, currentViewId]);
 
   const handleStopAnalysis = useCallback(() => {
     // Tell the server to stop processing
@@ -342,8 +483,18 @@ export function Sidebar() {
     setCollapsed((prev) => ({ ...prev, [viewId]: !prev[viewId] }));
   }, []);
 
+  /** Collapse all view tree nodes */
+  const collapseAllViews = useCallback(() => {
+    const all: Record<string, boolean> = {};
+    for (const v of (graph?.views ?? [])) {
+      all[v.id] = true;
+    }
+    setCollapsed(all);
+  }, [graph]);
+
   // Build view tree structure
   const views = graph?.views ?? [];
+  const allSymbols = graph?.symbols ?? [];
   const { rootViews, childMap } = useMemo(() => {
     const cMap = new Map<string, DiagramView[]>();
     const roots: DiagramView[] = [];
@@ -358,6 +509,32 @@ export function Sidebar() {
     }
     return { rootViews: roots, childMap: cMap };
   }, [views]);
+
+  // Build symbol list per view: only symbols that are direct children (not sub-view owners)
+  const symbolsByView = useMemo(() => {
+    const map = new Map<string, Sym[]>();
+    // Collect set of symbol IDs that own a child view (these are shown as sub-trees, not leaf nodes)
+    const viewOwnerIds = new Set<string>();
+    for (const v of views) {
+      // Find the symbol that has childViewId === v.id
+      for (const sym of allSymbols) {
+        if (sym.childViewId === v.id) viewOwnerIds.add(sym.id);
+      }
+    }
+    for (const v of views) {
+      const syms: Sym[] = [];
+      for (const nid of v.nodeRefs) {
+        if (viewOwnerIds.has(nid)) continue; // skip — shown as sub-view
+        const sym = allSymbols.find((s) => s.id === nid);
+        if (sym) syms.push(sym);
+      }
+      // Sort: classes/modules first, then functions, then methods, then rest
+      const kindOrder: Record<string, number> = { class: 0, module: 1, function: 2, method: 3, constant: 4, script: 5 };
+      syms.sort((a, b) => (kindOrder[a.kind] ?? 9) - (kindOrder[b.kind] ?? 9) || a.label.localeCompare(b.label));
+      if (syms.length > 0) map.set(v.id, syms);
+    }
+    return map;
+  }, [views, allSymbols]);
 
   // Auto-expand sidebar tree to reveal the current view
   useEffect(() => {
@@ -398,9 +575,19 @@ export function Sidebar() {
 
   return (
     <div className="sidebar">
+      {/* ── Global Symbol Search ── */}
+      {allSymbols.length > 0 && (
+        <div className="sidebar-section sidebar-section--search">
+          <SymbolSearch symbols={allSymbols} />
+        </div>
+      )}
+
       <div className="sidebar-section">
-        <h2>UML Nodes</h2>
-        {NODE_KINDS.map((nk) => (
+        <h2 className="sidebar-section__header" onClick={() => toggleSection("umlNodes")}>
+          <span className={`sidebar-section__chevron ${sectionCollapsed.umlNodes ? "" : "sidebar-section__chevron--open"}`}>▸</span>
+          UML Nodes
+        </h2>
+        {!sectionCollapsed.umlNodes && NODE_KINDS.map((nk) => (
           <div
             key={nk.kind}
             className="node-palette-item"
@@ -417,22 +604,35 @@ export function Sidebar() {
 
       {/* ── Collapsible View Tree ── */}
       <div className="sidebar-section">
-        <h2>Views</h2>
-        <div className="view-tree">
-          {rootViews.map((v) => (
-            <ViewTreeItem
-              key={v.id}
-              view={v}
-              childMap={childMap}
-              currentViewId={currentViewId}
-              navigateToView={navigateToView}
-              collapsed={collapsed}
-              toggleCollapse={toggleCollapse}
-              deadSymbolIds={deadSymbolIds}
-              level={0}
-            />
-          ))}
-        </div>
+        <h2 className="sidebar-section__header" onClick={() => toggleSection("views")}>
+          <span className={`sidebar-section__chevron ${sectionCollapsed.views ? "" : "sidebar-section__chevron--open"}`}>▸</span>
+          Views
+          <button
+            className="sidebar-section__action"
+            onClick={(e) => { e.stopPropagation(); collapseAllViews(); }}
+            title="Alle Views einklappen"
+          >
+            ⊟
+          </button>
+        </h2>
+        {!sectionCollapsed.views && (
+          <div className="view-tree">
+            {rootViews.map((v) => (
+              <ViewTreeItem
+                key={v.id}
+                view={v}
+                childMap={childMap}
+                symbolsByView={symbolsByView}
+                currentViewId={currentViewId}
+                navigateToView={navigateToView}
+                collapsed={collapsed}
+                toggleCollapse={toggleCollapse}
+                deadSymbolIds={deadSymbolIds}
+                level={0}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Dead Code Section ── */}
@@ -443,28 +643,11 @@ export function Sidebar() {
             <div
               key={sym.id}
               className="node-palette-item dead-code-item"
-              onClick={() => {
-                const store = useAppStore.getState();
-                const g = store.graph;
-                if (!g) return;
-                // Find the deepest view containing this symbol
-                let bestView: string | null = null;
-                for (const v of g.views) {
-                  if (v.nodeRefs.includes(sym.id)) {
-                    if (!bestView || (v.parentViewId && v.parentViewId !== g.rootViewId)) {
-                      bestView = v.id;
-                    }
-                  }
-                }
-                if (bestView && bestView !== store.currentViewId) {
-                  store.navigateToView(bestView);
-                }
-                store.setFocusNode(sym.id);
-              }}
+              onClick={() => goToSymbol(sym.id)}
             >
               <span className="dead-code-icon">💀</span>
+              <KindBadge kind={sym.kind} />
               <span>{sym.label.split(".").pop()}</span>
-              <span className="dead-code-kind">{sym.kind}</span>
             </div>
           ))}
         </div>
@@ -473,7 +656,11 @@ export function Sidebar() {
       {/* ── AI Analysis ── */}
       {graph && (
         <div className="sidebar-section">
-          <h2>AI Analysis</h2>
+          <h2 className="sidebar-section__header" onClick={() => toggleSection("aiAnalysis")}>
+            <span className={`sidebar-section__chevron ${sectionCollapsed.aiAnalysis ? "" : "sidebar-section__chevron--open"}`}>▸</span>
+            AI Analysis
+          </h2>
+          {!sectionCollapsed.aiAnalysis && (<>
 
           {/* Provider info */}
           <div className="ai-provider-info">
@@ -528,6 +715,14 @@ export function Sidebar() {
               <button className="btn ai-analyze-btn ai-analyze-btn--stop" onClick={handleStopAnalysis} style={{ flex: 1 }}>
                 ⏹ Stoppen
               </button>
+              <button
+                className={`btn ai-analyze-btn ${aiAnalysis?.navPaused ? "ai-analyze-btn--resume" : "ai-analyze-btn--nav-pause"}`}
+                onClick={() => useAppStore.getState().toggleAiNavPaused()}
+                title={aiAnalysis?.navPaused ? "Auto-Navigation fortsetzen" : "Auto-Navigation pausieren (Analyse läuft weiter)"}
+                style={{ flex: 1 }}
+              >
+                {aiAnalysis?.navPaused ? "🧭▶ Nav" : "🧭⏸ Nav"}
+              </button>
             </div>
           )}
           {aiAnalysis && (
@@ -537,9 +732,9 @@ export function Sidebar() {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span className="ai-spinner" />
                     <span className={`ai-phase-badge ai-phase-badge--${aiAnalysis.phase}`}>{aiAnalysis.phase || "starting…"}</span>
-                    {/* Show progress text from last progress event */}
+                    {/* Show progress text from last progress event OF CURRENT PHASE */}
                     {(() => {
-                      const last = [...aiAnalysis.log].reverse().find((e) => e.action === "progress" || e.action === "saved");
+                      const last = [...aiAnalysis.log].reverse().find((e) => (e.action === "progress" || e.action === "saved") && e.phase === aiAnalysis.phase);
                       return last?.message ? <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: 4 }}>{last.message}</span> : null;
                     })()}
                   </div>
@@ -598,6 +793,7 @@ export function Sidebar() {
                     <div className="ai-stat"><span>📝</span><span className="num">{s?.docsGenerated ?? 0}</span> Docs</div>
                     <div className="ai-stat"><span>🔗</span><span className="num">{s?.relationsAdded ?? 0}</span> Relations</div>
                     <div className="ai-stat"><span>💀</span><span className="num">{s?.deadCodeFound ?? 0}</span> Dead Code</div>
+                    <div className="ai-stat"><span>🏗️</span><span className="num">{s?.groupsReviewed ?? 0}</span> Gruppen</div>
                   </div>
                 ) : null;
               })()}
@@ -612,6 +808,11 @@ export function Sidebar() {
                       {ev.phase === "docs" && ev.action === "generated" && <span>📝 {ev.symbolLabel}: {ev.summary?.slice(0, 60)}</span>}
                       {ev.phase === "relations" && ev.action === "added" && <span>🔗 +{ev.relationType}: {ev.sourceLabel} → {ev.targetLabel}</span>}
                       {ev.phase === "dead-code" && !ev.action && <span>💀 {ev.symbolLabel} — {ev.reason}</span>}
+                      {ev.phase === "structure" && ev.action === "rename" && <span>🏗️ {ev.old} → {ev.new_}</span>}
+                      {ev.phase === "structure" && ev.action === "move" && <span>🏗️ {ev.moduleLabel}: {ev.fromGroup} → {ev.toGroup}</span>}
+                      {ev.phase === "structure" && ev.action === "merge" && <span>🏗️ {ev.sourceGroup} → {ev.targetGroup}</span>}
+                      {ev.phase === "structure" && ev.action === "split" && <span>✂️ {ev.groupLabel} → {ev.subGroupCount} Sub-Gruppen</span>}
+                      {ev.phase === "structure" && ev.action === "split-subgroup" && <span>📦 {ev.parentGroup} → {ev.subGroupLabel} ({ev.moduleCount})</span>}
                       {ev.phase === "done" && <span>✅ Fertig!</span>}
                       {ev.phase === "cancelled" && <span>🚫 Abgebrochen</span>}
                       {ev.phase === "paused" && <span>⏸ Pausiert</span>}
@@ -622,11 +823,41 @@ export function Sidebar() {
               </div>
             </div>
           )}
+          </>)}
         </div>
       )}
 
       <div className="sidebar-section scan-section">
         <h2>Scan Project</h2>
+
+        {/* ── Project Quick-Switch List ── */}
+        {projects.length > 0 && (
+          <div className="project-list">
+            {projects.map((p) => (
+              <div
+                key={p.hash}
+                className={`project-item${p.projectPath === activeProjectPath ? " project-item--active" : ""}`}
+                onClick={() => handleSwitchProject(p.projectPath)}
+                title={p.projectPath}
+              >
+                <div className="project-item__info">
+                  <span className="project-item__name">{p.name}</span>
+                  <span className="project-item__meta">
+                    {p.symbolCount} Symbole · {new Date(p.lastScanned).toLocaleDateString("de-DE")}
+                  </span>
+                </div>
+                <button
+                  className="project-item__delete"
+                  onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.projectPath); }}
+                  title="Projekt entfernen"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 4 }}>
           <input
             type="text"

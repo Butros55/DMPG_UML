@@ -3,4 +3,4 @@ dist
 .env
 *.local
 .turbo
-data_pipeline
+demo_data

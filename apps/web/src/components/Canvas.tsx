@@ -7,6 +7,7 @@ import {
   useNodesState,
   useEdgesState,
   addEdge,
+  useNodesInitialized,
   type Connection,
   type Node,
   type Edge,
@@ -37,29 +38,47 @@ export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const selectSymbol = useAppStore((s) => s.selectSymbol);
+  const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
   const selectEdge = useAppStore((s) => s.selectEdge);
+  const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const navigateToView = useAppStore((s) => s.navigateToView);
   const addSymbolToGraph = useAppStore((s) => s.addSymbolToGraph);
   const addRelation = useAppStore((s) => s.addRelation);
   const updateRelation = useAppStore((s) => s.updateRelation);
   const updateRelations = useAppStore((s) => s.updateRelations);
+  const removeSymbol = useAppStore((s) => s.removeSymbol);
+  const removeRelation = useAppStore((s) => s.removeRelation);
   const saveNodePositions = useAppStore((s) => s.saveNodePositions);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [layoutDone, setLayoutDone] = useState(false);
   const reactFlowInstance = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
   const layoutRef = useRef(false);
   const layoutPassRef = useRef(0); // 0 = idle, 1 = first pass done, 2 = second pass done
+  const prevLayoutKeyRef = useRef<string>("");
 
   // AI analysis highlight
   const aiHighlightId = useAppStore((s) => s.aiAnalysis?.highlightSymbolId ?? null);
+  const highlightSeq = useAppStore((s) => s.aiAnalysis?.highlightSeq ?? 0);
+  const aiRunning = useAppStore((s) => s.aiAnalysis?.running ?? false);
+  const aiPhase = useAppStore((s) => s.aiAnalysis?.phase ?? "");
+  const aiThought = useAppStore((s) => s.aiAnalysis?.thought ?? null);
+  const aiWorkingSymbolId = useAppStore((s) => s.aiAnalysis?.aiWorkingSymbolId ?? null);
+  const aiNavPaused = useAppStore((s) => s.aiAnalysis?.navPaused ?? false);
+  const acknowledgeAiNavigationSettled = useAppStore((s) => s.acknowledgeAiNavigationSettled);
 
   // Edge label editing state
   const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
   const [editingEdgeLabel, setEditingEdgeLabel] = useState("");
   const [editingEdgePos, setEditingEdgePos] = useState<{ x: number; y: number } | null>(null);
   const [editingRelationIds, setEditingRelationIds] = useState<string[]>([]);
+
+  // Connect type dialog state
+  const [connectDialog, setConnectDialog] = useState<{ source: string; target: string } | null>(null);
+  const [connectType, setConnectType] = useState<string>("calls");
+  const CONNECT_TYPES = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"] as const;
 
   // Build nodes/edges from current view using edge projection
   const { viewNodes, viewEdges } = useMemo(() => {
@@ -71,14 +90,15 @@ export function Canvas() {
     const scope = (view as any).scope as string | undefined;
 
     // Pre-compute relation badges per symbol: which relation types touch each symbol?
+    // Badges are directional: "out:<type>" for source, "in:<type>" for target
     const relBadgeMap = new Map<string, Set<string>>();
     for (const rel of graph.relations) {
       if (rel.type === "contains") continue;
       const srcSet = relBadgeMap.get(rel.source) ?? new Set();
-      srcSet.add(rel.type);
+      srcSet.add(`out:${rel.type}`);
       relBadgeMap.set(rel.source, srcSet);
       const tgtSet = relBadgeMap.get(rel.target) ?? new Set();
-      tgtSet.add(rel.type);
+      tgtSet.add(`in:${rel.type}`);
       relBadgeMap.set(rel.target, tgtSet);
     }
 
@@ -115,7 +135,7 @@ export function Canvas() {
           if (cb) cb.forEach((t) => childBadges.add(t));
         }
       }
-      const relationBadges = Array.from(childBadges).filter((t) => t !== "imports");
+      const relationBadges = Array.from(childBadges).filter((t) => !t.endsWith(":imports"));
 
       return {
         id: sym.id,
@@ -133,44 +153,118 @@ export function Canvas() {
           children,
           tags: sym.tags,
           relationBadges,
+          location: sym.location,
         } satisfies UmlNodeData,
       } satisfies Node;
     }).filter(Boolean) as Node[];
 
     // Use edge projection instead of strict endpoint filtering
     const projected = projectEdgesForView(view, graph.symbols, graph.relations);
-    const vEdges: Edge[] = projected.map((pe) => ({
-      id: pe.key,
-      source: pe.source,
-      target: pe.target,
-      label: pe.label,
-      animated: pe.animated,
-      className: pe.className,
-      data: { relationIds: pe.relationIds },
-    }));
+
+    // Detect bidirectional pairs: if both A→B and B→A exist, route the
+    // "reverse" edge through Left/Right handles to avoid overlapping paths
+    const edgeKeys = new Set(projected.map((pe) => pe.key));
+    const reverseSet = new Set<string>(); // keys that are the "reverse" direction
+    for (const pe of projected) {
+      const reverse = `${pe.target}|${pe.source}`;
+      if (edgeKeys.has(reverse) && !reverseSet.has(pe.key)) {
+        // Mark the reverse direction (the one we encounter second) for alt routing
+        reverseSet.add(reverse);
+      }
+    }
+
+    const vEdges: Edge[] = projected.map((pe) => {
+      const isReverse = reverseSet.has(pe.key);
+      return {
+        id: pe.key,
+        source: pe.source,
+        target: pe.target,
+        sourceHandle: isReverse ? "out-right" : "out-bottom",
+        targetHandle: isReverse ? "in-left" : "in-top",
+        label: pe.label,
+        animated: pe.animated,
+        className: pe.className,
+        data: { relationIds: pe.relationIds },
+      };
+    });
 
     return { viewNodes: vNodes, viewEdges: vEdges };
   }, [graph, currentViewId]);
 
-  // Apply ELK layout — Pass 1 (estimate) 
+  // Apply ELK layout — Pass 1 (estimate)
+  // Only re-layout when the view or node set actually changes (not on position/data-only updates)
   useEffect(() => {
     if (viewNodes.length === 0) {
       setNodes([]);
       setEdges([]);
+      prevLayoutKeyRef.current = "";
       return;
     }
 
+    // Build key from structure + size-affecting data (node IDs, input/output counts)
+    // When AI analysis adds parameters/outputs to function nodes, the fingerprint
+    // changes and ELK re-layout runs to prevent node overlaps.
+    const nodeFingerprint = viewNodes
+      .map((n) => {
+        const d = n.data as UmlNodeData;
+        return `${n.id}:${d.inputs?.length ?? 0}:${d.outputs?.length ?? 0}`;
+      })
+      .sort()
+      .join(",");
+    const layoutKey = `${currentViewId}|${nodeFingerprint}`;
+
+    if (layoutKey === prevLayoutKeyRef.current) {
+      // Node structure unchanged — update node data & edges without repositioning
+      setNodes((prev) => {
+        const viewNodeMap = new Map(viewNodes.map((vn) => [vn.id, vn]));
+        return prev.map((n) => {
+          const updated = viewNodeMap.get(n.id);
+          return updated
+            ? { ...n, data: updated.data, className: updated.className }
+            : n;
+        });
+      });
+      setEdges(viewEdges);
+      return;
+    }
+    prevLayoutKeyRef.current = layoutKey;
+
+    // Check which nodes have saved positions
+    const view = graph?.views.find((v) => v.id === currentViewId);
+    const savedMap = new Map(
+      (view?.nodePositions ?? []).map((p) => [p.symbolId, p]),
+    );
+    const allHaveSavedPos = viewNodes.every((n) => savedMap.has(n.id));
+
+    if (allHaveSavedPos) {
+      // All nodes already have manual/saved positions — skip ELK entirely
+      setNodes(viewNodes);
+      setEdges(viewEdges);
+      layoutRef.current = false;
+      layoutPassRef.current = 2;
+      setLayoutDone(true);
+      return;
+    }
+
+    // Need ELK layout for unsaved nodes
     setLayoutDone(false);
     layoutRef.current = false;
     layoutPassRef.current = 0;
 
     layoutNodes(viewNodes, viewEdges).then((laid) => {
-      setNodes(laid);
+      // Preserve saved positions; use ELK only for new/unsaved nodes
+      const result = laid.map((n) => {
+        const saved = savedMap.get(n.id);
+        return saved
+          ? { ...n, position: { x: saved.x, y: saved.y } }
+          : n;
+      });
+      setNodes(result);
       setEdges(viewEdges);
       layoutPassRef.current = 1;
       setLayoutDone(true);
     });
-  }, [viewNodes, viewEdges, setNodes, setEdges]);
+  }, [viewNodes, viewEdges, setNodes, setEdges, graph, currentViewId]);
 
   // Pass 2: re-layout with measured sizes (React Flow measures after first render)
   useEffect(() => {
@@ -181,14 +275,26 @@ export function Canvas() {
 
     layoutPassRef.current = 2; // prevent infinite loop
 
+    // Preserve saved positions in pass 2 as well
+    const view = graph?.views.find((v) => v.id === currentViewId);
+    const savedMap = new Map(
+      (view?.nodePositions ?? []).map((p) => [p.symbolId, p]),
+    );
+
     layoutNodes(nodes, edges).then((laid) => {
-      setNodes(laid);
+      const result = laid.map((n) => {
+        const saved = savedMap.get(n.id);
+        return saved
+          ? { ...n, position: { x: saved.x, y: saved.y } }
+          : n;
+      });
+      setNodes(result);
       // Short delay then fit
       setTimeout(() => {
         reactFlowInstance.fitView({ padding: 0.12, duration: 300 });
       }, 60);
     });
-  }, [nodes, edges, layoutDone, setNodes, reactFlowInstance]);
+  }, [nodes, edges, layoutDone, setNodes, reactFlowInstance, graph, currentViewId]);
 
   // Fit view after first layout pass
   useEffect(() => {
@@ -200,30 +306,53 @@ export function Canvas() {
     }
   }, [layoutDone, reactFlowInstance]);
 
-  // AI highlight: scroll to highlighted node & flash animation
+  // AI highlight: When highlightSymbolId changes (or seq increments for same symbol),
+  // flash the node if it exists in the current view. This is a lightweight visual cue;
+  // the actual viewport navigation is driven by focusNodeId below.
+  const prevHighlightSeqRef = useRef(0);
   useEffect(() => {
-    if (aiHighlightId) {
-      // Zoom to the highlighted node
-      reactFlowInstance.fitView({
-        nodes: [{ id: aiHighlightId }],
-        duration: 400,
-        padding: 0.5,
-      });
-      // Add a CSS flash class to the node
-      setTimeout(() => {
-        const el = document.querySelector(`[data-id="${aiHighlightId}"]`);
-        if (el) {
-          el.classList.add("ai-flash");
-          setTimeout(() => el.classList.remove("ai-flash"), 1500);
-        }
-      }, 450);
+    if (!aiHighlightId || highlightSeq === prevHighlightSeqRef.current) return;
+    prevHighlightSeqRef.current = highlightSeq;
+
+    const el = document.querySelector(`[data-id="${aiHighlightId}"]`);
+    if (el) {
+      el.classList.remove("ai-flash");
+      // Force reflow so re-adding the class re-triggers the animation
+      void (el as HTMLElement).offsetWidth;
+      el.classList.add("ai-flash");
+      setTimeout(() => el.classList.remove("ai-flash"), 1500);
     }
-  }, [aiHighlightId, reactFlowInstance]);
+  }, [aiHighlightId, highlightSeq]);
+
+  // AI working node pulse: show animated border on the node LLM is currently analyzing
+  const prevWorkingRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Remove from previous
+    if (prevWorkingRef.current && prevWorkingRef.current !== aiWorkingSymbolId) {
+      const prev = document.querySelector(`[data-id="${prevWorkingRef.current}"]`);
+      if (prev) prev.classList.remove("ai-working");
+    }
+    prevWorkingRef.current = aiWorkingSymbolId;
+    if (!aiWorkingSymbolId) return;
+
+    const el = document.querySelector(`[data-id="${aiWorkingSymbolId}"]`);
+    if (el) {
+      el.classList.add("ai-working");
+    }
+    return () => {
+      if (aiWorkingSymbolId) {
+        const el2 = document.querySelector(`[data-id="${aiWorkingSymbolId}"]`);
+        if (el2) el2.classList.remove("ai-working");
+      }
+    };
+  }, [aiWorkingSymbolId]);
 
   // Focus-navigate: zoom to a specific node after view switch & highlight it
   const focusNodeId = useAppStore((s) => s.focusNodeId);
+  const focusSeq = useAppStore((s) => s.focusSeq ?? 0);
   const setFocusNode = useAppStore((s) => s.setFocusNode);
   const focusAppliedRef = useRef<string | null>(null);
+  const lastFocusSeqRef = useRef(0);
   const pendingFocusRef = useRef<string | null>(null);
   const focusRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -247,9 +376,20 @@ export function Canvas() {
     }
     setTimeout(() => {
       const el = document.querySelector(`[data-id="${nodeId}"]`);
-      if (el) el.classList.add("node-focus-highlight");
+      if (el) {
+        // Use ai-processing class during AI analysis, regular highlight otherwise
+        const cls = aiRunning ? "ai-flash" : "node-focus-highlight";
+        el.classList.add(cls);
+        if (cls === "ai-flash") {
+          setTimeout(() => el.classList.remove("ai-flash"), 1500);
+        }
+      }
+      acknowledgeAiNavigationSettled(nodeId);
     }, 520);
-  }, [reactFlowInstance]);
+  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled]);
+
+  // focusSeq changes drive re-navigation even to the same node (AI events)
+  // No need for the old highlightSeq-based focusAppliedRef reset.
 
   // Main focus effect — tries immediately, retries if layout not ready
   useEffect(() => {
@@ -257,39 +397,50 @@ export function Canvas() {
       pendingFocusRef.current = null;
       return;
     }
-    if (focusAppliedRef.current === focusNodeId) return;
+    const isNewBySeq = focusSeq > lastFocusSeqRef.current;
+    const isNewByNode = focusAppliedRef.current !== focusNodeId;
+    if (!isNewBySeq && !isNewByNode) return;
 
     const exists = nodes.some((n) => n.id === focusNodeId);
-    if (!exists || !layoutDone || layoutPassRef.current < 2) {
+    if (!exists || !layoutDone || layoutPassRef.current < 2 || !nodesInitialized) {
       // Layout not ready — store as pending and retry
       pendingFocusRef.current = focusNodeId;
+      console.debug(`[Canvas-Focus] pending id=${focusNodeId} seq=${focusSeq} exists=${exists} layoutPass=${layoutPassRef.current} nodesInit=${nodesInitialized}`);
       return;
     }
 
     // Layout is ready — apply focus
+    console.debug(`[Canvas-Focus] applying id=${focusNodeId} seq=${focusSeq} layoutPass=${layoutPassRef.current} nodesInit=${nodesInitialized}`);
     focusAppliedRef.current = focusNodeId;
+    lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
     setTimeout(() => applyFocusZoom(focusNodeId), 300);
-  }, [focusNodeId, layoutDone, nodes, reactFlowInstance, setFocusNode, applyFocusZoom]);
+  }, [focusNodeId, focusSeq, layoutDone, nodes, nodesInitialized, reactFlowInstance, setFocusNode, applyFocusZoom]);
 
-  // Retry pending focus after layout pass 2 completes
+  // Retry pending focus after layout pass 2 completes (also checks nodesInitialized)
   useEffect(() => {
-    if (!layoutDone || layoutPassRef.current < 2) return;
+    if (!layoutDone || layoutPassRef.current < 2 || !nodesInitialized) return;
     const pending = pendingFocusRef.current;
-    if (!pending || focusAppliedRef.current === pending) return;
+    if (!pending) return;
+    const isNewBySeq = focusSeq > lastFocusSeqRef.current;
+    const isNewByNode = focusAppliedRef.current !== pending;
+    if (!isNewBySeq && !isNewByNode) return;
 
     // Check node exists now that layout is done
     const exists = nodes.some((n) => n.id === pending);
     if (!exists) return;
 
+    console.debug(`[Canvas-Focus] retry-apply id=${pending} seq=${focusSeq}`);
     focusAppliedRef.current = pending;
+    lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
     setTimeout(() => applyFocusZoom(pending), 300);
-  }, [layoutDone, nodes, applyFocusZoom]);
+  }, [layoutDone, nodes, nodesInitialized, applyFocusZoom, focusSeq]);
 
   // Also retry with a timer for cases where layout deps don't trigger re-render
   useEffect(() => {
-    if (!focusNodeId || focusAppliedRef.current === focusNodeId) {
+    const seqHandled = focusSeq <= lastFocusSeqRef.current;
+    if (!focusNodeId || (focusAppliedRef.current === focusNodeId && seqHandled)) {
       if (focusRetryRef.current) { clearInterval(focusRetryRef.current); focusRetryRef.current = null; }
       return;
     }
@@ -307,12 +458,14 @@ export function Canvas() {
       const id = pendingFocusRef.current ?? focusNodeId;
       const exists = nodes.some((n) => n.id === id);
       if (!exists) return;
-      if (focusAppliedRef.current === id) {
+      const seqDone = focusSeq <= lastFocusSeqRef.current;
+      if (focusAppliedRef.current === id && seqDone) {
         if (focusRetryRef.current) clearInterval(focusRetryRef.current);
         focusRetryRef.current = null;
         return;
       }
       focusAppliedRef.current = id;
+      lastFocusSeqRef.current = focusSeq;
       pendingFocusRef.current = null;
       if (focusRetryRef.current) clearInterval(focusRetryRef.current);
       focusRetryRef.current = null;
@@ -321,7 +474,7 @@ export function Canvas() {
     return () => {
       if (focusRetryRef.current) { clearInterval(focusRetryRef.current); focusRetryRef.current = null; }
     };
-  }, [focusNodeId, nodes, applyFocusZoom]);
+  }, [focusNodeId, focusSeq, nodes, applyFocusZoom]);
 
   // Clear focus highlight when user hovers over the focused node
   const handleNodeMouseEnter = useCallback(
@@ -336,23 +489,64 @@ export function Canvas() {
     [focusNodeId, setFocusNode],
   );
 
-  // When a connection is made between handles, create a real Relation in the graph
+  // When a connection is made between handles, show type dialog
   const onConnect = useCallback(
     (conn: Connection) => {
       if (!conn.source || !conn.target || !currentViewId) return;
-      const relId = `rel-${Date.now()}`;
-      const newRel: Relation = {
-        id: relId,
-        type: "calls",
-        source: conn.source,
-        target: conn.target,
-        label: "calls",
-        confidence: 1,
-      };
-      addRelation(newRel, currentViewId);
+      setConnectDialog({ source: conn.source, target: conn.target });
+      setConnectType("calls");
     },
-    [addRelation, currentViewId],
+    [currentViewId],
   );
+
+  // Confirm the connection type dialog
+  const handleConfirmConnect = useCallback(() => {
+    if (!connectDialog || !currentViewId) return;
+    const relId = `rel-${Date.now()}`;
+    const newRel: Relation = {
+      id: relId,
+      type: connectType as Relation["type"],
+      source: connectDialog.source,
+      target: connectDialog.target,
+      label: connectType,
+      confidence: 1,
+    };
+    addRelation(newRel, currentViewId);
+    setConnectDialog(null);
+  }, [connectDialog, connectType, addRelation, currentViewId]);
+
+  // Keyboard Delete handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger when typing in inputs/textareas/selects
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedSymbolId) {
+          removeSymbol(selectedSymbolId);
+          selectSymbol(null);
+        } else if (selectedEdgeId) {
+          // For projected edges, find underlying relation IDs
+          const directRel = graph?.relations.find((r) => r.id === selectedEdgeId);
+          if (directRel) {
+            removeRelation(selectedEdgeId);
+          } else {
+            // Projected edge: parse "source|target|type"
+            const parts = selectedEdgeId.split("|");
+            if (parts.length === 3) {
+              const rels = graph?.relations.filter(
+                (r) => r.type === parts[2] && r.source === parts[0] && r.target === parts[1],
+              ) ?? [];
+              rels.forEach((r) => removeRelation(r.id));
+            }
+          }
+          selectEdge(null);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedSymbolId, selectedEdgeId, removeSymbol, removeRelation, selectSymbol, selectEdge, graph]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -435,6 +629,9 @@ export function Canvas() {
       };
       addSymbolToGraph(newSym, currentViewId);
 
+      // Save the drop position so ELK relayout preserves it
+      saveNodePositions([{ symbolId: symId, x: position.x, y: position.y }]);
+
       // Also add to local React Flow nodes immediately for visual feedback
       const newNode: Node = {
         id: symId,
@@ -449,7 +646,7 @@ export function Canvas() {
       };
       setNodes((nds) => [...nds, newNode]);
     },
-    [reactFlowInstance, setNodes, currentViewId, addSymbolToGraph],
+    [reactFlowInstance, setNodes, currentViewId, addSymbolToGraph, saveNodePositions],
   );
 
   // Click on canvas background → deselect
@@ -513,6 +710,16 @@ export function Canvas() {
         />
       </ReactFlow>
 
+      {/* AI Working Overlay — shows current LLM status on canvas */}
+      {aiRunning && (
+        <div className="ai-canvas-overlay">
+          <span className="ai-spinner" />
+          <span className={`ai-phase-badge ai-phase-badge--${aiPhase}`}>{aiPhase || "starting…"}</span>
+          {aiThought && <span className="ai-canvas-overlay__thought">{aiThought}</span>}
+          {aiNavPaused && <span className="ai-canvas-overlay__paused">🧭 Nav pausiert</span>}
+        </div>
+      )}
+
       {/* Export buttons */}
       <div style={{ position: "absolute", top: 8, right: 8, zIndex: 5, display: "flex", gap: 4 }}>
         <button
@@ -564,6 +771,39 @@ export function Canvas() {
 
       {/* Symbol hover card (pinnable tooltip) */}
       <SymbolHoverCard />
+
+      {/* Connection type dialog */}
+      {connectDialog && (
+        <div className="connect-type-dialog-overlay" onClick={() => setConnectDialog(null)}>
+          <div className="connect-type-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="connect-type-dialog-title">Verbindungstyp wählen</div>
+            <div className="connect-type-dialog-subtitle">
+              {graph?.symbols.find((s) => s.id === connectDialog.source)?.label ?? connectDialog.source}
+              {" → "}
+              {graph?.symbols.find((s) => s.id === connectDialog.target)?.label ?? connectDialog.target}
+            </div>
+            <div className="connect-type-options">
+              {CONNECT_TYPES.map((t) => (
+                <button
+                  key={t}
+                  className={`connect-type-option${connectType === t ? " connect-type-option--active" : ""}`}
+                  onClick={() => setConnectType(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div className="connect-type-dialog-actions">
+              <button className="btn btn-sm btn-primary" onClick={handleConfirmConnect}>
+                ✅ Verbinden
+              </button>
+              <button className="btn btn-sm" onClick={() => setConnectDialog(null)}>
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

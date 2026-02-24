@@ -1,4 +1,4 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useRef, useEffect, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useAppStore } from "../store";
 import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
@@ -15,19 +15,28 @@ export interface UmlNodeData {
   children?: Sym[];
   tags?: string[];
   relationBadges?: string[];
+  location?: { file: string; startLine?: number; endLine?: number };
   [key: string]: unknown;
 }
 
 /* ── Relation badge icons & labels ──────────────── */
 
-const REL_BADGE_META: Record<string, { icon: string; label: string }> = {
-  reads: { icon: "📖", label: "reads" },
-  writes: { icon: "💾", label: "writes" },
-  calls: { icon: "📞", label: "calls" },
-  imports: { icon: "📦", label: "imports" },
-  inherits: { icon: "🧬", label: "inherits" },
-  instantiates: { icon: "⚡", label: "creates" },
-  uses_config: { icon: "⚙️", label: "config" },
+/** Badge metadata: keyed by "out:<type>" or "in:<type>" */
+const REL_BADGE_META: Record<string, { icon: string; label: string; cls: string }> = {
+  "out:calls":       { icon: "📞", label: "calls",      cls: "calls" },
+  "in:calls":        { icon: "📞", label: "called by",  cls: "calls-in" },
+  "out:reads":       { icon: "📖", label: "reads",      cls: "reads" },
+  "in:reads":        { icon: "📖", label: "read by",    cls: "reads-in" },
+  "out:writes":      { icon: "💾", label: "writes",     cls: "writes" },
+  "in:writes":       { icon: "💾", label: "written by", cls: "writes-in" },
+  "out:imports":     { icon: "📦", label: "imports",    cls: "imports" },
+  "in:imports":      { icon: "📦", label: "imported by", cls: "imports-in" },
+  "out:inherits":    { icon: "🧬", label: "inherits",   cls: "inherits" },
+  "in:inherits":     { icon: "🧬", label: "inherited by", cls: "inherits-in" },
+  "out:instantiates":{ icon: "⚡", label: "creates",    cls: "instantiates" },
+  "in:instantiates": { icon: "⚡", label: "created by", cls: "instantiates-in" },
+  "out:uses_config": { icon: "⚙️", label: "config",     cls: "uses_config" },
+  "in:uses_config":  { icon: "⚙️", label: "configured by", cls: "uses_config-in" },
 };
 
 function RelationBadges({ badges }: { badges?: string[] }) {
@@ -37,9 +46,10 @@ function RelationBadges({ badges }: { badges?: string[] }) {
       {badges.map((t) => {
         const meta = REL_BADGE_META[t];
         if (!meta) return null;
+        const isIn = t.startsWith("in:");
         return (
-          <span key={t} className={`rel-badge rel-badge--${t}`}>
-            {meta.icon} {meta.label}
+          <span key={t} className={`rel-badge rel-badge--${meta.cls}`}>
+            {isIn ? "← " : ""}{meta.icon} {meta.label}
           </span>
         );
       })}
@@ -48,6 +58,38 @@ function RelationBadges({ badges }: { badges?: string[] }) {
 }
 
 /* ── Shared hooks ─────────────────────────────── */
+
+/** Extracts just the filename from a path (e.g. "data_pipeline/util/util.py" → "util.py") */
+function shortFileName(loc?: { file: string; startLine?: number; endLine?: number }): string | null {
+  if (!loc?.file) return null;
+  const parts = loc.file.replace(/\\/g, "/").split("/");
+  const name = parts[parts.length - 1];
+  return loc.startLine != null ? `${name}:${loc.startLine}` : name;
+}
+
+/**
+ * Detects when node content changes (label, inputs, outputs, summary) and
+ * returns CSS classes to drive the AI-update shimmer animation.
+ * Returns "" when there's no active change, "ai-content-updated" during animation.
+ */
+function useAiChangeDetection(d: UmlNodeData) {
+  const [animClass, setAnimClass] = useState("");
+  const animationSymbolId = useAppStore((s) => s.aiAnalysis?.animationSymbolId ?? null);
+  const animationSeq = useAppStore((s) => s.aiAnalysis?.animationSeq ?? 0);
+  const lastAppliedSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (animationSeq === 0 || animationSeq === lastAppliedSeqRef.current) return;
+    lastAppliedSeqRef.current = animationSeq;
+    if (animationSymbolId !== d.symbolId) return;
+
+    setAnimClass("ai-content-updated");
+    const timer = setTimeout(() => setAnimClass(""), 2000);
+    return () => clearTimeout(timer);
+  }, [animationSeq, animationSymbolId, d.symbolId]);
+
+  return animClass;
+}
 
 function useNodeActions(data: UmlNodeData) {
   const selectSymbol = useAppStore((s) => s.selectSymbol);
@@ -86,27 +128,32 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
   const d = data as unknown as UmlNodeData;
   const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
   const isDead = d.tags?.includes("dead-code");
+  const animClass = useAiChangeDetection(d);
+  const fileName = shortFileName(d.location);
 
   return (
     <div
-      className={`uml-node kind-${d.kind} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""}`}
+      className={`uml-node kind-${d.kind} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      <Handle type="target" position={Position.Top} />
+      <Handle type="target" position={Position.Top} id="in-top" />
+      <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
       <div className="node-header">
         <span className="kind-badge">{d.kind}</span>
         <span className="node-label">{d.label}</span>
         {isDead && <span className="dead-code-badge" title="Unused — no callers">💀</span>}
       </div>
+      {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
       <RelationBadges badges={d.relationBadges} />
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
           ▶ Drill down
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} />
+      <Handle type="source" position={Position.Bottom} id="out-bottom" />
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
     </div>
   );
 });
@@ -116,6 +163,8 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
 export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeProps) {
   const d = data as unknown as UmlNodeData;
   const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
+  const animClass = useAiChangeDetection(d);
+  const fileName = shortFileName(d.location);
 
   const children = d.children ?? [];
   const classes = children.filter((c) => c.kind === "class");
@@ -129,16 +178,18 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
 
   return (
     <div
-      className={`uml-node kind-${d.kind} group-node ${selected ? "selected" : ""}`}
+      className={`uml-node kind-${d.kind} group-node ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      <Handle type="target" position={Position.Top} />
+      <Handle type="target" position={Position.Top} id="in-top" />
+      <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
       <div className="node-header">
         <span className="kind-badge">{d.kind}</span>
         <span className="node-label">{d.label}</span>
       </div>
+      {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
       <RelationBadges badges={d.relationBadges} />
       {countParts.length > 0 && (
         <div className="node-count-badge">{countParts.join(", ")}</div>
@@ -148,7 +199,8 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
           ▶ Drill down
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} />
+      <Handle type="source" position={Position.Bottom} id="out-bottom" />
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
     </div>
   );
 });
@@ -158,6 +210,8 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
 export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeProps) {
   const d = data as unknown as UmlNodeData;
   const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
+  const animClass = useAiChangeDetection(d);
+  const fileName = shortFileName(d.location);
 
   const children = d.children ?? [];
   const attributes = children.filter((c) => c.kind === "constant" || c.kind === "variable");
@@ -165,7 +219,7 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
 
   return (
     <div
-      className={`uml-node uml-class-node kind-class ${selected ? "selected" : ""}`}
+      className={`uml-node uml-class-node kind-class ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -177,6 +231,7 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
       <div className="node-header class-header">
         <div className="stereotype">«class»</div>
         <span className="node-label">{d.label}</span>
+        {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
       </div>
 
       {/* Attributes compartment */}
@@ -231,24 +286,29 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
   const d = data as unknown as UmlNodeData;
   const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
   const isDead = d.tags?.includes("dead-code");
+  const animClass = useAiChangeDetection(d);
+  const fileName = shortFileName(d.location);
 
   const inputs = d.inputs ?? [];
   const outputs = d.outputs ?? [];
 
   return (
     <div
-      className={`uml-node uml-function-node kind-${d.kind} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""}`}
+      className={`uml-node uml-function-node kind-${d.kind} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      <Handle type="target" position={Position.Top} />
+      <Handle type="target" position={Position.Top} id="in-top" />
+      <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
 
       <div className="node-header">
         <span className="kind-badge">{d.kind === "method" ? "method" : "fn"}</span>
         <span className="node-label">{d.label.split(".").pop()}</span>
         {isDead && <span className="dead-code-badge" title="Unused — no callers">💀</span>}
       </div>
+
+      {fileName && <div className="node-file-location" title={d.location?.file}>📄 {fileName}</div>}
 
       {/* Signature */}
       {inputs.length > 0 && (
@@ -277,7 +337,8 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
         </div>
       )}
 
-      <Handle type="source" position={Position.Bottom} />
+      <Handle type="source" position={Position.Bottom} id="out-bottom" />
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
     </div>
   );
 });
@@ -304,7 +365,8 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      <Handle type="target" position={Position.Top} />
+      <Handle type="target" position={Position.Top} id="in-top" />
+      <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
 
       <div className="node-header artifact-header">
         <span className="artifact-icon">{icon}</span>
@@ -313,7 +375,8 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
 
       <RelationBadges badges={d.relationBadges} />
 
-      <Handle type="source" position={Position.Bottom} />
+      <Handle type="source" position={Position.Bottom} id="out-bottom" />
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
     </div>
   );
 });

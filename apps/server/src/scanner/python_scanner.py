@@ -36,6 +36,33 @@ WRITE_CALL_PATTERNS = {
 }
 
 
+# Directories to skip during scanning (common non-project dirs)
+SKIP_DIRS = {
+    "__pycache__", ".git", ".hg", ".svn",
+    ".venv", "venv", "env", ".env",
+    ".tox", ".nox", ".mypy_cache", ".pytest_cache",
+    "node_modules", ".eggs", "*.egg-info",
+    "build", "dist", ".build",
+    "site-packages",
+}
+
+
+def _filtered_py_files(root_path: Path) -> list[Path]:
+    """Walk the tree manually so we can skip entire subtrees."""
+    result: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        # Modify dirnames in-place to skip excluded directories
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in SKIP_DIRS
+            and not d.endswith(".egg-info")
+        ]
+        for fn in sorted(filenames):
+            if fn.endswith(".py"):
+                result.append(Path(dirpath) / fn)
+    return result
+
+
 def scan_directory(root: str) -> dict[str, Any]:
     root_path = Path(root).resolve()
     symbols: list[dict] = []
@@ -46,7 +73,7 @@ def scan_directory(root: str) -> dict[str, Any]:
     module_sources: dict[str, str] = {}
     meta = {"files_scanned": 0, "files_failed": 0, "jedi_available": JEDI_AVAILABLE}
 
-    py_files = sorted(root_path.rglob("*.py"))
+    py_files = _filtered_py_files(root_path)
 
     # ── Phase 1: Collect all definitions ──────────
     for py_file in py_files:
@@ -512,5 +539,25 @@ if __name__ == "__main__":
         print(json.dumps({"error": "usage: python_scanner.py <directory>"}))
         sys.exit(1)
 
-    result = scan_directory(sys.argv[1])
-    print(json.dumps(result, indent=2))
+    target_dir = sys.argv[1]
+    try:
+        result = scan_directory(target_dir)
+        # Use compact JSON (no indent) to reduce output size for large projects
+        json_str = json.dumps(result, separators=(",", ":"))
+        sys.stdout.write(json_str)
+        sys.stdout.flush()
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc()
+        # Write error as JSON to stdout so the Node caller can parse it
+        err_payload = json.dumps({
+            "error": str(exc),
+            "traceback": tb,
+            "symbols": [],
+            "edges": [],
+            "meta": {"files_scanned": 0, "files_failed": 0, "scan_error": str(exc)},
+        })
+        sys.stderr.write(f"Scanner error: {exc}\n{tb}\n")
+        sys.stdout.write(err_payload)
+        sys.stdout.flush()
+        sys.exit(1)

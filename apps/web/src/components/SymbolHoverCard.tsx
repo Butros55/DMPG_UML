@@ -48,6 +48,7 @@ interface EnrichedInfo {
   importedBy: Array<{ rel: Relation; source: Sym | undefined }>;
   inherits: Array<{ rel: Relation; target: Sym | undefined }>;
   instantiates: Array<{ rel: Relation; target: Sym | undefined }>;
+  instantiatedBy: Array<{ rel: Relation; source: Sym | undefined }>;
   usesConfig: Array<{ rel: Relation; target: Sym | undefined }>;
   lineCount: number | null;
 }
@@ -92,6 +93,10 @@ function enrichSymbol(sym: Sym, graph: ProjectGraph): EnrichedInfo {
     .filter((r) => r.source === sym.id && r.type === "instantiates")
     .map((r) => ({ rel: r, target: findSym(r.target) }));
 
+  const instantiatedBy = rels
+    .filter((r) => r.target === sym.id && r.type === "instantiates")
+    .map((r) => ({ rel: r, source: findSym(r.source) }));
+
   const usesConfig = rels
     .filter((r) => r.source === sym.id && r.type === "uses_config")
     .map((r) => ({ rel: r, target: findSym(r.target) }));
@@ -113,6 +118,7 @@ function enrichSymbol(sym: Sym, graph: ProjectGraph): EnrichedInfo {
     importedBy,
     inherits,
     instantiates,
+    instantiatedBy,
     usesConfig,
     lineCount,
   };
@@ -142,6 +148,7 @@ export function SymbolHoverCard() {
   const selectSymbol = useAppStore((s) => s.selectSymbol);
   const navigateToView = useAppStore((s) => s.navigateToView);
   const setFocusNode = useAppStore((s) => s.setFocusNode);
+  const openSourceViewer = useAppStore((s) => s.openSourceViewer);
   const cardRef = useRef<HTMLDivElement>(null);
 
   const info = useMemo(() => {
@@ -174,6 +181,12 @@ export function SymbolHoverCard() {
     [graph, selectSymbol, navigateToView, setFocusNode],
   );
 
+  const handleOpenSource = useCallback(() => {
+    if (!info) return;
+    openSourceViewer(info.sym.id, info.sym.label);
+    useAppStore.getState().setHoverSymbol(null);
+  }, [info, openSourceViewer]);
+
   if (!info || !hoverPosition) return null;
 
   const { sym } = info;
@@ -184,6 +197,22 @@ export function SymbolHoverCard() {
   // Build compact signature
   const sigParts = doc?.inputs?.map((p) => `${p.name}${p.type ? `: ${p.type}` : ""}`).join(", ") ?? "";
   const returnType = doc?.outputs?.map((o) => o.type ?? o.name).join(", ") ?? "";
+  const isDeadCode = sym.tags?.includes("dead-code") ?? false;
+  const deadCodeReasonText = (() => {
+    const explicit = (doc?.deadCodeReason ?? "").trim();
+    if (explicit) return explicit;
+
+    const inboundCallCount = info.incomingCalls.length + info.instantiatedBy.length;
+    const outboundCallCount = info.outgoingCalls.length + info.instantiates.length;
+
+    if (inboundCallCount === 0 && outboundCallCount === 0) {
+      return "Keine eingehenden oder ausgehenden Aufrufbeziehungen gefunden. Das Symbol ist im aktuellen Graphen nicht eingebunden und wurde deshalb als Dead Code markiert.";
+    }
+    if (inboundCallCount === 0) {
+      return "Keine eingehenden Aufrufe/Instanziierungen gefunden. Das Symbol wird aktuell von keinem anderen Symbol verwendet und wurde deshalb als Dead Code markiert.";
+    }
+    return "Das Symbol trägt das Dead-Code-Tag, aber es liegt keine detaillierte LLM-Begründung vor.";
+  })();
 
   return (
     <div
@@ -211,6 +240,13 @@ export function SymbolHoverCard() {
             <span className="shc-line-count"> ({info.lineCount} Zeilen)</span>
           )}
         </div>
+      )}
+
+      {/* ── Source Code Button ── */}
+      {loc && (
+        <button className="shc-source-btn" onClick={handleOpenSource}>
+          📝 Quellcode anzeigen
+        </button>
       )}
 
       {/* ── Parent ── */}
@@ -482,6 +518,13 @@ export function SymbolHoverCard() {
       )}
 
       {/* ── Tags ── */}
+      {isDeadCode && (
+        <div className="shc-section">
+          <div className="shc-section-label">💀 Dead Code — Begründung</div>
+          <div className="shc-summary">{deadCodeReasonText}</div>
+        </div>
+      )}
+
       {sym.tags && sym.tags.length > 0 && (
         <div className="shc-tags">
           {sym.tags.map((t) => (

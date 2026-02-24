@@ -39,30 +39,12 @@ interface ScanResult {
   meta?: Record<string, unknown>;
 }
 
-/* ── Default section config (fallback) ──────────── */
-
-const DEFAULT_SECTIONS: SectionConfig[] = [
-  {
-    id: "pipeline",
-    title: "Pipeline / Orchestration",
-    patterns: ["main", "pipeline", "orchestrat", "generate", "run", "app", "cli"],
-  },
-  {
-    id: "connectors",
-    title: "Connectors / Infrastructure",
-    patterns: ["connect", "db", "database", "sql", "druid", "api", "client", "adapter", "http"],
-  },
-  {
-    id: "analytics",
-    title: "Analytics / Domain",
-    patterns: ["model", "distribut", "stat", "analyt", "fit", "calc", "compute", "process", "domain"],
-  },
-  {
-    id: "utilities",
-    title: "Utilities / Shared",
-    patterns: ["util", "helper", "const", "config", "common", "shared", "filter", "bath", "enum"],
-  },
-];
+/** Title-case a directory/project name: "data_pipeline" → "Data Pipeline" */
+function toTitleCase(s: string): string {
+  return s
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 /**
  * Scan a project directory. Currently supports Python projects.
@@ -77,21 +59,47 @@ export async function scanProject(projectPath: string): Promise<ProjectGraph> {
   const pyScript = path.join(import.meta.dirname ?? __dirname, "python_scanner.py");
   let result: ScanResult;
   try {
-    const { stdout } = await execFileAsync("python", [pyScript, absPath], {
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: 120_000,
+    const { stdout, stderr } = await execFileAsync("python", [pyScript, absPath], {
+      maxBuffer: 100 * 1024 * 1024,
+      timeout: 300_000,
     });
+    if (stderr) console.warn("[scanner] Python stderr:", stderr);
     result = JSON.parse(stdout);
+    if (result && (result as any).error) {
+      throw new Error(`Scanner error: ${(result as any).error}`);
+    }
   } catch (err: any) {
-    // fallback: try python3
-    try {
-      const { stdout } = await execFileAsync("python3", [pyScript, absPath], {
-        maxBuffer: 50 * 1024 * 1024,
-        timeout: 120_000,
-      });
-      result = JSON.parse(stdout);
-    } catch {
-      throw new Error(`Failed to run Python scanner: ${err.message}`);
+    // If the first attempt failed, try python3
+    if (err.code === "ENOENT" || (err.message && err.message.includes("ENOENT"))) {
+      try {
+        const { stdout, stderr } = await execFileAsync("python3", [pyScript, absPath], {
+          maxBuffer: 100 * 1024 * 1024,
+          timeout: 300_000,
+        });
+        if (stderr) console.warn("[scanner] Python3 stderr:", stderr);
+        result = JSON.parse(stdout);
+        if (result && (result as any).error) {
+          throw new Error(`Scanner error: ${(result as any).error}`);
+        }
+      } catch (err2: any) {
+        const stderr2 = err2.stderr ? `\nstderr: ${err2.stderr}` : "";
+        throw new Error(`Failed to run Python scanner: ${err2.message}${stderr2}`);
+      }
+    } else {
+      // Extract stderr from the execFile error for better diagnostics
+      const stderrMsg = err.stderr ? `\nstderr: ${err.stderr}` : "";
+      // Try to parse partial stdout (scanner may have written error JSON before exiting)
+      if (err.stdout) {
+        try {
+          const partial = JSON.parse(err.stdout);
+          if (partial.error) {
+            throw new Error(`Scanner error: ${partial.error}\n${partial.traceback || ""}${stderrMsg}`);
+          }
+        } catch {
+          // stdout was not valid JSON, ignore
+        }
+      }
+      throw new Error(`Failed to run Python scanner: ${err.message}${stderrMsg}`);
     }
   }
 
@@ -103,7 +111,7 @@ export async function scanProject(projectPath: string): Promise<ProjectGraph> {
 
 /* ── Config loading ─────────────────────────────── */
 
-function loadProjectConfig(projectPath: string): ProjectConfig {
+function loadProjectConfig(projectPath: string): ProjectConfig | null {
   const configPath = path.join(projectPath, "dmpg-uml.config.json");
   if (fs.existsSync(configPath)) {
     try {
@@ -113,10 +121,10 @@ function loadProjectConfig(projectPath: string): ProjectConfig {
         return parsed as ProjectConfig;
       }
     } catch {
-      // fall through to default
+      // fall through
     }
   }
-  return { sections: DEFAULT_SECTIONS, autoFallback: true };
+  return null; // No config → dynamic directory-based grouping
 }
 
 /* ── Graph construction ─────────────────────────── */
@@ -124,7 +132,7 @@ function loadProjectConfig(projectPath: string): ProjectConfig {
 function buildGraphFromScan(
   raw: ScanResult,
   projectPath: string,
-  config: ProjectConfig,
+  config: ProjectConfig | null,
 ): ProjectGraph {
   // Convert raw symbols
   const symbols: Symbol[] = raw.symbols.map((s) => ({
@@ -156,39 +164,197 @@ function buildGraphFromScan(
   // Build symbol lookup maps
   const symById = new Map(symbols.map((s) => [s.id, s]));
 
-  // ── Auto-group top-level symbols into sections ──
-  const sections = config.sections;
-  const sectionGroups: Symbol[] = sections.map((sec) => ({
-    id: `grp:${sec.id}`,
-    label: sec.title,
-    kind: "group",
-    childViewId: `view:grp:${sec.id}`,
-    tags: [`section:${sec.id}`],
-  }));
+  // ── Group top-level symbols ──
+  let sectionGroups: Symbol[];
 
-  // Compile patterns
-  const sectionPatterns = sections.map((sec) => ({
-    id: `grp:${sec.id}`,
-    regex: new RegExp(sec.patterns.join("|"), "i"),
-  }));
-  const defaultGroupId = sectionPatterns[sectionPatterns.length - 1]?.id ?? sectionGroups[0]?.id;
+  if (config) {
+    // ── Pattern-based grouping (from dmpg-uml.config.json) ──
+    const sections = config.sections;
+    sectionGroups = sections.map((sec) => ({
+      id: `grp:${sec.id}`,
+      label: sec.title,
+      kind: "group" as const,
+      childViewId: `view:grp:${sec.id}`,
+      tags: [`section:${sec.id}`],
+    }));
 
-  // Assign top-level symbols (those without parentId) to groups
-  for (const sym of symbols) {
-    if (!sym.parentId) {
-      const text = `${sym.label} ${sym.location?.file ?? ""}`.toLowerCase();
-      let matched = false;
-      for (const sp of sectionPatterns) {
-        if (sp.regex.test(text)) {
-          sym.parentId = sp.id;
-          matched = true;
-          break;
+    const sectionPatterns = sections.map((sec) => ({
+      id: `grp:${sec.id}`,
+      regex: new RegExp(sec.patterns.join("|"), "i"),
+    }));
+    const defaultGroupId = sectionPatterns[sectionPatterns.length - 1]?.id ?? sectionGroups[0]?.id;
+
+    for (const sym of symbols) {
+      if (!sym.parentId) {
+        const text = `${sym.label} ${sym.location?.file ?? ""}`.toLowerCase();
+        let matched = false;
+        for (const sp of sectionPatterns) {
+          if (sp.regex.test(text)) {
+            sym.parentId = sp.id;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched && config.autoFallback !== false) {
+          sym.parentId = defaultGroupId;
         }
       }
-      if (!matched && config.autoFallback !== false) {
-        sym.parentId = defaultGroupId;
-      }
     }
+  } else {
+    // ── Dynamic directory-based grouping (recursive) ──
+    // Derive groups from the actual folder structure of scanned modules.
+    // If a directory has more than MAX_GROUP_SIZE modules, create nested
+    // sub-groups from deeper directory levels automatically.
+    const MAX_GROUP_SIZE = 10;
+    const MIN_GROUP_SIZE = 2;
+
+    /**
+     * Extract the directory path at a given depth from a file path.
+     * Only considers directory segments (filename is excluded).
+     * Returns "__root__" for files at the project root.
+     */
+    function getDirAtDepth(file: string, depth: number): string {
+      const normalized = file.replace(/\\/g, "/");
+      const segments = normalized.split("/").filter(Boolean);
+      // Last segment is the filename — remove it
+      const dirSegments = segments.slice(0, -1);
+      if (dirSegments.length === 0) return "__root__";
+      // If requested depth exceeds available dirs, return full dir path
+      if (depth > dirSegments.length) return dirSegments.join("/");
+      return dirSegments.slice(0, depth).join("/");
+    }
+
+    /**
+     * Recursively build groups from directory tree. Returns the created group symbols.
+     * - Modules sitting directly in the parent directory (no deeper sub-dir) get
+     *   assigned to the parent group instead of creating a duplicate.
+     * - Groups with fewer than MIN_GROUP_SIZE members get dissolved into the parent.
+     */
+    function buildDirGroups(
+      mods: Symbol[],
+      depth: number,
+      parentGroupId: string | null,
+      parentPath: string,
+    ): Symbol[] {
+      // Partition modules by their directory at the given depth
+      const dirMap = new Map<string, Symbol[]>();
+      const directChildren: Symbol[] = []; // files that sit in parentPath, not in a sub-dir
+
+      for (const sym of mods) {
+        const file = sym.location?.file ?? "";
+        const dir = getDirAtDepth(file, depth);
+        // If dir === parentPath, this module is a direct child of the parent dir
+        // (no deeper directory structure). Assign to parent, don't create a sub-group.
+        if (parentGroupId && dir === parentPath) {
+          directChildren.push(sym);
+        } else {
+          if (!dirMap.has(dir)) dirMap.set(dir, []);
+          dirMap.get(dir)!.push(sym);
+        }
+      }
+
+      // Assign direct children to the parent group (they stay in the parent, not a sub-group)
+      for (const m of directChildren) {
+        m.parentId = parentGroupId!;
+      }
+
+      // Sort directories alphabetically, __root__ last
+      const sortedDirs = [...dirMap.keys()].sort((a, b) => {
+        if (a === "__root__") return 1;
+        if (b === "__root__") return -1;
+        return a.localeCompare(b);
+      });
+
+      const groups: Symbol[] = [];
+
+      for (const dir of sortedDirs) {
+        const modules = dirMap.get(dir)!;
+        const groupId = `grp:dir:${dir}`;
+        const dirName = dir === "__root__"
+          ? path.basename(projectPath)
+          : dir.split("/").pop() ?? dir;
+        const label = toTitleCase(dirName);
+
+        const grp: Symbol = {
+          id: groupId,
+          label,
+          kind: "group",
+          childViewId: `view:${groupId}`,
+          tags: [`dir:${dir}`],
+        };
+        if (parentGroupId) grp.parentId = parentGroupId;
+        groups.push(grp);
+
+        // Check if this group is too large and can be split further
+        if (modules.length > MAX_GROUP_SIZE && depth < 5) {
+          // Check if there are actual sub-directories at the next level
+          const subDirs = new Set<string>();
+          for (const m of modules) {
+            const file = m.location?.file ?? "";
+            const sub = getDirAtDepth(file, depth + 1);
+            // Only count dirs that are deeper than the current dir
+            if (sub !== dir) subDirs.add(sub);
+          }
+
+          if (subDirs.size > 1) {
+            // Multiple sub-directories — recurse
+            const subGroups = buildDirGroups(modules, depth + 1, groupId, dir);
+            groups.push(...subGroups);
+          } else {
+            // No further directory nesting — assign flat
+            // (AI split phase will handle thematic splitting later)
+            for (const mod of modules) {
+              mod.parentId = groupId;
+            }
+          }
+        } else {
+          // Small enough or max depth reached — assign modules to this group
+          for (const mod of modules) {
+            mod.parentId = groupId;
+          }
+        }
+      }
+
+      // ── Post-process: collapse tiny sub-groups into parent ──
+      // If a sub-group has fewer than MIN_GROUP_SIZE members and has a parent,
+      // dissolve it and move its members back to the parent.
+      if (parentGroupId) {
+        const tinyGroups = groups.filter(
+          (g) =>
+            g.parentId === parentGroupId &&
+            !groups.some((sg) => sg.parentId === g.id), // no child-groups of its own
+        );
+        for (const tiny of tinyGroups) {
+          const members = mods.filter((m) => m.parentId === tiny.id);
+          if (members.length < MIN_GROUP_SIZE) {
+            // Dissolve: move members back to parent
+            for (const m of members) {
+              m.parentId = parentGroupId;
+            }
+            // Remove the tiny group from the list
+            const idx = groups.indexOf(tiny);
+            if (idx >= 0) groups.splice(idx, 1);
+            console.log(`[Scanner] Dissolved tiny group "${tiny.label}" (${members.length} members) into parent`);
+          }
+        }
+      }
+
+      return groups;
+    }
+
+    // Collect top-level (unassigned) symbols
+    const unassigned = symbols.filter((s) => !s.parentId);
+    const allGroups = buildDirGroups(unassigned, 1, null, "");
+
+    // All groups go into sectionGroups (needed for view/edge creation).
+    // Tag top-level groups for root view identification.
+    const topLevelGroupIds = new Set(allGroups.filter((g) => !g.parentId).map((g) => g.id));
+    sectionGroups = allGroups.map((g) => {
+      if (topLevelGroupIds.has(g.id)) {
+        g.tags = [...(g.tags ?? []), "top-level"];
+      }
+      return g;
+    });
   }
 
   // ── Build multi-level views ──
@@ -251,21 +417,28 @@ function buildGraphFromScan(
     }
   }
 
-  // 3) Group Views: each section group gets a view of its modules
+  // 3) Group Views: each group gets a view showing its direct children (modules + sub-groups)
   const groupViews: DiagramView[] = sectionGroups.map((g) => {
+    // Direct child modules (symbols whose parentId is this group)
     const groupModules = symbols.filter((s) => s.parentId === g.id);
-    const moduleIds = new Set(groupModules.map((m) => m.id));
+    // Direct child sub-groups (groups whose parentId is this group)
+    const childGroups = sectionGroups.filter((sg) => sg.parentId === g.id);
+    const childIds = [...groupModules.map((m) => m.id), ...childGroups.map((sg) => sg.id)];
+    const childIdSet = new Set(childIds);
 
     const viewEdgeRefs = relations
-      .filter((r) => r.type !== "contains" && (moduleIds.has(r.source) || moduleIds.has(r.target)))
+      .filter((r) => r.type !== "contains" && (childIdSet.has(r.source) || childIdSet.has(r.target)))
       .map((r) => r.id);
+
+    // Determine parentViewId: if this group has a parent group, point to that group's view; else root
+    const parentViewId = g.parentId ? `view:${g.parentId}` : "view:root";
 
     return {
       id: `view:${g.id}`,
       title: g.label,
-      parentViewId: "view:root",
+      parentViewId,
       scope: "group" as const,
-      nodeRefs: groupModules.map((m) => m.id),
+      nodeRefs: childIds,
       edgeRefs: viewEdgeRefs,
     };
   });
@@ -281,27 +454,40 @@ function buildGraphFromScan(
     }
   }
 
-  // 4) Root view
-  const rootNodeRefs = sectionGroups.map((g) => g.id);
+  // 4) Root view — only top-level groups (no parentId) as nodeRefs
+  const topLevelGroups = sectionGroups.filter((g) => !g.parentId);
+  const rootNodeRefs = topLevelGroups.map((g) => g.id);
   const rootEdgeRefs: string[] = []; // Edge projection handles cross-edges
 
   const rootView: DiagramView = {
     id: "view:root",
-    title: "Level 0 — Overview",
+    title: `${toTitleCase(path.basename(projectPath))} — Overview`,
     parentViewId: null,
     scope: "root",
     nodeRefs: rootNodeRefs,
     edgeRefs: rootEdgeRefs,
   };
 
-  // Add contains edges for group → module
+  // Add contains edges for group → module AND group → sub-group
+  const groupIdSet = new Set(sectionGroups.map((g) => g.id));
   for (const sym of symbols) {
-    if (sym.parentId && sectionGroups.some((g) => g.id === sym.parentId)) {
+    if (sym.parentId && groupIdSet.has(sym.parentId)) {
       containsEdges.push({
         id: `contains-${containsIdx++}`,
         type: "contains",
         source: sym.parentId,
         target: sym.id,
+      });
+    }
+  }
+  // Sub-group containment
+  for (const g of sectionGroups) {
+    if (g.parentId && groupIdSet.has(g.parentId)) {
+      containsEdges.push({
+        id: `contains-${containsIdx++}`,
+        type: "contains",
+        source: g.parentId,
+        target: g.id,
       });
     }
   }

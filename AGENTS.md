@@ -2,21 +2,25 @@
 
 ## Workspace Structure
 
-| Folder             | Purpose                                                        |
-| ------------------ | -------------------------------------------------------------- |
-| `apps/server/`     | Express backend (port 3001) — scanner, AI routes, graph store  |
-| `apps/web/`        | React frontend (port 5173) — React Flow canvas, Zustand store  |
-| `packages/shared/` | Zod schemas, edge projection — shared between server & web     |
-| `data_pipeline/`   | **READ-ONLY example project** for scanning context (see below) |
+| Folder                     | Purpose                                                        |
+| -------------------------- | -------------------------------------------------------------- |
+| `apps/server/`             | Express backend (port 3001) — scanner, AI routes, graph store  |
+| `apps/web/`                | React frontend (port 5173) — React Flow canvas, Zustand store  |
+| `packages/shared/`         | Zod schemas, edge projection — shared between server & web     |
+| `demo_data/data_pipeline/` | **READ-ONLY example project** for scanning context (see below) |
+| `demo_data/dmpg_models/`   | **READ-ONLY example project** for scanning context (see below) |
 
-## ⚠️ `data_pipeline/` — Do NOT Edit
+## ⚠️ `demo_data/data_pipeline/` and `demo_data/dmpg_models/` — Do NOT Edit
 
-The `data_pipeline/` directory is a **sample Python project** used as the default
+The `demo_data/data_pipeline/` directory is a **sample Python project** used as the default
+scan target. It exists solely as context/example data for the UML scanner.
+The `demo_data/dmpg_models/` directory is a **sample Python project** used as the default
 scan target. It exists solely as context/example data for the UML scanner.
 
 **Rules:**
 
-- Never create, modify, or delete any file inside `data_pipeline/`.
+- Never create, modify, or delete any file inside `demo_data/data_pipeline/`.
+- Never create, modify, or delete any file inside `demo_data/dmpg_models/`.
 - Never refactor, lint, or "fix" code in this folder.
 - It may be read for context (e.g., to understand what the scanner produces).
 - The scanner points at `C:\dev\dmpg_models\data_pipeline` by default (`.env`).

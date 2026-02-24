@@ -1,10 +1,128 @@
-import { useCallback, useState, useEffect } from "react";
+import { useCallback, useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore } from "../store";
 import { summarizeSymbol } from "../api";
+import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
 import type { Relation, RelationType } from "@dmpg/shared";
 
 const RELATION_TYPES: RelationType[] = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"];
 const SYMBOL_KINDS = ["module", "class", "function", "method", "group", "package", "interface", "variable"] as const;
+
+/* ─── AI Badge + Validation Buttons ─── */
+function AiBadge({ field, symbolId, onConfirm, onReject }: {
+  field: string;
+  symbolId: string;
+  onConfirm: (symbolId: string, field: string) => void;
+  onReject: (symbolId: string, field: string) => void;
+}) {
+  return (
+    <span className="ai-badge-group">
+      <span className="ai-badge" title="Vom LLM generiert">🤖 AI</span>
+      <button
+        className="ai-action-btn ai-confirm-btn"
+        onClick={(e) => { e.stopPropagation(); onConfirm(symbolId, field); }}
+        title="Bestätigen — AI-Markierung entfernen"
+      >✓</button>
+      <button
+        className="ai-action-btn ai-reject-btn"
+        onClick={(e) => { e.stopPropagation(); onReject(symbolId, field); }}
+        title="Ablehnen — Eintrag löschen"
+      >✗</button>
+    </span>
+  );
+}
+
+function AiRelationBadge({ relationId, onConfirm, onReject }: {
+  relationId: string;
+  onConfirm: (id: string) => void;
+  onReject: (id: string) => void;
+}) {
+  return (
+    <span className="ai-badge-group">
+      <span className="ai-badge" title="Vom LLM entdeckt">🤖</span>
+      <button
+        className="ai-action-btn ai-confirm-btn"
+        onClick={(e) => { e.stopPropagation(); onConfirm(relationId); }}
+        title="Bestätigen"
+      >✓</button>
+      <button
+        className="ai-action-btn ai-reject-btn"
+        onClick={(e) => { e.stopPropagation(); onReject(relationId); }}
+        title="Löschen"
+      >✗</button>
+    </span>
+  );
+}
+
+/** Classify whether a symbol is project-defined (not standard library / built-in) */
+function isProjectOwn(sym: { kind: string; label: string } | undefined): boolean {
+  if (!sym) return false;
+  if (sym.kind !== "external") return true;
+  // External symbols representing project data files are project-own
+  if (/\.(csv|xlsx?|json|ya?ml|toml|txt|dat|sql|parquet|h5|pkl|pickle|feather|arrow)$/i.test(sym.label)) return true;
+  return false;
+}
+
+/** Reusable list that partitions relation targets into project-own (top, highlighted) and stdlib (collapsed) */
+function RelationItemList({
+  relations,
+  direction,
+  graph,
+  showKind,
+  showConfidence,
+  onSymbolClick,
+  onConfirmAi,
+  onRejectAi,
+}: {
+  relations: Relation[];
+  direction: "out" | "in";
+  graph: { symbols: Array<{ id: string; kind: string; label: string }> } | null;
+  showKind?: boolean;
+  showConfidence?: boolean;
+  onSymbolClick: (id: string) => void;
+  onConfirmAi: (id: string) => void;
+  onRejectAi: (id: string) => void;
+}) {
+  const [showStdlib, setShowStdlib] = useState(false);
+
+  const { own, stdlib } = useMemo(() => {
+    const ownArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: true }> = [];
+    const stdlibArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: false }> = [];
+    for (const r of relations) {
+      const otherId = direction === "out" ? r.target : r.source;
+      const sym = graph?.symbols.find((s) => s.id === otherId);
+      if (isProjectOwn(sym)) {
+        ownArr.push({ r, otherId, sym, isOwn: true });
+      } else {
+        stdlibArr.push({ r, otherId, sym, isOwn: false });
+      }
+    }
+    return { own: ownArr, stdlib: stdlibArr };
+  }, [relations, graph, direction]);
+
+  const renderItem = ({ r, otherId, sym, isOwn }: { r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: boolean }) => (
+    <li key={r.id} className={`rel-item ${isOwn ? "rel-own" : "rel-stdlib"} ${r.aiGenerated ? "ai-generated-item" : ""}`}>
+      <SymbolLink symbolId={otherId} label={sym?.label ?? otherId} onClick={() => onSymbolClick(otherId)} />
+      {showKind && sym?.kind && <span className="rel-kind">({sym.kind})</span>}
+      {showConfidence && r.confidence != null && r.confidence < 1 && (
+        <span className="rel-confidence">{Math.round(r.confidence * 100)}%</span>
+      )}
+      {r.aiGenerated && <AiRelationBadge relationId={r.id} onConfirm={onConfirmAi} onReject={onRejectAi} />}
+    </li>
+  );
+
+  return (
+    <ul>
+      {own.map(renderItem)}
+      {stdlib.length > 0 && (
+        <li className="rel-stdlib-header" onClick={() => setShowStdlib(!showStdlib)}>
+          <span className="rel-stdlib-toggle">{showStdlib ? "▾" : "▸"}</span>
+          Vordefiniert ({stdlib.length})
+        </li>
+      )}
+      {showStdlib && stdlib.map(renderItem)}
+    </ul>
+  );
+}
 
 /* ─── Edge Inspector Panel ─── */
 function EdgeInspector() {
@@ -71,13 +189,9 @@ function EdgeInspector() {
 
       <div className="inspector-card">
         <h3 style={{ fontSize: 13 }}>
-          <span className="symbol-link" onClick={() => srcSym && handleSymbolClick(srcSym.id)}>
-            {srcSym?.label ?? rel?.source ?? projSrc}
-          </span>
+          <SymbolLink symbolId={srcSym?.id ?? ""} label={srcSym?.label ?? rel?.source ?? projSrc} onClick={() => srcSym && handleSymbolClick(srcSym.id)} />
           {" → "}
-          <span className="symbol-link" onClick={() => tgtSym && handleSymbolClick(tgtSym.id)}>
-            {tgtSym?.label ?? rel?.target ?? projTgt}
-          </span>
+          <SymbolLink symbolId={tgtSym?.id ?? ""} label={tgtSym?.label ?? rel?.target ?? projTgt} onClick={() => tgtSym && handleSymbolClick(tgtSym.id)} />
         </h3>
         <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>
           Type: <strong style={{ color: "var(--accent)" }}>{rel?.type ?? projType}</strong>
@@ -100,13 +214,9 @@ function EdgeInspector() {
               const t = graph?.symbols.find((sym) => sym.id === r.target);
               return (
                 <li key={r.id} style={{ fontSize: 11 }}>
-                  <span className="symbol-link" onClick={() => handleSymbolClick(r.source)}>
-                    {s?.label ?? r.source}
-                  </span>
+                  <SymbolLink symbolId={r.source} label={s?.label ?? r.source} onClick={() => handleSymbolClick(r.source)} />
                   {" → "}
-                  <span className="symbol-link" onClick={() => handleSymbolClick(r.target)}>
-                    {t?.label ?? r.target}
-                  </span>
+                  <SymbolLink symbolId={r.target} label={t?.label ?? r.target} onClick={() => handleSymbolClick(r.target)} />
                   {r.confidence != null && r.confidence < 1 && (
                     <span style={{ color: "var(--text-dim)" }}> ({Math.round(r.confidence * 100)}%)</span>
                   )}
@@ -174,6 +284,65 @@ function getAncestorChain(symId: string, symbols: { id: string; parentId?: strin
   return chain;
 }
 
+/* ─── Hoverable Symbol Link — shows HoverCard on hover, navigates on click ─── */
+function SymbolLink({ symbolId, label, onClick }: { symbolId: string; label: string; onClick: () => void }) {
+  const handleMouseEnter = useCallback(
+    (e: React.MouseEvent<HTMLSpanElement>) => {
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      scheduleShowHover(symbolId, rect);
+    },
+    [symbolId],
+  );
+
+  return (
+    <span
+      className="symbol-link"
+      onClick={onClick}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={() => scheduleHideHover()}
+    >
+      {label}
+    </span>
+  );
+}
+
+/* ─── AI Inspector Animation Hook ─── */
+/**
+ * Detects when AI-generated content changes in the inspector for the selected symbol.
+ * Returns a CSS class string that triggers a typewriter-style reveal animation
+ * on the inspector card content.
+ */
+function useAiInspectorAnimation(sym: { id: string; doc?: { summary?: string; inputs?: unknown[]; outputs?: unknown[]; sideEffects?: unknown[]; aiGenerated?: Record<string, unknown> } } | undefined): string {
+  const [animClass, setAnimClass] = useState("");
+  const prevSnap = useRef("");
+  const prevSymId = useRef<string | null>(null);
+  const aiRunning = useAppStore((s) => s.aiAnalysis?.running ?? false);
+
+  useEffect(() => {
+    if (!sym) { prevSnap.current = ""; prevSymId.current = null; return; }
+
+    const snap = `${sym.doc?.summary ?? ""}|${(sym.doc?.inputs as unknown[])?.length ?? 0}|${(sym.doc?.outputs as unknown[])?.length ?? 0}|${(sym.doc?.sideEffects as unknown[])?.length ?? 0}`;
+
+    // If symbol changed, reset without animating
+    if (prevSymId.current !== sym.id) {
+      prevSymId.current = sym.id;
+      prevSnap.current = snap;
+      return;
+    }
+
+    if (snap !== prevSnap.current && aiRunning) {
+      prevSnap.current = snap;
+      setAnimClass("inspector-ai-typing");
+      const timer = setTimeout(() => setAnimClass(""), 2500);
+      return () => clearTimeout(timer);
+    }
+
+    prevSnap.current = snap;
+  }, [sym?.id, sym?.doc?.summary, sym?.doc?.inputs, sym?.doc?.outputs, sym?.doc?.sideEffects, aiRunning]);
+
+  return animClass;
+}
+
 /* ─── Symbol Inspector Panel ─── */
 export function Inspector() {
   const graph = useAppStore((s) => s.graph);
@@ -189,6 +358,11 @@ export function Inspector() {
   const addRelation = useAppStore((s) => s.addRelation);
   const inspectorCollapsed = useAppStore((s) => s.inspectorCollapsed);
   const toggleInspector = useAppStore((s) => s.toggleInspector);
+  const confirmAiField = useAppStore((s) => s.confirmAiField);
+  const rejectAiField = useAppStore((s) => s.rejectAiField);
+  const confirmAiRelation = useAppStore((s) => s.confirmAiRelation);
+  const openSourceViewer = useAppStore((s) => s.openSourceViewer);
+  const removeRelation = useAppStore((s) => s.removeRelation);
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -199,6 +373,16 @@ export function Inspector() {
   const [editSummary, setEditSummary] = useState("");
   const [isEditing, setIsEditing] = useState(false);
 
+  // Tag editing
+  const [newTag, setNewTag] = useState("");
+
+  // Section-level inline editing
+  const [editingSection, setEditingSection] = useState<string | null>(null);
+  const [editInputs, setEditInputs] = useState<Array<{ name: string; type: string; description: string }>>([]);
+  const [editOutputs, setEditOutputs] = useState<Array<{ name: string; type: string; description: string }>>([]);
+  const [editSideEffects, setEditSideEffects] = useState<string[]>([]);
+  const [newSideEffect, setNewSideEffect] = useState("");
+
   // New connection state
   const [showAddConn, setShowAddConn] = useState(false);
   const [connTarget, setConnTarget] = useState("");
@@ -206,6 +390,7 @@ export function Inspector() {
   const [connLabel, setConnLabel] = useState("calls");
 
   const sym = graph?.symbols.find((s) => s.id === selectedSymbolId);
+  const inspectorAnimClass = useAiInspectorAnimation(sym);
 
   // Reset edit form when symbol changes
   useEffect(() => {
@@ -215,6 +400,8 @@ export function Inspector() {
       setEditSummary(sym.doc?.summary ?? "");
       setIsEditing(false);
       setShowAddConn(false);
+      setEditingSection(null);
+      setNewTag("");
     }
   }, [sym?.id]);
 
@@ -249,6 +436,106 @@ export function Inspector() {
     });
     setIsEditing(false);
   }, [sym, editLabel, editKind, editSummary, updateSymbol]);
+
+  // ─── Tag helpers ───
+  const handleAddTag = useCallback(() => {
+    if (!sym || !newTag.trim()) return;
+    const tags = [...(sym.tags ?? []), newTag.trim()];
+    updateSymbol(sym.id, { tags });
+    setNewTag("");
+  }, [sym, newTag, updateSymbol]);
+
+  const handleRemoveTag = useCallback((tag: string) => {
+    if (!sym) return;
+    const tags = (sym.tags ?? []).filter((t) => t !== tag);
+    updateSymbol(sym.id, { tags });
+  }, [sym, updateSymbol]);
+
+  // ─── Parameter (inputs) helpers ───
+  const handleStartEditInputs = useCallback(() => {
+    const inputs = sym?.doc?.inputs ?? [];
+    setEditInputs(inputs.map((p) => ({ name: p.name, type: p.type ?? "", description: p.description ?? "" })));
+    setEditingSection("inputs");
+  }, [sym]);
+
+  const handleSaveInputs = useCallback(() => {
+    if (!sym) return;
+    const cleaned = editInputs.filter((p) => p.name.trim());
+    updateSymbol(sym.id, {
+      doc: { ...sym.doc, inputs: cleaned.length ? cleaned.map((p) => ({ name: p.name, type: p.type || undefined, description: p.description || undefined })) : undefined },
+    });
+    setEditingSection(null);
+  }, [sym, editInputs, updateSymbol]);
+
+  const handleAddInput = useCallback(() => {
+    setEditInputs((prev) => [...prev, { name: "", type: "", description: "" }]);
+  }, []);
+
+  const handleRemoveInput = useCallback((idx: number) => {
+    setEditInputs((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const handleInputChange = useCallback((idx: number, field: "name" | "type" | "description", value: string) => {
+    setEditInputs((prev) => prev.map((p, i) => i === idx ? { ...p, [field]: value } : p));
+  }, []);
+
+  // ─── Output helpers ───
+  const handleStartEditOutputs = useCallback(() => {
+    const outputs = sym?.doc?.outputs ?? [];
+    setEditOutputs(outputs.map((p) => ({ name: p.name, type: p.type ?? "", description: p.description ?? "" })));
+    setEditingSection("outputs");
+  }, [sym]);
+
+  const handleSaveOutputs = useCallback(() => {
+    if (!sym) return;
+    const cleaned = editOutputs.filter((p) => p.name.trim());
+    updateSymbol(sym.id, {
+      doc: { ...sym.doc, outputs: cleaned.length ? cleaned.map((p) => ({ name: p.name, type: p.type || undefined, description: p.description || undefined })) : undefined },
+    });
+    setEditingSection(null);
+  }, [sym, editOutputs, updateSymbol]);
+
+  const handleAddOutput = useCallback(() => {
+    setEditOutputs((prev) => [...prev, { name: "", type: "", description: "" }]);
+  }, []);
+
+  const handleRemoveOutput = useCallback((idx: number) => {
+    setEditOutputs((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const handleOutputChange = useCallback((idx: number, field: "name" | "type" | "description", value: string) => {
+    setEditOutputs((prev) => prev.map((p, i) => i === idx ? { ...p, [field]: value } : p));
+  }, []);
+
+  // ─── Side Effects helpers ───
+  const handleStartEditSideEffects = useCallback(() => {
+    setEditSideEffects([...(sym?.doc?.sideEffects ?? [])]);
+    setNewSideEffect("");
+    setEditingSection("sideEffects");
+  }, [sym]);
+
+  const handleSaveSideEffects = useCallback(() => {
+    if (!sym) return;
+    const cleaned = editSideEffects.filter((s) => s.trim());
+    updateSymbol(sym.id, {
+      doc: { ...sym.doc, sideEffects: cleaned.length ? cleaned : undefined },
+    });
+    setEditingSection(null);
+  }, [sym, editSideEffects, updateSymbol]);
+
+  const handleAddSideEffect = useCallback(() => {
+    if (!newSideEffect.trim()) return;
+    setEditSideEffects((prev) => [...prev, newSideEffect.trim()]);
+    setNewSideEffect("");
+  }, [newSideEffect]);
+
+  const handleRemoveSideEffect = useCallback((idx: number) => {
+    setEditSideEffects((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const handleSideEffectChange = useCallback((idx: number, value: string) => {
+    setEditSideEffects((prev) => prev.map((s, i) => i === idx ? value : s));
+  }, []);
 
   const handleAddConnection = useCallback(() => {
     if (!sym || !connTarget || !currentViewId) return;
@@ -335,6 +622,7 @@ export function Inspector() {
   const importedByR = relations.filter((r) => r.target === sym.id && r.type === "imports");
   const inheritsR = relations.filter((r) => r.source === sym.id && r.type === "inherits");
   const instantiatesR = relations.filter((r) => r.source === sym.id && r.type === "instantiates");
+  const instantiatedByR = relations.filter((r) => r.target === sym.id && r.type === "instantiates");
   const usesConfigR = relations.filter((r) => r.source === sym.id && r.type === "uses_config");
   const parentSym = sym.parentId ? graph?.symbols.find((s) => s.id === sym.parentId) : null;
   const children = graph?.symbols.filter((s) => s.parentId === sym.id) ?? [];
@@ -349,6 +637,22 @@ export function Inspector() {
   // Group remaining relations by type (exclude what's shown separately)
   const shownTypes = new Set(["calls", "reads", "writes", "imports", "inherits", "instantiates", "uses_config", "contains"]);
   const otherRelations = relations.filter((r) => !shownTypes.has(r.type));
+
+  const deadCodeReasonText = (() => {
+    const explicit = (doc?.deadCodeReason ?? "").trim();
+    if (explicit) return explicit;
+
+    const inboundCallCount = incomingCalls.length + instantiatedByR.length;
+    const outboundCallCount = outgoingCalls.length + instantiatesR.length;
+
+    if (inboundCallCount === 0 && outboundCallCount === 0) {
+      return "Keine eingehenden oder ausgehenden Aufrufbeziehungen gefunden. Das Symbol ist im aktuellen Graphen nicht eingebunden und wurde deshalb als Dead Code markiert.";
+    }
+    if (inboundCallCount === 0) {
+      return "Keine eingehenden Aufrufe/Instanziierungen gefunden. Das Symbol wird aktuell von keinem anderen Symbol verwendet und wurde deshalb als Dead Code markiert.";
+    }
+    return "Das Symbol trägt das Dead-Code-Tag, aber es liegt keine detaillierte LLM-Begründung vor. Bitte Analyse erneut ausführen, um die genaue Ursache zu aktualisieren.";
+  })();
 
   // Available nodes for connection target (all symbols in graph except current)
   const availableTargets = graph?.symbols.filter((s) => s.id !== sym.id) ?? [];
@@ -382,14 +686,60 @@ export function Inspector() {
                 📄 {sym.location.file}
                 {sym.location.startLine != null && `:${sym.location.startLine}`}
                 {sym.location.endLine != null && `-${sym.location.endLine}`}
+                <button
+                  className="source-view-btn"
+                  onClick={() => openSourceViewer(sym.id, sym.label)}
+                  title="Quellcode anzeigen"
+                >
+                  📝 Code
+                </button>
               </div>
             )}
 
-            {sym.tags && sym.tags.length > 0 && (
-              <div className="tags">
-                {sym.tags.map((t) => (
-                  <span key={t} className="tag">{t}</span>
-                ))}
+            {/* ─── Editable Tags ─── */}
+            <div className="tags">
+              {(sym.tags ?? []).map((t) => (
+                <span key={t} className={`tag${t === "dead-code" && doc?.aiGenerated?.deadCode ? " ai-tagged" : ""}`}>
+                  {t}
+                  {t === "dead-code" && doc?.aiGenerated?.deadCode && (
+                    <AiBadge field="deadCode" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
+                  )}
+                  <button
+                    className="tag-remove-btn"
+                    onClick={() => handleRemoveTag(t)}
+                    title={`Tag "${t}" entfernen`}
+                  >×</button>
+                </span>
+              ))}
+              <span className="tag-add-inline">
+                <input
+                  className="tag-add-input"
+                  value={newTag}
+                  onChange={(e) => setNewTag(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddTag(); }}
+                  placeholder="+ Tag"
+                />
+                {newTag.trim() && (
+                  <button className="tag-add-btn" onClick={handleAddTag} title="Tag hinzufügen">+</button>
+                )}
+              </span>
+            </div>
+
+            {/* ─── Dead Code Reason ─── */}
+            {sym.tags?.includes("dead-code") && (
+              <div className="dead-code-reason">
+                <div className="dead-code-reason-header">
+                  <span className="dead-code-reason-icon">💀</span>
+                  <span>Dead Code — Begründung</span>
+                </div>
+                <p className="dead-code-reason-text">{deadCodeReasonText}</p>
+                {sym.location && (
+                  <div className="dead-code-source-ref">
+                    📄 {sym.location.file}
+                    {sym.location.startLine != null && `:${sym.location.startLine}`}
+                    {sym.location.endLine != null && `-${sym.location.endLine}`}
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -436,8 +786,13 @@ export function Inspector() {
 
       {/* ─── Summary (read-only when not editing) ─── */}
       {!isEditing && doc?.summary && (
-        <div className="inspector-card">
-          <div className="field-label">Beschreibung</div>
+        <div className={`inspector-card${doc.aiGenerated?.summary ? ` ai-generated-card ${inspectorAnimClass}` : ""}`}>
+          <div className="field-label">
+            Beschreibung
+            {doc.aiGenerated?.summary && (
+              <AiBadge field="summary" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
+            )}
+          </div>
           <div className="summary">{doc.summary}</div>
         </div>
       )}
@@ -463,12 +818,11 @@ export function Inspector() {
       {parentSym && (
         <div className="inspector-card">
           <div className="field-label">📦 Übergeordnet</div>
-          <span
-            className="symbol-link"
+          <SymbolLink
+            symbolId={parentSym.id}
+            label={parentSym.label}
             onClick={() => handleSymbolLinkClick(parentSym.id)}
-          >
-            {parentSym.label}
-          </span>
+          />
           <span style={{ color: "var(--text-dim)", fontSize: 11 }}> ({parentSym.kind})</span>
         </div>
       )}
@@ -481,48 +835,154 @@ export function Inspector() {
         </div>
       )}
 
-      {doc?.inputs && doc.inputs.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label">⬇ Parameter</div>
-          <table className="inspector-param-table">
-            <tbody>
-              {doc.inputs.map((inp, i) => (
-                <tr key={i}>
-                  <td className="param-name-cell">{inp.name}</td>
-                  <td className="param-type-cell">{inp.type ?? "—"}</td>
-                  <td className="param-desc-cell">{inp.description ?? ""}</td>
-                </tr>
+      {/* ─── Parameters (inputs) ─── */}
+      {(editingSection === "inputs" || (doc?.inputs && doc.inputs.length > 0)) && (
+        <div className={`inspector-card${doc?.aiGenerated?.inputs ? ` ai-generated-card ${inspectorAnimClass}` : ""}`}>
+          <div className="field-label">
+            ⬇ Parameter
+            {doc?.aiGenerated?.inputs && (
+              <AiBadge field="inputs" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
+            )}
+            {editingSection !== "inputs" && (
+              <button className="section-edit-btn" onClick={handleStartEditInputs} title="Parameter bearbeiten">✏️</button>
+            )}
+          </div>
+          {editingSection === "inputs" ? (
+            <div className="section-edit-form">
+              {editInputs.map((inp, i) => (
+                <div key={i} className="param-edit-row">
+                  <input className="param-edit-input param-edit-name" value={inp.name} onChange={(e) => handleInputChange(i, "name", e.target.value)} placeholder="Name" />
+                  <input className="param-edit-input param-edit-type" value={inp.type} onChange={(e) => handleInputChange(i, "type", e.target.value)} placeholder="Typ" />
+                  <input className="param-edit-input param-edit-desc" value={inp.description} onChange={(e) => handleInputChange(i, "description", e.target.value)} placeholder="Beschreibung" />
+                  <button className="param-remove-btn" onClick={() => handleRemoveInput(i)} title="Entfernen">×</button>
+                </div>
               ))}
-            </tbody>
-          </table>
+              <div className="section-edit-actions">
+                <button className="btn btn-xs" onClick={handleAddInput}>+ Parameter</button>
+                <button className="btn btn-xs btn-primary" onClick={handleSaveInputs}>💾 Speichern</button>
+                <button className="btn btn-xs" onClick={() => setEditingSection(null)}>Abbrechen</button>
+              </div>
+            </div>
+          ) : (
+            <table className="inspector-param-table">
+              <tbody>
+                {doc!.inputs!.map((inp, i) => (
+                  <tr key={i}>
+                    <td className="param-name-cell">{inp.name}</td>
+                    <td className="param-type-cell">{inp.type ?? "—"}</td>
+                    <td className="param-desc-cell">{inp.description ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      {/* Add Parameters when none exist */}
+      {!doc?.inputs?.length && editingSection !== "inputs" && (
+        <div className="inspector-card">
+          <button className="btn btn-xs" onClick={handleStartEditInputs}>+ Parameter hinzufügen</button>
         </div>
       )}
 
-      {doc?.outputs && doc.outputs.length > 0 && (
-        <div className="inspector-card">
-          <div className="field-label">⬆ Rückgabe</div>
-          <table className="inspector-param-table">
-            <tbody>
-              {doc.outputs.map((out, i) => (
-                <tr key={i}>
-                  <td className="param-name-cell">{out.name}</td>
-                  <td className="param-type-cell">{out.type ?? "—"}</td>
-                  <td className="param-desc-cell">{out.description ?? ""}</td>
-                </tr>
+      {/* ─── Outputs ─── */}
+      {(editingSection === "outputs" || (doc?.outputs && doc.outputs.length > 0)) && (
+        <div className={`inspector-card${doc?.aiGenerated?.outputs ? ` ai-generated-card ${inspectorAnimClass}` : ""}`}>
+          <div className="field-label">
+            ⬆ Rückgabe
+            {doc?.aiGenerated?.outputs && (
+              <AiBadge field="outputs" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
+            )}
+            {editingSection !== "outputs" && (
+              <button className="section-edit-btn" onClick={handleStartEditOutputs} title="Rückgabe bearbeiten">✏️</button>
+            )}
+          </div>
+          {editingSection === "outputs" ? (
+            <div className="section-edit-form">
+              {editOutputs.map((out, i) => (
+                <div key={i} className="param-edit-row">
+                  <input className="param-edit-input param-edit-name" value={out.name} onChange={(e) => handleOutputChange(i, "name", e.target.value)} placeholder="Name" />
+                  <input className="param-edit-input param-edit-type" value={out.type} onChange={(e) => handleOutputChange(i, "type", e.target.value)} placeholder="Typ" />
+                  <input className="param-edit-input param-edit-desc" value={out.description} onChange={(e) => handleOutputChange(i, "description", e.target.value)} placeholder="Beschreibung" />
+                  <button className="param-remove-btn" onClick={() => handleRemoveOutput(i)} title="Entfernen">×</button>
+                </div>
               ))}
-            </tbody>
-          </table>
+              <div className="section-edit-actions">
+                <button className="btn btn-xs" onClick={handleAddOutput}>+ Rückgabe</button>
+                <button className="btn btn-xs btn-primary" onClick={handleSaveOutputs}>💾 Speichern</button>
+                <button className="btn btn-xs" onClick={() => setEditingSection(null)}>Abbrechen</button>
+              </div>
+            </div>
+          ) : (
+            <table className="inspector-param-table">
+              <tbody>
+                {doc!.outputs!.map((out, i) => (
+                  <tr key={i}>
+                    <td className="param-name-cell">{out.name}</td>
+                    <td className="param-type-cell">{out.type ?? "—"}</td>
+                    <td className="param-desc-cell">{out.description ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      {/* Add Outputs when none exist */}
+      {!doc?.outputs?.length && editingSection !== "outputs" && (
+        <div className="inspector-card">
+          <button className="btn btn-xs" onClick={handleStartEditOutputs}>+ Rückgabe hinzufügen</button>
         </div>
       )}
 
-      {doc?.sideEffects && doc.sideEffects.length > 0 && (
+      {/* ─── Side Effects ─── */}
+      {(editingSection === "sideEffects" || (doc?.sideEffects && doc.sideEffects.length > 0)) && (
+        <div className={`inspector-card${doc?.aiGenerated?.sideEffects ? " ai-generated-card" : ""}`}>
+          <div className="field-label">
+            ⚠ Seiteneffekte
+            {doc?.aiGenerated?.sideEffects && (
+              <AiBadge field="sideEffects" symbolId={sym.id} onConfirm={confirmAiField} onReject={rejectAiField} />
+            )}
+            {editingSection !== "sideEffects" && (
+              <button className="section-edit-btn" onClick={handleStartEditSideEffects} title="Seiteneffekte bearbeiten">✏️</button>
+            )}
+          </div>
+          {editingSection === "sideEffects" ? (
+            <div className="section-edit-form">
+              {editSideEffects.map((se, i) => (
+                <div key={i} className="side-effect-edit-row">
+                  <input className="inspector-input" value={se} onChange={(e) => handleSideEffectChange(i, e.target.value)} />
+                  <button className="param-remove-btn" onClick={() => handleRemoveSideEffect(i)} title="Entfernen">×</button>
+                </div>
+              ))}
+              <div className="side-effect-add-row">
+                <input
+                  className="inspector-input"
+                  value={newSideEffect}
+                  onChange={(e) => setNewSideEffect(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddSideEffect(); }}
+                  placeholder="Neuer Seiteneffekt"
+                />
+                <button className="btn btn-xs" onClick={handleAddSideEffect} disabled={!newSideEffect.trim()}>+</button>
+              </div>
+              <div className="section-edit-actions">
+                <button className="btn btn-xs btn-primary" onClick={handleSaveSideEffects}>💾 Speichern</button>
+                <button className="btn btn-xs" onClick={() => setEditingSection(null)}>Abbrechen</button>
+              </div>
+            </div>
+          ) : (
+            <ul>
+              {doc!.sideEffects!.map((se, i) => (
+                <li key={i}>⚠️ {se}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {/* Add SideEffects when none exist */}
+      {!doc?.sideEffects?.length && editingSection !== "sideEffects" && (
         <div className="inspector-card">
-          <div className="field-label">⚠ Seiteneffekte</div>
-          <ul>
-            {doc.sideEffects.map((se, i) => (
-              <li key={i}>⚠️ {se}</li>
-            ))}
-          </ul>
+          <button className="btn btn-xs" onClick={handleStartEditSideEffects}>+ Seiteneffekt hinzufügen</button>
         </div>
       )}
 
@@ -530,28 +990,16 @@ export function Inspector() {
       {outgoingCalls.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">→ Ruft auf ({outgoingCalls.length})</div>
-          <ul>
-            {outgoingCalls.map((r) => {
-              const target = graph?.symbols.find((s) => s.id === r.target);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.target)}>
-                    {target?.label ?? r.target}
-                  </span>
-                  {target?.kind && (
-                    <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: 4 }}>
-                      ({target.kind})
-                    </span>
-                  )}
-                  {r.confidence != null && r.confidence < 1 && (
-                    <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: 4 }}>
-                      {Math.round(r.confidence * 100)}%
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={outgoingCalls}
+            direction="out"
+            graph={graph}
+            showKind
+            showConfidence
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -559,23 +1007,15 @@ export function Inspector() {
       {incomingCalls.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">← Aufgerufen von ({incomingCalls.length})</div>
-          <ul>
-            {incomingCalls.map((r) => {
-              const source = graph?.symbols.find((s) => s.id === r.source);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.source)}>
-                    {source?.label ?? r.source}
-                  </span>
-                  {source?.kind && (
-                    <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: 4 }}>
-                      ({source.kind})
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={incomingCalls}
+            direction="in"
+            graph={graph}
+            showKind
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -583,18 +1023,14 @@ export function Inspector() {
       {reads.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">📖 Liest ({reads.length})</div>
-          <ul>
-            {reads.map((r) => {
-              const target = graph?.symbols.find((s) => s.id === r.target);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.target)}>
-                    {target?.label ?? r.target}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={reads}
+            direction="out"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -602,18 +1038,14 @@ export function Inspector() {
       {writes.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">📝 Schreibt ({writes.length})</div>
-          <ul>
-            {writes.map((r) => {
-              const target = graph?.symbols.find((s) => s.id === r.target);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.target)}>
-                    {target?.label ?? r.target}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={writes}
+            direction="out"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -621,18 +1053,14 @@ export function Inspector() {
       {importsR.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">📥 Importiert ({importsR.length})</div>
-          <ul>
-            {importsR.map((r) => {
-              const target = graph?.symbols.find((s) => s.id === r.target);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.target)}>
-                    {target?.label ?? r.target}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={importsR}
+            direction="out"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -640,18 +1068,14 @@ export function Inspector() {
       {importedByR.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">📤 Importiert von ({importedByR.length})</div>
-          <ul>
-            {importedByR.map((r) => {
-              const source = graph?.symbols.find((s) => s.id === r.source);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.source)}>
-                    {source?.label ?? r.source}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={importedByR}
+            direction="in"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -659,18 +1083,14 @@ export function Inspector() {
       {inheritsR.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">🧬 Erbt von</div>
-          <ul>
-            {inheritsR.map((r) => {
-              const target = graph?.symbols.find((s) => s.id === r.target);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.target)}>
-                    {target?.label ?? r.target}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={inheritsR}
+            direction="out"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -678,18 +1098,14 @@ export function Inspector() {
       {instantiatesR.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">🏗 Instanziiert</div>
-          <ul>
-            {instantiatesR.map((r) => {
-              const target = graph?.symbols.find((s) => s.id === r.target);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.target)}>
-                    {target?.label ?? r.target}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={instantiatesR}
+            direction="out"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -697,18 +1113,14 @@ export function Inspector() {
       {usesConfigR.length > 0 && (
         <div className="inspector-card">
           <div className="field-label">⚙ Konfiguration</div>
-          <ul>
-            {usesConfigR.map((r) => {
-              const target = graph?.symbols.find((s) => s.id === r.target);
-              return (
-                <li key={r.id}>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(r.target)}>
-                    {target?.label ?? r.target}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <RelationItemList
+            relations={usesConfigR}
+            direction="out"
+            graph={graph}
+            onSymbolClick={handleSymbolLinkClick}
+            onConfirmAi={confirmAiRelation}
+            onRejectAi={(id) => removeRelation(id)}
+          />
         </div>
       )}
 
@@ -722,13 +1134,14 @@ export function Inspector() {
               const otherId = isOut ? r.target : r.source;
               const other = graph?.symbols.find((s) => s.id === otherId);
               return (
-                <li key={r.id}>
+                <li key={r.id} className={r.aiGenerated ? "ai-generated-item" : ""}>
                   <span style={{ color: "var(--text-dim)", fontSize: 10, marginRight: 4 }}>
                     {isOut ? "→" : "←"} {r.type}
                   </span>
-                  <span className="symbol-link" onClick={() => handleSymbolLinkClick(otherId)}>
-                    {other?.label ?? otherId}
-                  </span>
+                  <SymbolLink symbolId={otherId} label={other?.label ?? otherId} onClick={() => handleSymbolLinkClick(otherId)} />
+                  {r.aiGenerated && (
+                    <AiRelationBadge relationId={r.id} onConfirm={confirmAiRelation} onReject={(id) => removeRelation(id)} />
+                  )}
                 </li>
               );
             })}
@@ -744,9 +1157,7 @@ export function Inspector() {
             {children.slice(0, 20).map((child) => (
               <li key={child.id}>
                 <span style={{ color: "var(--text-dim)", fontSize: 10, marginRight: 4 }}>{child.kind}</span>
-                <span className="symbol-link" onClick={() => handleSymbolLinkClick(child.id)}>
-                  {child.label.split(".").pop()}
-                </span>
+                <SymbolLink symbolId={child.id} label={child.label.split(".").pop() ?? child.label} onClick={() => handleSymbolLinkClick(child.id)} />
                 {child.doc?.summary && (
                   <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: 4 }}>
                     — {child.doc.summary.slice(0, 50)}{child.doc.summary.length > 50 ? "…" : ""}
@@ -767,12 +1178,7 @@ export function Inspector() {
           <ul>
             {doc.links.map((lnk, i) => (
               <li key={i}>
-                <span
-                  className="symbol-link"
-                  onClick={() => handleSymbolLinkClick(lnk.symbolId)}
-                >
-                  {lnk.label}
-                </span>
+                <SymbolLink symbolId={lnk.symbolId} label={lnk.label} onClick={() => handleSymbolLinkClick(lnk.symbolId)} />
               </li>
             ))}
           </ul>

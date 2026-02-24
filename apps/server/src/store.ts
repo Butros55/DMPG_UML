@@ -1,45 +1,161 @@
 import type { ProjectGraph } from "@dmpg/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 
 /**
- * Persistent graph store. Saves to disk (JSON) with debounced writes.
- * Automatically loads persisted data on startup.
+ * Multi-project persistent graph store.
+ * Each project (identified by its directory path) gets its own data on disk.
+ * Supports switching between projects while preserving all data.
  */
 
 const DATA_DIR = path.resolve(process.env.DMPG_DATA_DIR ?? path.join(process.cwd(), ".dmpg-data"));
-const GRAPH_FILE = path.join(DATA_DIR, "graph.json");
-const AI_PROGRESS_FILE = path.join(DATA_DIR, "ai-progress.json");
+const PROJECTS_DIR = path.join(DATA_DIR, "projects");
+const META_FILE = path.join(DATA_DIR, "projects-meta.json");
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+// Legacy single-project files (for migration)
+const LEGACY_GRAPH_FILE = path.join(DATA_DIR, "graph.json");
+const LEGACY_AI_FILE = path.join(DATA_DIR, "ai-progress.json");
+
+// Ensure directories exist
+for (const dir of [DATA_DIR, PROJECTS_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-let currentGraph: ProjectGraph | null = null;
+/* ── Project metadata ──────────────────────────── */
 
-// Auto-load persisted graph on startup
-try {
-  if (fs.existsSync(GRAPH_FILE)) {
-    const raw = fs.readFileSync(GRAPH_FILE, "utf-8");
-    currentGraph = JSON.parse(raw) as ProjectGraph;
-    console.log(`[store] Loaded persisted graph from ${GRAPH_FILE} (${currentGraph.symbols.length} symbols)`);
+export interface ProjectMeta {
+  /** Absolute path to the project directory */
+  projectPath: string;
+  /** Display name (last folder segment) */
+  name: string;
+  /** Number of symbols at last scan */
+  symbolCount: number;
+  /** Timestamp of last successful scan */
+  lastScanned: string;
+  /** Internal hash used as folder name */
+  hash: string;
+}
+
+interface ProjectsIndex {
+  /** Path of the currently active project */
+  activeProject: string | null;
+  /** All known projects */
+  projects: ProjectMeta[];
+}
+
+function hashPath(p: string): string {
+  return crypto.createHash("sha256").update(p.toLowerCase().replace(/\\/g, "/")).digest("hex").slice(0, 12);
+}
+
+function projectDir(hash: string): string {
+  return path.join(PROJECTS_DIR, hash);
+}
+
+function loadProjectsIndex(): ProjectsIndex {
+  try {
+    if (fs.existsSync(META_FILE)) {
+      return JSON.parse(fs.readFileSync(META_FILE, "utf-8")) as ProjectsIndex;
+    }
+  } catch { /* ignore */ }
+  return { activeProject: null, projects: [] };
+}
+
+function saveProjectsIndex(idx: ProjectsIndex): void {
+  try {
+    fs.writeFileSync(META_FILE, JSON.stringify(idx, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[store] Failed to save projects index:", (err as Error).message);
   }
-} catch (err) {
-  console.warn("[store] Failed to load persisted graph:", (err as Error).message);
+}
+
+/* ── Migrate legacy single-project data ────────── */
+
+function migrateLegacy(): void {
+  if (!fs.existsSync(LEGACY_GRAPH_FILE)) return;
+  try {
+    const raw = fs.readFileSync(LEGACY_GRAPH_FILE, "utf-8");
+    const graph = JSON.parse(raw) as ProjectGraph;
+    const pp = graph.projectPath ?? process.env.SCAN_PROJECT_PATH ?? "";
+    if (!pp) {
+      console.log("[store] Legacy graph has no projectPath, skipping migration");
+      return;
+    }
+    const hash = hashPath(pp);
+    const dir = projectDir(hash);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "graph.json"), raw, "utf-8");
+    // Migrate AI progress too
+    if (fs.existsSync(LEGACY_AI_FILE)) {
+      fs.copyFileSync(LEGACY_AI_FILE, path.join(dir, "ai-progress.json"));
+    }
+    // Update index
+    const idx = loadProjectsIndex();
+    if (!idx.projects.find((p) => p.hash === hash)) {
+      idx.projects.push({
+        projectPath: pp,
+        name: path.basename(pp),
+        symbolCount: graph.symbols.length,
+        lastScanned: new Date().toISOString(),
+        hash,
+      });
+    }
+    idx.activeProject = pp;
+    saveProjectsIndex(idx);
+    // Remove legacy files
+    fs.unlinkSync(LEGACY_GRAPH_FILE);
+    if (fs.existsSync(LEGACY_AI_FILE)) fs.unlinkSync(LEGACY_AI_FILE);
+    console.log(`[store] Migrated legacy data to project "${path.basename(pp)}" (${hash})`);
+  } catch (err) {
+    console.warn("[store] Legacy migration failed:", (err as Error).message);
+  }
+}
+
+migrateLegacy();
+
+/* ── Current state (in memory) ──────────────── */
+
+let currentGraph: ProjectGraph | null = null;
+let currentProjectPath: string | null = null;
+
+// Load the active project on startup
+{
+  const idx = loadProjectsIndex();
+  if (idx.activeProject) {
+    const meta = idx.projects.find((p) => p.projectPath === idx.activeProject);
+    if (meta) {
+      const gFile = path.join(projectDir(meta.hash), "graph.json");
+      try {
+        if (fs.existsSync(gFile)) {
+          currentGraph = JSON.parse(fs.readFileSync(gFile, "utf-8")) as ProjectGraph;
+          currentProjectPath = meta.projectPath;
+          console.log(`[store] Loaded project "${meta.name}" (${currentGraph.symbols.length} symbols)`);
+        }
+      } catch (err) {
+        console.warn(`[store] Failed to load project "${meta.name}":`, (err as Error).message);
+      }
+    }
+  }
 }
 
 export function getGraph(): ProjectGraph | null {
   return currentGraph;
 }
 
+export function getCurrentProjectPath(): string | null {
+  return currentProjectPath;
+}
+
 // Debounced disk write (300ms)
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function persistToDisk() {
-  if (!currentGraph) return;
+  if (!currentGraph || !currentProjectPath) return;
+  const hash = hashPath(currentProjectPath);
+  const dir = projectDir(hash);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   try {
-    fs.writeFileSync(GRAPH_FILE, JSON.stringify(currentGraph), "utf-8");
+    fs.writeFileSync(path.join(dir, "graph.json"), JSON.stringify(currentGraph), "utf-8");
   } catch (err) {
     console.error("[store] Failed to persist graph:", (err as Error).message);
   }
@@ -47,6 +163,28 @@ function persistToDisk() {
 
 export function setGraph(g: ProjectGraph): void {
   currentGraph = g;
+  // Track the project path from the graph
+  if (g.projectPath) {
+    currentProjectPath = g.projectPath;
+    // Update or add project metadata
+    const idx = loadProjectsIndex();
+    const hash = hashPath(g.projectPath);
+    const existing = idx.projects.find((p) => p.hash === hash);
+    if (existing) {
+      existing.symbolCount = g.symbols.length;
+      existing.lastScanned = new Date().toISOString();
+    } else {
+      idx.projects.push({
+        projectPath: g.projectPath,
+        name: path.basename(g.projectPath),
+        symbolCount: g.symbols.length,
+        lastScanned: new Date().toISOString(),
+        hash,
+      });
+    }
+    idx.activeProject = g.projectPath;
+    saveProjectsIndex(idx);
+  }
   // Debounce: coalesce rapid successive writes
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(persistToDisk, 300);
@@ -58,7 +196,89 @@ export function flushGraph(): void {
   persistToDisk();
 }
 
-/* ── AI analysis progress persistence ──────────── */
+/* ── Project management API ────────────────────── */
+
+export function listProjects(): ProjectMeta[] {
+  const idx = loadProjectsIndex();
+  return idx.projects;
+}
+
+export function getActiveProjectPath(): string | null {
+  const idx = loadProjectsIndex();
+  return idx.activeProject;
+}
+
+/**
+ * Switch to a different project. Loads its graph from disk.
+ * Returns the graph or null if project has no data yet.
+ */
+export function switchProject(projectPath: string): ProjectGraph | null {
+  // Save current project first
+  flushGraph();
+
+  const hash = hashPath(projectPath);
+  const gFile = path.join(projectDir(hash), "graph.json");
+
+  if (fs.existsSync(gFile)) {
+    try {
+      currentGraph = JSON.parse(fs.readFileSync(gFile, "utf-8")) as ProjectGraph;
+      currentProjectPath = projectPath;
+
+      // Update active in index
+      const idx = loadProjectsIndex();
+      idx.activeProject = projectPath;
+      saveProjectsIndex(idx);
+
+      console.log(`[store] Switched to project "${path.basename(projectPath)}" (${currentGraph!.symbols.length} symbols)`);
+      return currentGraph;
+    } catch (err) {
+      console.warn(`[store] Failed to load project:`, (err as Error).message);
+    }
+  }
+
+  // Project not yet scanned — set as active but no graph
+  currentGraph = null;
+  currentProjectPath = projectPath;
+  const idx = loadProjectsIndex();
+  idx.activeProject = projectPath;
+  saveProjectsIndex(idx);
+
+  return null;
+}
+
+/** Remove a project from the index and delete its data */
+export function deleteProject(projectPath: string): boolean {
+  const idx = loadProjectsIndex();
+  const hash = hashPath(projectPath);
+  const i = idx.projects.findIndex((p) => p.hash === hash);
+  if (i === -1) return false;
+
+  idx.projects.splice(i, 1);
+  if (idx.activeProject === projectPath) {
+    idx.activeProject = idx.projects[0]?.projectPath ?? null;
+  }
+  saveProjectsIndex(idx);
+
+  // Delete data directory
+  const dir = projectDir(hash);
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // If we deleted the current project, switch to another
+  if (currentProjectPath === projectPath) {
+    if (idx.activeProject) {
+      switchProject(idx.activeProject);
+    } else {
+      currentGraph = null;
+      currentProjectPath = null;
+    }
+  }
+
+  return true;
+}
+
+/* ── AI analysis progress persistence (per-project) ── */
 
 export interface AiProgress {
   /** Set of symbol IDs that have been fully processed per phase */
@@ -67,6 +287,7 @@ export interface AiProgress {
     docs: string[];
     relations: string[];
     deadCode: string[];
+    structure?: string[]; // ["done"] when structure review completed
   };
   /** Phase the analysis was in when interrupted */
   lastPhase: string;
@@ -74,26 +295,40 @@ export interface AiProgress {
   stats: Record<string, number>;
 }
 
+function aiProgressFile(): string | null {
+  if (!currentProjectPath) return null;
+  const hash = hashPath(currentProjectPath);
+  return path.join(projectDir(hash), "ai-progress.json");
+}
+
 export function loadAiProgress(): AiProgress | null {
+  const f = aiProgressFile();
+  if (!f) return null;
   try {
-    if (fs.existsSync(AI_PROGRESS_FILE)) {
-      return JSON.parse(fs.readFileSync(AI_PROGRESS_FILE, "utf-8")) as AiProgress;
+    if (fs.existsSync(f)) {
+      return JSON.parse(fs.readFileSync(f, "utf-8")) as AiProgress;
     }
   } catch { /* ignore */ }
   return null;
 }
 
 export function saveAiProgress(progress: AiProgress): void {
+  const f = aiProgressFile();
+  if (!f) return;
+  const dir = path.dirname(f);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   try {
-    fs.writeFileSync(AI_PROGRESS_FILE, JSON.stringify(progress), "utf-8");
+    fs.writeFileSync(f, JSON.stringify(progress), "utf-8");
   } catch (err) {
     console.error("[store] Failed to save AI progress:", (err as Error).message);
   }
 }
 
 export function clearAiProgress(): void {
+  const f = aiProgressFile();
+  if (!f) return;
   try {
-    if (fs.existsSync(AI_PROGRESS_FILE)) fs.unlinkSync(AI_PROGRESS_FILE);
+    if (fs.existsSync(f)) fs.unlinkSync(f);
   } catch { /* ignore */ }
 }
 

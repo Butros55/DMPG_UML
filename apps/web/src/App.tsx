@@ -4,6 +4,7 @@ import { Canvas } from "./components/Canvas";
 import { Sidebar } from "./components/Sidebar";
 import { Inspector } from "./components/Inspector";
 import { Breadcrumb } from "./components/Breadcrumb";
+import { SourceViewer } from "./components/SourceViewer";
 import { useAppStore } from "./store";
 import { fetchGraph } from "./api";
 
@@ -57,6 +58,8 @@ export function App() {
   const currentViewId = useAppStore((s) => s.currentViewId);
   const navigateToView = useAppStore((s) => s.navigateToView);
   const inspectorCollapsed = useAppStore((s) => s.inspectorCollapsed);
+  const sourceViewerSymbol = useAppStore((s) => s.sourceViewerSymbol);
+  const closeSourceViewer = useAppStore((s) => s.closeSourceViewer);
 
   const skipHistoryPush = useRef(false);
   const prevViewId = useRef<string | null>(null);
@@ -135,6 +138,15 @@ export function App() {
         />
       )}
       <Inspector />
+
+      {/* Source Code Viewer popup — rendered outside the grid */}
+      {sourceViewerSymbol && (
+        <SourceViewer
+          symbolId={sourceViewerSymbol.id}
+          symbolLabel={sourceViewerSymbol.label}
+          onClose={closeSourceViewer}
+        />
+      )}
     </div>
   );
 }
