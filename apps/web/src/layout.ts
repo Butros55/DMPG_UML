@@ -89,9 +89,9 @@ export async function layoutNodes(
 
   // Adaptive spacing: more nodes → more space between layers
   const nodeCount = nodes.length;
-  const baseNodeSpacing = nodeCount > 40 ? "120" : nodeCount > 20 ? "100" : nodeCount > 10 ? "80" : "60";
-  const baseLayerSpacing = nodeCount > 40 ? "160" : nodeCount > 20 ? "140" : nodeCount > 10 ? "110" : "80";
-  const edgeNodeSpacing = nodeCount > 40 ? "80" : nodeCount > 20 ? "60" : "50";
+  const baseNodeSpacing = nodeCount > 60 ? "140" : nodeCount > 40 ? "120" : nodeCount > 20 ? "100" : nodeCount > 10 ? "80" : "60";
+  const baseLayerSpacing = nodeCount > 60 ? "180" : nodeCount > 40 ? "160" : nodeCount > 20 ? "140" : nodeCount > 10 ? "110" : "80";
+  const edgeNodeSpacing = nodeCount > 60 ? "100" : nodeCount > 40 ? "80" : nodeCount > 20 ? "60" : "50";
 
   const layout = await elk.layout({
     id: "root",
@@ -100,24 +100,36 @@ export async function layoutNodes(
     layoutOptions: {
       "elk.algorithm": "layered",
       "elk.direction": direction,
+      // ── Node spacing ──
       "elk.spacing.nodeNode": baseNodeSpacing,
       "elk.layered.spacing.nodeNodeBetweenLayers": baseLayerSpacing,
       "elk.padding": "[top=60,left=60,bottom=60,right=60]",
+      // ── Crossing minimization — thorough sweep for fewer edge crossings ──
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+      "elk.layered.crossingMinimization.greedySwitch.type": "TWO_SIDED",
+      // ── Node placement — NETWORK_SIMPLEX gives good layered results ──
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
       "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
+      // ── Port constraints — ports follow fixed ordering per node side ──
       "elk.portConstraints": "FIXED_ORDER",
-      "elk.layered.mergeEdges": "true",
+      // ── Edge routing — orthogonal (right-angle) for clean UML look ──
       "elk.edgeRouting": "ORTHOGONAL",
+      "elk.layered.mergeEdges": "true",
+      // ── Edge spacing — keep edges clear of nodes ──
       "elk.layered.spacing.edgeNodeBetweenLayers": edgeNodeSpacing,
-      "elk.layered.spacing.edgeEdgeBetweenLayers": "30",
-      "elk.separateConnectedComponents": "true",
-      "elk.spacing.componentComponent": "120",
-      "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
-      // Extra spacing so edges stay clear of node borders
+      "elk.layered.spacing.edgeEdgeBetweenLayers": "35",
       "elk.spacing.edgeNode": edgeNodeSpacing,
+      "elk.spacing.edgeEdge": "20",
+      // ── Connected components ──
+      "elk.separateConnectedComponents": "true",
+      "elk.spacing.componentComponent": "140",
+      // ── Model order + edge self-loops ──
+      "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
       "elk.layered.edgeRouting.selfLoopDistribution": "EQUALLY",
+      // ── Wrapping for very wide diagrams ──
       "elk.layered.wrapping.strategy": nodeCount > 50 ? "MULTI_EDGE" : "OFF",
+      // ── Thoroughness: higher = better results but slower ──
+      "elk.layered.thoroughness": nodeCount > 40 ? "20" : "10",
     },
   });
 

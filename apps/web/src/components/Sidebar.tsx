@@ -397,13 +397,35 @@ export function Sidebar() {
 
   const handleDeleteProject = useCallback(async (projectPath: string) => {
     try {
-      await deleteProjectApi(projectPath);
-      setProjects((prev) => prev.filter((p) => p.projectPath !== projectPath));
-      if (activeProjectPath === projectPath) {
-        setActiveProjectPath(null);
+      const result = await deleteProjectApi(projectPath);
+      // Re-sync from server response (single round-trip)
+      setProjects(result.projects);
+      setActiveProjectPath(result.activeProject);
+
+      if (result.activeProject && result.graph) {
+        // Another project became active — show its graph
+        setGraph(result.graph);
+        setScanPath(result.activeProject);
+      } else {
+        // No project left — clear everything
+        useAppStore.getState().selectSymbol(null);
+        useAppStore.getState().selectEdge(null);
+        // setGraph with a null-like empty state: use the raw setter
+        useAppStore.setState({
+          graph: null,
+          currentViewId: null,
+          selectedSymbolId: null,
+          selectedEdgeId: null,
+          breadcrumb: [],
+          focusNodeId: null,
+          aiAnalysis: null,
+          validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
+        });
+        setScanPath("");
       }
+      setScanError("");
     } catch { /* ignore */ }
-  }, [activeProjectPath]);
+  }, [setGraph]);
 
   // Auto-scroll AI log when new entries arrive
   useEffect(() => {

@@ -61,6 +61,21 @@ export interface AiAnalysisState {
   playbackActive: boolean;
 }
 
+/* ── Debug Transport State ── */
+export interface DebugTransportState {
+  sseConnected: boolean;
+  eventsPollerActive: boolean;
+  statusPollerActive: boolean;
+  lastSseSeq: number;
+  lastPollSeq: number;
+  lastEventTime: number;
+  eventsDelivered: number;
+  eventsDeduplicated: number;
+  playbackQueueLen: number;
+  navigationRequestedSeq: number;
+  navigationSettledSeq: number;
+}
+
 export interface AppState {
   graph: ProjectGraph | null;
   currentViewId: string | null;
@@ -107,6 +122,12 @@ export interface AppState {
   sourceViewerSymbol: { id: string; label: string } | null;
   openSourceViewer: (symbolId: string, label: string) => void;
   closeSourceViewer: () => void;
+
+  // Debug transport state
+  debugTransport: DebugTransportState | null;
+  showDebugTransport: boolean;
+  toggleDebugTransport: () => void;
+  updateDebugTransport: (patch: Partial<DebugTransportState>) => void;
 
   // actions
   setGraph: (g: ProjectGraph) => void;
@@ -198,6 +219,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   openSourceViewer: (symbolId, label) => set({ sourceViewerSymbol: { id: symbolId, label } }),
   closeSourceViewer: () => set({ sourceViewerSymbol: null }),
 
+  // Debug transport state
+  debugTransport: null,
+  showDebugTransport: false,
+  toggleDebugTransport: () => set((s) => ({ showDebugTransport: !s.showDebugTransport })),
+  updateDebugTransport: (patch) => set((s) => ({
+    debugTransport: { ...((s.debugTransport ?? {
+      sseConnected: false, eventsPollerActive: false, statusPollerActive: false,
+      lastSseSeq: 0, lastPollSeq: 0, lastEventTime: 0,
+      eventsDelivered: 0, eventsDeduplicated: 0, playbackQueueLen: 0,
+      navigationRequestedSeq: 0, navigationSettledSeq: 0,
+    }) as DebugTransportState), ...patch },
+  })),
+
   startAiAnalysis: () =>
     set({
       aiAnalysis: {
@@ -250,7 +284,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           thought,
           aiFocusViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
           aiCurrentSymbolId: event.symbolId ?? aiAnalysis.aiCurrentSymbolId,
-          aiWorkingSymbolId: isFocusEvent ? (event.symbolId ?? aiAnalysis.aiWorkingSymbolId) : aiAnalysis.aiWorkingSymbolId,
+          // aiWorkingSymbolId is driven by the playback queue, not by live events
         },
       });
       return;
@@ -266,6 +300,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isDataEvent && isSse) _lastSseDataEventTime = Date.now();
 
     console.debug(`[AI-Store] src=${event._source ?? 'sse'} action=${event.action ?? '-'} symbol=${event.symbolId ?? '-'} current=${event.current ?? '-'}/${event.total ?? '-'} dataEvent=${isDataEvent}`);
+
+    // ── Update debug transport state ──
+    const debugPatch: Partial<DebugTransportState> = {
+      lastEventTime: Date.now(),
+      eventsDelivered: ((get().debugTransport?.eventsDelivered ?? 0) + 1),
+    };
+    if (isSse && event.seq) debugPatch.lastSseSeq = event.seq;
+    if (isPollEvents && event.seq) debugPatch.lastPollSeq = event.seq;
+    if (isSse) debugPatch.sseConnected = true;
+    if (isPollEvents) debugPatch.eventsPollerActive = true;
+    if (isPollStatus) debugPatch.statusPollerActive = true;
+    get().updateDebugTransport(debugPatch);
 
     // If phase is terminal, mark as not running and reload graph once.
     if (event.phase === "done" || event.phase === "error" || event.phase === "cancelled" || event.phase === "paused") {
@@ -441,9 +487,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     }
 
-    // Fast-forward: if queue is getting long (>5), trim old items
-    if (nextPlaybackQueue.length > 8) {
-      nextPlaybackQueue = nextPlaybackQueue.slice(-5);
+    // Fast-forward: if queue is getting very long, trim old items (keep last 8)
+    if (nextPlaybackQueue.length > 12) {
+      nextPlaybackQueue = nextPlaybackQueue.slice(-8);
     }
 
     const nextAiState: AiAnalysisState = {
@@ -456,7 +502,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       thought,
       aiFocusViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
       aiCurrentSymbolId: event.symbolId ?? aiAnalysis.aiCurrentSymbolId,
-      aiWorkingSymbolId: isFocusEvent ? (event.symbolId ?? aiAnalysis.aiWorkingSymbolId) : (isDataEvent ? null : aiAnalysis.aiWorkingSymbolId),
+      // aiWorkingSymbolId is driven by the playback queue, not by live events
+      aiWorkingSymbolId: aiAnalysis.aiWorkingSymbolId,
       navPaused: aiAnalysis.navPaused,
       analysisSeq: nextAnalysisSeq,
       navigationRequestedSeq: aiAnalysis.navigationRequestedSeq,
@@ -472,6 +519,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     set({ aiAnalysis: nextAiState });
+
+    // Update debug transport with queue length
+    get().updateDebugTransport({
+      playbackQueueLen: nextPlaybackQueue.length,
+      navigationRequestedSeq: nextAiState.navigationRequestedSeq,
+      navigationSettledSeq: nextAiState.navigationSettledSeq,
+    });
 
     // If not currently playing, kick off playback
     if (!aiAnalysis.playbackActive && nextPlaybackQueue.length > 0) {
@@ -500,6 +554,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set({ aiAnalysis: next });
+
+    // Navigation settled → kick playback queue forward if items are waiting
+    if (next.playbackQueue.length > 0 && next.playbackActive) {
+      setTimeout(() => get().processPlaybackQueue(), 100);
+    }
   },
 
   processPlaybackQueue: () => {
@@ -516,8 +575,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
+    // ── Wait for previous navigation to settle before advancing ──
+    // If we have a pending navigation that hasn't settled yet, re-check shortly
+    if (aiAnalysis.navigationTargetSymbolId &&
+        (aiAnalysis.navigationSettledSeq ?? 0) < (aiAnalysis.navigationRequestedSeq ?? 0)) {
+      // Previous nav not settled — retry after a short wait
+      setTimeout(() => get().processPlaybackQueue(), 200);
+      return;
+    }
+
     // Dequeue front item
     const [item, ...rest] = aiAnalysis.playbackQueue;
+
+    // Fast mode: if queue is long, skip intermediate items and only process last few
+    const fastMode = rest.length > 5;
+    if (fastMode && rest.length > 3) {
+      // Skip to the last 3 items — just flash through intermediates
+      const skipCount = rest.length - 3;
+      const skipped = rest.splice(0, skipCount);
+      console.debug(`[AI-Playback] Fast-mode: skipping ${skipped.length} queued items`);
+    }
+
     const nextAi: AiAnalysisState = {
       ...aiAnalysis,
       playbackActive: true,
@@ -542,14 +620,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       nextAi.navigationRequestedSeq = nextNavReqSeq;
       nextAi.navigationTargetSymbolId = item.symbolId;
       nextAi.pendingAnimationSymbolId = item.symbolId;
+      // Drive the working-symbol highlight from the playback queue so it
+      // matches the node we are actually navigating to (not the live AI stream)
+      nextAi.aiWorkingSymbolId = item.symbolId;
 
-      console.debug(`[AI-Playback] Nav → symbol=${item.symbolId} view=${targetViewId} queueLen=${rest.length}`);
+      console.debug(`[AI-Playback] Nav → symbol=${item.symbolId} view=${targetViewId} queueLen=${rest.length} fast=${fastMode}`);
     }
 
     set(setPatch);
 
-    // Schedule next item after animation delay (shorter if queue is long)
-    const delay = rest.length > 3 ? 400 : rest.length > 1 ? 800 : 1200;
+    // Schedule next: short delay for fast mode, longer for normal
+    // but also rely on acknowledgeAiNavigationSettled to re-trigger
+    const delay = fastMode ? 300 : rest.length > 3 ? 600 : rest.length > 1 ? 900 : 1200;
     setTimeout(() => {
       get().processPlaybackQueue();
     }, delay);
