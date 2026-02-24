@@ -76,22 +76,49 @@ export async function layoutNodes(
       id: n.id,
       width: size.width,
       height: size.height,
+      layoutOptions: {
+        "elk.portConstraints": "FIXED_ORDER",
+      },
+      ports: [
+        { id: `${n.id}:in-north`, layoutOptions: { "elk.port.side": "NORTH" } },
+        { id: `${n.id}:in-south`, layoutOptions: { "elk.port.side": "SOUTH" } },
+        { id: `${n.id}:in-west`, layoutOptions: { "elk.port.side": "WEST" } },
+        { id: `${n.id}:out-east`, layoutOptions: { "elk.port.side": "EAST" } },
+        { id: `${n.id}:out-south`, layoutOptions: { "elk.port.side": "SOUTH" } },
+      ],
     };
   });
 
   const elkEdges: ElkExtendedEdge[] = edges
     .filter((e) => nodes.some((n) => n.id === e.source) && nodes.some((n) => n.id === e.target))
-    .map((e) => ({
-      id: e.id,
-      sources: [e.source],
-      targets: [e.target],
-    }));
+    .map((e) => {
+      const relType = (e.data as { relationType?: string } | undefined)?.relationType ?? "calls";
+      const sourcePort = relType === "imports"
+        ? `${e.source}:in-north`
+        : relType === "reads" || relType === "writes"
+          ? `${e.source}:out-south`
+          : `${e.source}:out-east`;
+      const targetPort = relType === "imports"
+        ? `${e.target}:in-west`
+        : relType === "reads" || relType === "writes"
+          ? `${e.target}:in-south`
+          : `${e.target}:in-west`;
+
+      return {
+        id: e.id,
+        sources: [e.source],
+        targets: [e.target],
+        sourcePort,
+        targetPort,
+      };
+    });
 
   // Adaptive spacing: more nodes → more space between layers
   const nodeCount = nodes.length;
-  const baseNodeSpacing = nodeCount > 60 ? "140" : nodeCount > 40 ? "120" : nodeCount > 20 ? "100" : nodeCount > 10 ? "80" : "60";
-  const baseLayerSpacing = nodeCount > 60 ? "180" : nodeCount > 40 ? "160" : nodeCount > 20 ? "140" : nodeCount > 10 ? "110" : "80";
-  const edgeNodeSpacing = nodeCount > 60 ? "100" : nodeCount > 40 ? "80" : nodeCount > 20 ? "60" : "50";
+  const spacingFactor = Math.max(1, Math.log2(Math.max(2, nodeCount)));
+  const baseNodeSpacing = `${Math.round(40 + spacingFactor * 10)}`;
+  const baseLayerSpacing = `${Math.round(55 + spacingFactor * 14)}`;
+  const edgeNodeSpacing = `${Math.round(35 + spacingFactor * 8)}`;
 
   const layout = await elk.layout({
     id: "root",

@@ -134,6 +134,24 @@ function buildGraphFromScan(
   projectPath: string,
   config: ProjectConfig | null,
 ): ProjectGraph {
+  const DOMAIN_DEFS = [
+    { id: "data-sources", title: "Datenquellen" },
+    { id: "orchestration", title: "Datenpipeline & Orchestrierung" },
+    { id: "analytics", title: "Analytik & Modellierung" },
+    { id: "simulation", title: "Simulation" },
+    { id: "utilities", title: "Utilities / Shared" },
+    { id: "artifacts", title: "Externe Artefakte" },
+  ] as const;
+
+  function classifyDomain(text: string): string {
+    const normalized = text.toLowerCase();
+    if (/(connector|extract|source|sql|db|database|druid|mes|input|loader|ingest)/i.test(normalized)) return "data-sources";
+    if (/(distribution|fit|analy|stat|model|kde|forecast|ml|train|predict|visual)/i.test(normalized)) return "analytics";
+    if (/(simulat|arrival|scheduler|event|process|engine)/i.test(normalized)) return "simulation";
+    if (/(util|helper|common|shared|const|enum|config|types|core)/i.test(normalized)) return "utilities";
+    if (/(artifact|output|export|json|csv|xlsx|excel|parquet|pkl|file)/i.test(normalized)) return "artifacts";
+    return "orchestration";
+  }
   // Convert raw symbols
   const symbols: Symbol[] = raw.symbols.map((s) => ({
     id: s.id,
@@ -356,6 +374,31 @@ function buildGraphFromScan(
       return g;
     });
   }
+
+  // ── Add explicit top-level domain layers above generated groups ──
+  const domainGroups: Symbol[] = DOMAIN_DEFS.map((d) => ({
+    id: `grp:domain:${d.id}`,
+    label: d.title,
+    kind: "group",
+    childViewId: `view:grp:domain:${d.id}`,
+    tags: ["domain-layer", `domain:${d.id}`],
+  }));
+  const domainById = new Map(domainGroups.map((d) => [d.id.replace("grp:domain:", ""), d.id]));
+
+  // Only classify top-level groups; keep nested groups as-is.
+  for (const group of sectionGroups) {
+    if (group.parentId) continue;
+    const descendants = symbols.filter((s) => s.parentId === group.id);
+    const descendantText = descendants
+      .map((s) => `${s.label} ${s.location?.file ?? ""}`)
+      .join(" ");
+    const signal = `${group.label} ${(group.tags ?? []).join(" ")} ${descendantText}`;
+    const domain = classifyDomain(signal);
+    group.parentId = domainById.get(domain);
+  }
+
+  // Add all domain groups so they are visible in root and get their own views.
+  sectionGroups = [...domainGroups, ...sectionGroups];
 
   // ── Build multi-level views ──
 

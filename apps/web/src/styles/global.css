@@ -3320,6 +3320,23 @@ body,
   font-size: 10px;
 }
 
+.validate-comment {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  background: var(--bg-darker, #16161e);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.validate-comment:focus {
+  outline: none;
+  border-color: var(--cyan, #66d9ef);
+}
+
 .validate-change-actions {
   display: flex;
   gap: 6px;

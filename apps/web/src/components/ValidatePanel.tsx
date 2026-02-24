@@ -50,6 +50,9 @@ export function ValidatePanel() {
   const validateConfirm = useAppStore((s) => s.validateConfirm);
   const validateReject = useAppStore((s) => s.validateReject);
   const validateConfirmAll = useAppStore((s) => s.validateConfirmAll);
+  const aiNavPaused = useAppStore((s) => s.aiAnalysis?.navPaused ?? false);
+  const toggleAiNavPaused = useAppStore((s) => s.toggleAiNavPaused);
+  const [reviewComment, setReviewComment] = useState("");
 
   // IDE selection
   const [selectedIde, setSelectedIde] = useState<IdeName>("vscode");
@@ -145,12 +148,12 @@ export function ValidatePanel() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
       if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); validateNext(); }
       if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); validatePrev(); }
-      if (e.key === "Enter" || e.key === "y") { if (currentChange) { e.preventDefault(); validateConfirm(currentChange.id); } }
-      if (e.key === "Backspace" || e.key === "n") { if (currentChange) { e.preventDefault(); validateReject(currentChange.id); } }
+      if (e.key === "Enter" || e.key === "y") { if (currentChange) { e.preventDefault(); validateConfirm(currentChange.id, reviewComment); setReviewComment(""); } }
+      if (e.key === "Backspace" || e.key === "n") { if (currentChange) { e.preventDefault(); validateReject(currentChange.id, reviewComment); setReviewComment(""); } }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [validateState.active, currentChange, validateNext, validatePrev, validateConfirm, validateReject]);
+  }, [validateState.active, currentChange, validateNext, validatePrev, validateConfirm, validateReject, reviewComment]);
 
   if (!validateState.active) return null;
 
@@ -209,6 +212,13 @@ export function ValidatePanel() {
 
       {/* Navigation controls */}
       <div className="validate-nav">
+        <button
+          className="validate-nav-btn"
+          onClick={toggleAiNavPaused}
+          title={aiNavPaused ? "Auto-Navigation fortsetzen" : "Auto-Navigation pausieren"}
+        >
+          <i className={`bi ${aiNavPaused ? "bi-play-fill" : "bi-pause-fill"}`} />
+        </button>
         <button className="validate-nav-btn" onClick={validatePrev} title="Vorherige Änderung (↑ / k)">
           <i className="bi bi-chevron-up" />
         </button>
@@ -234,17 +244,31 @@ export function ValidatePanel() {
 
           <DiffView before={currentChange.before} after={currentChange.after} />
 
+          <textarea
+            className="validate-comment"
+            placeholder="Optionaler Kommentar zur Entscheidung…"
+            value={reviewComment}
+            onChange={(e) => setReviewComment(e.target.value)}
+            rows={2}
+          />
+
           <div className="validate-change-actions">
             <button
               className="validate-btn validate-btn-confirm"
-              onClick={() => validateConfirm(currentChange.id)}
+              onClick={() => {
+                validateConfirm(currentChange.id, reviewComment);
+                setReviewComment("");
+              }}
               title="Bestätigen (Enter / y)"
             >
               <i className="bi bi-check-lg" /> Bestätigen
             </button>
             <button
               className="validate-btn validate-btn-reject"
-              onClick={() => validateReject(currentChange.id)}
+              onClick={() => {
+                validateReject(currentChange.id, reviewComment);
+                setReviewComment("");
+              }}
               title="Ablehnen (Backspace / n)"
             >
               <i className="bi bi-x-lg" /> Ablehnen

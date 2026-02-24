@@ -186,7 +186,7 @@ export function Canvas() {
         label: pe.label,
         animated: pe.animated,
         className: pe.className,
-        data: { relationIds: pe.relationIds },
+        data: { relationIds: pe.relationIds, relationType: pe.type },
       };
     });
 

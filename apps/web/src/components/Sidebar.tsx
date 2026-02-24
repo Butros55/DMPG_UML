@@ -320,6 +320,8 @@ export function Sidebar() {
   const addAiEvent = useAppStore((s) => s.addAiEvent);
   const startAiAnalysis = useAppStore((s) => s.startAiAnalysis);
   const stopAiAnalysis = useAppStore((s) => s.stopAiAnalysis);
+  const exitValidateMode = useAppStore((s) => s.exitValidateMode);
+  const resetPlaybackQueue = useAppStore((s) => s.resetPlaybackQueue);
 
   const [scanPath, setScanPath] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -367,6 +369,8 @@ export function Sidebar() {
     setScanning(true);
     setScanError("");
     try {
+      exitValidateMode();
+      resetPlaybackQueue();
       const g = await scanProject(scanPath.trim());
       setGraph(g);
       // Refresh project list after successful scan
@@ -379,7 +383,7 @@ export function Sidebar() {
     } finally {
       setScanning(false);
     }
-  }, [scanPath, setGraph]);
+  }, [scanPath, setGraph, exitValidateMode, resetPlaybackQueue]);
 
   const handleSwitchProject = useCallback(async (projectPath: string) => {
     try {
@@ -397,6 +401,8 @@ export function Sidebar() {
 
   const handleDeleteProject = useCallback(async (projectPath: string) => {
     try {
+      exitValidateMode();
+      resetPlaybackQueue();
       const result = await deleteProjectApi(projectPath);
       // Re-sync from server response (single round-trip)
       setProjects(result.projects);
@@ -425,7 +431,7 @@ export function Sidebar() {
       }
       setScanError("");
     } catch { /* ignore */ }
-  }, [setGraph]);
+  }, [setGraph, exitValidateMode, resetPlaybackQueue]);
 
   // Auto-scroll AI log when new entries arrive
   useEffect(() => {
@@ -437,6 +443,8 @@ export function Sidebar() {
   /* ── AI Analysis ── */
   const handleStartAnalysis = useCallback(async (resume = false) => {
     console.log(`[AI] Starting AI analysis... (resume=${resume})`);
+    exitValidateMode();
+    resetPlaybackQueue();
 
     // Ensure server has the latest full graph before starting
     try {
@@ -478,7 +486,7 @@ export function Sidebar() {
       resume,
     );
     setAbortFn(() => abort);
-  }, [startAiAnalysis, addAiEvent, stopAiAnalysis, updateGraph, analyzeScope, currentViewId]);
+  }, [startAiAnalysis, addAiEvent, stopAiAnalysis, updateGraph, analyzeScope, currentViewId, exitValidateMode, resetPlaybackQueue]);
 
   const handleStopAnalysis = useCallback(() => {
     // Tell the server to stop processing

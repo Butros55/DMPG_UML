@@ -261,6 +261,10 @@ export function deleteProject(projectPath: string): boolean {
 
   // Delete data directory
   const dir = projectDir(hash);
+  const aiFile = path.join(dir, "ai-progress.json");
+  if (fs.existsSync(aiFile)) {
+    try { fs.unlinkSync(aiFile); } catch { /* ignore */ }
+  }
   if (fs.existsSync(dir)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }

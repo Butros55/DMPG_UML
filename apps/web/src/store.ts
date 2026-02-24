@@ -90,6 +90,7 @@ export interface AppState {
   acknowledgeAiNavigationSettled: (symbolId: string) => void;
   stopAiAnalysis: () => void;
   toggleAiNavPaused: () => void;
+  resetPlaybackQueue: () => void;
   /** Process next item from the playback queue */
   processPlaybackQueue: () => void;
 
@@ -100,8 +101,8 @@ export interface AppState {
   validateNavigateTo: (index: number) => void;
   validateNext: () => void;
   validatePrev: () => void;
-  validateConfirm: (changeId: string) => void;
-  validateReject: (changeId: string) => void;
+  validateConfirm: (changeId: string, comment?: string) => void;
+  validateReject: (changeId: string, comment?: string) => void;
   validateConfirmAll: () => void;
 
   // Inspector
@@ -652,6 +653,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ aiAnalysis: { ...aiAnalysis, navPaused: !aiAnalysis.navPaused } });
   },
 
+  resetPlaybackQueue: () => {
+    const { aiAnalysis } = get();
+    if (!aiAnalysis) return;
+    set({
+      aiAnalysis: {
+        ...aiAnalysis,
+        playbackQueue: [],
+        playbackActive: false,
+        pendingAnimationSymbolId: null,
+        aiWorkingSymbolId: null,
+      },
+    });
+  },
+
   // ── Validate Mode Methods ──
 
   enterValidateMode: async () => {
@@ -843,12 +858,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  validateConfirm: (changeId) => {
+  validateConfirm: (changeId, comment) => {
     const { validateState } = get();
     if (!validateState.active) return;
     const idx = validateState.changes.findIndex((c) => c.id === changeId);
     if (idx < 0) return;
     const change = validateState.changes[idx];
+
+    if (comment?.trim()) {
+      console.debug(`[Validate] Confirm comment for ${changeId}: ${comment.trim()}`);
+    }
 
     // Confirm in the graph
     if (change.field === "relation" && change.relationId) {
@@ -866,12 +885,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     setTimeout(() => get().validateNext(), 150);
   },
 
-  validateReject: (changeId) => {
+  validateReject: (changeId, comment) => {
     const { validateState } = get();
     if (!validateState.active) return;
     const idx = validateState.changes.findIndex((c) => c.id === changeId);
     if (idx < 0) return;
     const change = validateState.changes[idx];
+
+    if (comment?.trim()) {
+      console.debug(`[Validate] Reject comment for ${changeId}: ${comment.trim()}`);
+    }
 
     // Reject in the graph
     if (change.field === "relation" && change.relationId) {
