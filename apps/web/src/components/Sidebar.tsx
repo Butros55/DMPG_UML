@@ -320,6 +320,10 @@ export function Sidebar() {
   const addAiEvent = useAppStore((s) => s.addAiEvent);
   const startAiAnalysis = useAppStore((s) => s.startAiAnalysis);
   const stopAiAnalysis = useAppStore((s) => s.stopAiAnalysis);
+  const exitValidateMode = useAppStore((s) => s.exitValidateMode);
+  const selectSymbol = useAppStore((s) => s.selectSymbol);
+  const selectEdge = useAppStore((s) => s.selectEdge);
+  const setFocusNode = useAppStore((s) => s.setFocusNode);
 
   const [scanPath, setScanPath] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -340,6 +344,14 @@ export function Sidebar() {
   const [ollamaModel, setOllamaModel] = useState("");
   const [canResume, setCanResume] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+
+  const resetValidateContext = useCallback(() => {
+    // Neue Analyse/Scan = neuer Validierungszyklus: bestehende Validate-State + UI-Fokus neutralisieren.
+    exitValidateMode();
+    selectSymbol(null);
+    selectEdge(null);
+    setFocusNode(null);
+  }, [exitValidateMode, selectSymbol, selectEdge, setFocusNode]);
 
   // Load default scan path, AI config, and project list on mount
   useEffect(() => {
@@ -364,6 +376,7 @@ export function Sidebar() {
 
   const handleScan = useCallback(async () => {
     if (!scanPath.trim()) return;
+    resetValidateContext();
     setScanning(true);
     setScanError("");
     try {
@@ -379,7 +392,7 @@ export function Sidebar() {
     } finally {
       setScanning(false);
     }
-  }, [scanPath, setGraph]);
+  }, [scanPath, setGraph, resetValidateContext]);
 
   const handleSwitchProject = useCallback(async (projectPath: string) => {
     try {
@@ -438,6 +451,8 @@ export function Sidebar() {
   const handleStartAnalysis = useCallback(async (resume = false) => {
     console.log(`[AI] Starting AI analysis... (resume=${resume})`);
 
+    resetValidateContext();
+
     // Ensure server has the latest full graph before starting
     try {
       const freshGraph = await fetchGraph();
@@ -478,7 +493,7 @@ export function Sidebar() {
       resume,
     );
     setAbortFn(() => abort);
-  }, [startAiAnalysis, addAiEvent, stopAiAnalysis, updateGraph, analyzeScope, currentViewId]);
+  }, [startAiAnalysis, addAiEvent, stopAiAnalysis, updateGraph, analyzeScope, currentViewId, resetValidateContext]);
 
   const handleStopAnalysis = useCallback(() => {
     // Tell the server to stop processing
