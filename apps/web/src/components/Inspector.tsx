@@ -290,7 +290,7 @@ function RelationItemList({
 }
 
 /* ─── Edge Inspector Panel ─── */
-function EdgeInspector() {
+function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void }) {
   const graph = useAppStore((s) => s.graph);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const updateRelation = useAppStore((s) => s.updateRelation);
@@ -350,7 +350,18 @@ function EdgeInspector() {
 
   return (
     <div className="inspector">
-      <h2>Edge Inspector</h2>
+      <div className="inspector-header-row">
+        <h2>Edge Inspector</h2>
+        <div className="inspector-header-actions">
+          <button
+            className="inspector-header-btn inspector-header-btn--collapse"
+            onClick={onToggleInspector}
+            title="Inspector einklappen"
+          >
+            <i className="bi bi-layout-sidebar-inset-reverse" />
+          </button>
+        </div>
+      </div>
 
       <div className="inspector-card">
         <h3 style={{ fontSize: 13 }}>
@@ -788,33 +799,44 @@ export function Inspector() {
   if (inspectorCollapsed) {
     return (
       <div className="inspector inspector--collapsed">
-        <button className="inspector-toggle-btn" onClick={toggleInspector} title="Inspector öffnen">»</button>
+        <button
+          className="inspector-header-btn inspector-header-btn--expand"
+          onClick={toggleInspector}
+          title="Inspector öffnen"
+        >
+          <i className="bi bi-layout-sidebar-inset" />
+        </button>
       </div>
     );
   }
 
   if (selectedEdgeId && !selectedSymbolId) {
     return (
-      <>
-        <EdgeInspector />
-        <button className="inspector-toggle-btn inspector-toggle-btn--inside" onClick={toggleInspector} title="Inspector schließen">«</button>
-      </>
+      <EdgeInspector onToggleInspector={toggleInspector} />
     );
   }
 
   if (!sym) {
     return (
       <div className="inspector">
-        <button className="inspector-toggle-btn inspector-toggle-btn--inside" onClick={toggleInspector} title="Inspector schließen">«</button>
         <div className="inspector-header-row">
           <h2>Inspector</h2>
-          <button
-            className={`btn btn-xs inspector-settings-toggle${showDiagramSettings ? " inspector-settings-toggle--active" : ""}`}
-            onClick={() => setShowDiagramSettings(true)}
-            title="Diagram Settings öffnen"
-          >
-            <i className="bi bi-sliders" /> Diagram Settings
-          </button>
+          <div className="inspector-header-actions">
+            <button
+              className={`btn btn-xs inspector-settings-toggle${showDiagramSettings ? " inspector-settings-toggle--active" : ""}`}
+              onClick={() => setShowDiagramSettings(true)}
+              title="Diagram Settings öffnen"
+            >
+              <i className="bi bi-sliders" /> Diagram Settings
+            </button>
+            <button
+              className="inspector-header-btn inspector-header-btn--collapse"
+              onClick={toggleInspector}
+              title="Inspector einklappen"
+            >
+              <i className="bi bi-layout-sidebar-inset-reverse" />
+            </button>
+          </div>
         </div>
         <div className="empty-state">
           Click a node or edge to inspect it
@@ -873,13 +895,20 @@ export function Inspector() {
     }
     return "Das Symbol trägt das Dead-Code-Tag, aber es liegt keine detaillierte LLM-Begründung vor. Bitte Analyse erneut ausführen, um die genaue Ursache zu aktualisieren.";
   })();
+  const codingGuidelines = doc?.codingGuidelines;
+  const guidelineScoreClass = codingGuidelines
+    ? codingGuidelines.score >= 85
+      ? "guideline-score guideline-score--good"
+      : codingGuidelines.score >= 65
+        ? "guideline-score guideline-score--warn"
+        : "guideline-score guideline-score--bad"
+    : "guideline-score";
 
   // Available nodes for connection target (all symbols in graph except current)
   const availableTargets = graph?.symbols.filter((s) => s.id !== sym.id) ?? [];
 
   return (
     <div className={`inspector${inspectorAnimClass ? " inspector--ai-animating" : ""}`}>
-      <button className="inspector-toggle-btn inspector-toggle-btn--inside" onClick={toggleInspector} title="Inspector schließen">«</button>
       <div className="inspector-header-row">
         <h2>Inspector</h2>
         <div className="inspector-header-actions">
@@ -896,6 +925,13 @@ export function Inspector() {
             title={editMode ? "Bearbeitungsmodus deaktivieren" : "Bearbeitungsmodus aktivieren"}
           >
             <i className={editMode ? "bi bi-pencil-fill" : "bi bi-pencil"} />{editMode ? " Bearbeiten" : " Bearbeiten"}
+          </button>
+          <button
+            className="inspector-header-btn inspector-header-btn--collapse"
+            onClick={toggleInspector}
+            title="Inspector einklappen"
+          >
+            <i className="bi bi-layout-sidebar-inset-reverse" />
           </button>
         </div>
       </div>
@@ -1076,6 +1112,38 @@ export function Inspector() {
         <div className="inspector-card">
           <div className="field-label"><i className="bi bi-rulers" /> Umfang</div>
           <span>{lineCount} Zeilen</span>
+        </div>
+      )}
+
+      {/* ─── Coding Guidelines ─── */}
+      {codingGuidelines && (
+        <div className="inspector-card">
+          <div className="field-label"><i className="bi bi-shield-check" /> Coding Guidelines</div>
+          <div className={guidelineScoreClass}>
+            Score: <strong>{codingGuidelines.score}/100</strong>
+          </div>
+          <div className="guideline-grid">
+            <span>Naming</span>
+            <span>
+              {codingGuidelines.naming.detected}
+              {codingGuidelines.naming.expected !== "unknown" && (
+                <> (expected: {codingGuidelines.naming.expected})</>
+              )}
+            </span>
+            <span>Line length</span>
+            <span>{codingGuidelines.readability.longLineCount} over {120} chars</span>
+            <span>Nesting</span>
+            <span>max depth {codingGuidelines.complexity.maxNestingDepth}</span>
+            <span>Comments</span>
+            <span>{Math.round(codingGuidelines.readability.commentRatio * 100)}%</span>
+          </div>
+          {codingGuidelines.recommendations.length > 0 && (
+            <ul className="guideline-recommendations">
+              {codingGuidelines.recommendations.map((item, idx) => (
+                <li key={`${idx}-${item}`}>{item}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

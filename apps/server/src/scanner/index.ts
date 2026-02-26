@@ -10,6 +10,7 @@ import type {
   SectionConfig,
   ProjectConfig,
 } from "@dmpg/shared";
+import { buildCodingGuidelinesForSymbol } from "./codingGuidelines.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -162,6 +163,17 @@ function buildGraphFromScan(
     parentId: s.parentId,
     tags: s.tags ?? [],
   }));
+
+  // Add lightweight coding-guideline metadata to each symbol based on its source slice.
+  const fileCache = new Map<string, string[] | null>();
+  for (const symbol of symbols) {
+    const guidelines = buildCodingGuidelinesForSymbol(symbol, projectPath, fileCache);
+    if (!guidelines) continue;
+    symbol.doc = {
+      ...(symbol.doc ?? {}),
+      codingGuidelines: guidelines,
+    };
+  }
 
   // Convert raw edges
   let edgeIdx = 0;

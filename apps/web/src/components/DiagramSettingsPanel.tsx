@@ -286,6 +286,15 @@ export function DiagramSettingsPanel() {
         <span>Node compact mode</span>
       </label>
 
+      <label className="diagram-settings-check">
+        <input
+          type="checkbox"
+          checked={settings.hoverHighlight}
+          onChange={(event) => updateDiagramSettings({ hoverHighlight: event.target.checked })}
+        />
+        <span>Hover highlight</span>
+      </label>
+
       <div className="field-label">Relation Filter</div>
       <div className="diagram-settings-relations">
         {ALL_RELATION_TYPES.map((relationType) => (

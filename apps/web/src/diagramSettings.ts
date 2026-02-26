@@ -78,6 +78,8 @@ export interface DiagramSettings {
   autoLayout: boolean;
   focusMode: boolean;
   focusDepth: number;
+  /** Dim unrelated edges when hovering over a node */
+  hoverHighlight: boolean;
   relationFilters: Record<RelationType, boolean>;
   layout: DiagramLayoutSettings;
 }
@@ -129,6 +131,7 @@ export const DEFAULT_DIAGRAM_SETTINGS: DiagramSettings = {
   autoLayout: true,
   focusMode: false,
   focusDepth: 1,
+  hoverHighlight: true,
   relationFilters: createDefaultRelationFilters(),
   layout: { ...DEFAULT_DIAGRAM_LAYOUT_SETTINGS },
 };
@@ -277,6 +280,7 @@ export function sanitizeDiagramSettings(raw: unknown): DiagramSettings {
     autoLayout: asBoolean(merged.autoLayout, DEFAULT_DIAGRAM_SETTINGS.autoLayout),
     focusMode: asBoolean(merged.focusMode, DEFAULT_DIAGRAM_SETTINGS.focusMode),
     focusDepth: asNumber(merged.focusDepth, DEFAULT_DIAGRAM_SETTINGS.focusDepth, 1, 3),
+    hoverHighlight: asBoolean(merged.hoverHighlight, DEFAULT_DIAGRAM_SETTINGS.hoverHighlight),
     relationFilters,
     layout,
   };

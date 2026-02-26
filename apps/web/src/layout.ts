@@ -9,6 +9,29 @@ const elk = new ELK();
 
 const DEFAULT_WIDTH = 200;
 
+/* ── Dynamic port types for per-edge handle assignment ──────── */
+
+export interface PortInfo {
+  /** Handle ID (e.g. "src-east-0") — used as React Flow Handle id */
+  id: string;
+  /** X offset from node top-left (from ELK) */
+  x: number;
+  /** Y offset from node top-left (from ELK) */
+  y: number;
+  /** Port side on the node boundary */
+  side: "NORTH" | "SOUTH" | "EAST" | "WEST";
+  /** Whether this port is a source or target connection */
+  type: "source" | "target";
+}
+
+export interface LayoutResult {
+  nodes: Node[];
+  /** Port positions per node, keyed by node ID */
+  portsByNode: Map<string, PortInfo[]>;
+  /** Edge handle mapping: edgeId → { sourceHandle, targetHandle } */
+  edgeHandles: Map<string, { sourceHandle: string; targetHandle: string }>;
+}
+
 /* ── Dynamic node sizing based on content ──────── */
 const LINE_HEIGHT = 20;
 const HEADER_HEIGHT = 40;
@@ -94,54 +117,105 @@ export async function layoutNodes(
   edges: Edge[],
   layoutSettings: DiagramLayoutSettings = DEFAULT_DIAGRAM_LAYOUT_SETTINGS,
   compactMode = false,
-): Promise<Node[]> {
+): Promise<LayoutResult> {
   const settings = {
     ...DEFAULT_DIAGRAM_LAYOUT_SETTINGS,
     ...layoutSettings,
   } satisfies DiagramLayoutSettings;
 
+  const nodeIdSet = new Set(nodes.map((n) => n.id));
+
+  /* ── Build per-edge dynamic ports ────────────────────────────── */
+  // Count ports per node per side for sequential naming
+  const srcCounts = new Map<string, Map<string, number>>(); // nodeId → side → count
+  const tgtCounts = new Map<string, Map<string, number>>();
+  for (const n of nodes) {
+    srcCounts.set(n.id, new Map());
+    tgtCounts.set(n.id, new Map());
+  }
+
+  // Collect per-node port definitions and per-edge handle mapping
+  const nodePortDefs = new Map<string, Array<{ elkId: string; handleId: string; side: string; portType: "source" | "target" }>>();
+  for (const n of nodes) {
+    nodePortDefs.set(n.id, []);
+  }
+
+  const edgeHandleMap = new Map<string, { sourceHandle: string; targetHandle: string }>();
+
+  // Filter to valid edges (both endpoints present)
+  const validEdges = edges.filter((e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target));
+
+  // Sort edges deterministically so port ordering is stable across layout passes
+  const sortedEdges = [...validEdges].sort((a, b) => {
+    if (a.source !== b.source) return a.source.localeCompare(b.source);
+    if (a.target !== b.target) return a.target.localeCompare(b.target);
+    const aType = (a.data as { relationType?: string } | undefined)?.relationType ?? "calls";
+    const bType = (b.data as { relationType?: string } | undefined)?.relationType ?? "calls";
+    return aType.localeCompare(bType);
+  });
+
+  for (const e of sortedEdges) {
+    const relType = (e.data as { relationType?: string } | undefined)?.relationType ?? "calls";
+
+    // Determine port sides based on relation type
+    const srcSide = relType === "imports" ? "NORTH"
+      : (relType === "reads" || relType === "writes") ? "SOUTH"
+        : "EAST";
+    const tgtSide = relType === "imports" ? "WEST"
+      : (relType === "reads" || relType === "writes") ? "SOUTH"
+        : "WEST";
+
+    // Generate sequential handle IDs per side
+    const srcSideCounts = srcCounts.get(e.source)!;
+    const srcIdx = srcSideCounts.get(srcSide) ?? 0;
+    srcSideCounts.set(srcSide, srcIdx + 1);
+
+    const tgtSideCounts = tgtCounts.get(e.target)!;
+    const tgtIdx = tgtSideCounts.get(tgtSide) ?? 0;
+    tgtSideCounts.set(tgtSide, tgtIdx + 1);
+
+    const srcHandleId = `src-${srcSide.toLowerCase()}-${srcIdx}`;
+    const tgtHandleId = `tgt-${tgtSide.toLowerCase()}-${tgtIdx}`;
+
+    // ELK port IDs are globally unique (prefixed with nodeId)
+    const srcElkId = `${e.source}:${srcHandleId}`;
+    const tgtElkId = `${e.target}:${tgtHandleId}`;
+
+    nodePortDefs.get(e.source)!.push({ elkId: srcElkId, handleId: srcHandleId, side: srcSide, portType: "source" });
+    nodePortDefs.get(e.target)!.push({ elkId: tgtElkId, handleId: tgtHandleId, side: tgtSide, portType: "target" });
+
+    edgeHandleMap.set(e.id, { sourceHandle: srcHandleId, targetHandle: tgtHandleId });
+  }
+
+  /* ── Build ELK graph with dynamic ports ─────────────────────── */
   const elkNodes: ElkNode[] = nodes.map((n) => {
     const size = estimateNodeSize(n, compactMode);
+    const ports = nodePortDefs.get(n.id) ?? [];
+
     return {
       id: n.id,
       width: size.width,
       height: size.height,
       layoutOptions: {
-        "elk.portConstraints": "FIXED_ORDER",
+        "elk.portConstraints": "FIXED_SIDE",
       },
-      ports: [
-        { id: `${n.id}:in-north`, layoutOptions: { "elk.port.side": "NORTH" } },
-        { id: `${n.id}:in-south`, layoutOptions: { "elk.port.side": "SOUTH" } },
-        { id: `${n.id}:in-west`, layoutOptions: { "elk.port.side": "WEST" } },
-        { id: `${n.id}:out-east`, layoutOptions: { "elk.port.side": "EAST" } },
-        { id: `${n.id}:out-south`, layoutOptions: { "elk.port.side": "SOUTH" } },
-      ],
+      ports: ports.map((p) => ({
+        id: p.elkId,
+        layoutOptions: { "elk.port.side": p.side },
+      })),
     };
   });
 
-  const elkEdges: ElkExtendedEdge[] = edges
-    .filter((e) => nodes.some((n) => n.id === e.source) && nodes.some((n) => n.id === e.target))
-    .map((e) => {
-      const relType = (e.data as { relationType?: string } | undefined)?.relationType ?? "calls";
-      const sourcePort = relType === "imports"
-        ? `${e.source}:in-north`
-        : relType === "reads" || relType === "writes"
-          ? `${e.source}:out-south`
-          : `${e.source}:out-east`;
-      const targetPort = relType === "imports"
-        ? `${e.target}:in-west`
-        : relType === "reads" || relType === "writes"
-          ? `${e.target}:in-south`
-          : `${e.target}:in-west`;
-
-      return {
-        id: e.id,
-        sources: [e.source],
-        targets: [e.target],
-        sourcePort,
-        targetPort,
-      };
-    });
+  const elkEdges: ElkExtendedEdge[] = sortedEdges.map((e) => {
+    const handles = edgeHandleMap.get(e.id)!;
+    return {
+      id: e.id,
+      sources: [e.source],
+      targets: [e.target],
+      sourcePort: `${e.source}:${handles.sourceHandle}`,
+      targetPort: `${e.target}:${handles.targetHandle}`,
+    };
+  });
 
   const layout = await elk.layout({
     id: "root",
@@ -157,7 +231,7 @@ export async function layoutNodes(
       "elk.layered.crossingMinimization.greedySwitch.type": "TWO_SIDED",
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
       "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
-      "elk.portConstraints": "FIXED_ORDER",
+      "elk.portConstraints": "FIXED_SIDE",
       "elk.edgeRouting": settings.routing,
       "elk.layered.mergeEdges": settings.mergeEdges ? "true" : "false",
       "elk.layered.spacing.edgeNodeBetweenLayers": `${settings.edgeNodeSpacing}`,
@@ -173,7 +247,38 @@ export async function layoutNodes(
     },
   });
 
-  return nodes.map((n) => {
+  /* ── Extract port positions from ELK output ─────────────────── */
+  const portsByNode = new Map<string, PortInfo[]>();
+
+  for (const layoutNode of layout.children ?? []) {
+    const ports: PortInfo[] = [];
+    for (const port of layoutNode.ports ?? []) {
+      // Port ID is "nodeId:handleId" — extract the handleId part
+      const colonIdx = port.id.indexOf(":");
+      const handleId = colonIdx >= 0 ? port.id.substring(colonIdx + 1) : port.id;
+      const portType = handleId.startsWith("src-") ? "source" as const : "target" as const;
+
+      // Determine side from the handle ID name
+      let side: PortInfo["side"] = "EAST";
+      const lower = handleId.toLowerCase();
+      if (lower.includes("north")) side = "NORTH";
+      else if (lower.includes("south")) side = "SOUTH";
+      else if (lower.includes("east")) side = "EAST";
+      else if (lower.includes("west")) side = "WEST";
+
+      ports.push({
+        id: handleId,
+        x: port.x ?? 0,
+        y: port.y ?? 0,
+        side,
+        type: portType,
+      });
+    }
+    portsByNode.set(layoutNode.id, ports);
+  }
+
+  /* ── Build positioned nodes ─────────────────────────────────── */
+  const positionedNodes = nodes.map((n) => {
     const layoutNode = layout.children?.find((c) => c.id === n.id);
     return {
       ...n,
@@ -183,4 +288,6 @@ export async function layoutNodes(
       },
     };
   });
+
+  return { nodes: positionedNodes, portsByNode, edgeHandles: edgeHandleMap };
 }

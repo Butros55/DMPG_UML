@@ -8,18 +8,53 @@ let showTimer: ReturnType<typeof setTimeout> | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 /** True while the pointer is physically over the hover card. */
 let _mouseOverCard = false;
+/** While true, hover open is fully blocked (used during drag interactions). */
+let _hoverBlocked = false;
+/** Absolute time until hover remains suppressed after unblock. */
+let _hoverSuppressedUntil = 0;
+
+const HOVER_SHOW_DELAY_MS = 560;
+const HOVER_HIDE_DELAY_MS = 300;
+
+function hoverIsSuppressed(): boolean {
+  return _hoverBlocked || Date.now() < _hoverSuppressedUntil;
+}
+
+/**
+ * Blocks/unblocks hover card interactions globally.
+ * - `blocked=true`: hide immediately and cancel all timers.
+ * - `blocked=false`: optionally keep hover suppressed for `suppressMs`.
+ */
+export function setHoverInteractionBlocked(blocked: boolean, suppressMs = 0) {
+  _hoverBlocked = blocked;
+
+  if (blocked) {
+    _mouseOverCard = false;
+    if (showTimer) { clearTimeout(showTimer); showTimer = null; }
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    useAppStore.getState().setHoverSymbol(null);
+    return;
+  }
+
+  _hoverSuppressedUntil = suppressMs > 0 ? Date.now() + suppressMs : 0;
+}
 
 /** Schedule showing the hover card after a short delay */
 export function scheduleShowHover(symbolId: string, rect: DOMRect) {
+  if (hoverIsSuppressed()) return;
   cancelHideHover();
   if (showTimer) clearTimeout(showTimer);
   showTimer = setTimeout(() => {
+    if (hoverIsSuppressed()) {
+      showTimer = null;
+      return;
+    }
     // Position: to the right of the node, or left if near screen edge
     const x = rect.right + 12 + 380 > window.innerWidth ? rect.left - 392 : rect.right + 12;
     const y = Math.max(8, Math.min(rect.top, window.innerHeight - 500));
     useAppStore.getState().setHoverSymbol(symbolId, { x, y });
     showTimer = null;
-  }, 350);
+  }, HOVER_SHOW_DELAY_MS);
 }
 
 /** Schedule hiding the hover card after a short delay (allows mouse to reach card) */
@@ -27,12 +62,17 @@ export function scheduleHideHover() {
   if (showTimer) { clearTimeout(showTimer); showTimer = null; }
   // Always clear previous hide timer to avoid duplicate / orphan timeouts
   if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+  if (hoverIsSuppressed()) {
+    _mouseOverCard = false;
+    useAppStore.getState().setHoverSymbol(null);
+    return;
+  }
   hideTimer = setTimeout(() => {
     hideTimer = null;
     // Safety: never close while the pointer is physically over the card
     if (_mouseOverCard) return;
     useAppStore.getState().setHoverSymbol(null);
-  }, 300);
+  }, HOVER_HIDE_DELAY_MS);
 }
 
 /** Cancel pending hide (called when mouse enters the card) */
@@ -175,6 +215,23 @@ const KIND_COLORS: Record<string, string> = {
   script: "#e0e0e0",
 };
 
+const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: string }> = {
+  "out:calls":        { iconCls: "bi-telephone-outbound", label: "calls",         cls: "calls" },
+  "in:calls":         { iconCls: "bi-telephone-inbound",  label: "called by",     cls: "calls-in" },
+  "out:reads":        { iconCls: "bi-book",               label: "reads",         cls: "reads" },
+  "in:reads":         { iconCls: "bi-book",               label: "read by",       cls: "reads-in" },
+  "out:writes":       { iconCls: "bi-pencil-square",      label: "writes",        cls: "writes" },
+  "in:writes":        { iconCls: "bi-pencil-square",      label: "written by",    cls: "writes-in" },
+  "out:imports":      { iconCls: "bi-box-arrow-in-down",  label: "imports",       cls: "imports" },
+  "in:imports":       { iconCls: "bi-box-arrow-in-down",  label: "imported by",   cls: "imports-in" },
+  "out:inherits":     { iconCls: "bi-diagram-3",          label: "inherits",      cls: "inherits" },
+  "in:inherits":      { iconCls: "bi-diagram-3",          label: "inherited by",  cls: "inherits-in" },
+  "out:instantiates": { iconCls: "bi-lightning",          label: "creates",       cls: "instantiates" },
+  "in:instantiates":  { iconCls: "bi-lightning",          label: "created by",    cls: "instantiates-in" },
+  "out:uses_config":  { iconCls: "bi-gear",               label: "config",        cls: "uses_config" },
+  "in:uses_config":   { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
+};
+
 /* ── The Hover Card Component ── */
 
 export function SymbolHoverCard() {
@@ -236,6 +293,22 @@ export function SymbolHoverCard() {
   const sigParts = doc?.inputs?.map((p) => `${p.name}${p.type ? `: ${p.type}` : ""}`).join(", ") ?? "";
   const returnType = doc?.outputs?.map((o) => o.type ?? o.name).join(", ") ?? "";
   const isDeadCode = sym.tags?.includes("dead-code") ?? false;
+  const relationBadgeKeys = [
+    ...(info.outgoingCalls.length > 0 ? ["out:calls"] : []),
+    ...(info.incomingCalls.length > 0 ? ["in:calls"] : []),
+    ...(info.reads.length > 0 ? ["out:reads"] : []),
+    ...(info.readBy.length > 0 ? ["in:reads"] : []),
+    ...(info.writes.length > 0 ? ["out:writes"] : []),
+    ...(info.writtenBy.length > 0 ? ["in:writes"] : []),
+    ...(info.imports.length > 0 ? ["out:imports"] : []),
+    ...(info.importedBy.length > 0 ? ["in:imports"] : []),
+    ...(info.inherits.length > 0 ? ["out:inherits"] : []),
+    ...(info.inheritedBy.length > 0 ? ["in:inherits"] : []),
+    ...(info.instantiates.length > 0 ? ["out:instantiates"] : []),
+    ...(info.instantiatedBy.length > 0 ? ["in:instantiates"] : []),
+    ...(info.usesConfig.length > 0 ? ["out:uses_config"] : []),
+    ...(info.configUsedBy.length > 0 ? ["in:uses_config"] : []),
+  ];
   const deadCodeReasonText = (() => {
     const explicit = (doc?.deadCodeReason ?? "").trim();
     if (explicit) return explicit;
@@ -311,6 +384,29 @@ export function SymbolHoverCard() {
               <span className="shc-sig-return">{returnType}</span>
             </>
           )}
+        </div>
+      )}
+
+      {/* ── Relation badges (same visual mapping as nodes/inspector) ── */}
+      {relationBadgeKeys.length > 0 && (
+        <div className="rel-badges shc-rel-badges">
+          {relationBadgeKeys.map((key) => {
+            const meta = REL_BADGE_META[key];
+            if (!meta) return null;
+            const isIn = key.startsWith("in:");
+            return (
+              <span
+                key={key}
+                className={`rel-badge rel-badge--${meta.cls}`}
+                title={meta.label}
+                aria-label={meta.label}
+              >
+                {isIn && <i className="bi bi-arrow-left" style={{ fontSize: 9, marginRight: 2 }} />}
+                <i className={`bi ${meta.iconCls}`} />
+                <span>{meta.label}</span>
+              </span>
+            );
+          })}
         </div>
       )}
 

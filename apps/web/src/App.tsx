@@ -62,10 +62,13 @@ export function App() {
   const currentViewId = useAppStore((s) => s.currentViewId);
   const navigateToView = useAppStore((s) => s.navigateToView);
   const inspectorCollapsed = useAppStore((s) => s.inspectorCollapsed);
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const sourceViewerSymbol = useAppStore((s) => s.sourceViewerSymbol);
   const closeSourceViewer = useAppStore((s) => s.closeSourceViewer);
   const validateActive = useAppStore((s) => s.validateState.active);
   const toggleDebugTransport = useAppStore((s) => s.toggleDebugTransport);
+  const undoGraphChange = useAppStore((s) => s.undoGraphChange);
+  const redoGraphChange = useAppStore((s) => s.redoGraphChange);
 
   const skipHistoryPush = useRef(false);
   const prevViewId = useRef<string | null>(null);
@@ -74,6 +77,8 @@ export function App() {
   const sidebar = useResizeHandle("left", 240, 160, 500);
   const inspector = useResizeHandle("right", 340, 200, 600);
   const validatePanel = useResizeHandle("left", 380, 280, 560);
+  const sidebarActivityWidth = 50;
+  const sidebarColumnWidth = sidebarCollapsed ? sidebarActivityWidth : sidebar.width;
 
   useEffect(() => {
     fetchGraph()
@@ -106,9 +111,41 @@ export function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [navigateToView]);
 
+  // Global graph undo/redo shortcuts (capture phase to prevent browser handlers)
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName ?? "";
+      const isTypingTarget =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        !!target?.isContentEditable;
+      if (isTypingTarget) return;
+
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (!ctrl) return;
+      const key = event.key.toLowerCase();
+      const isRedo = (event.shiftKey && key === "z") || key === "y";
+      const isUndo = key === "z" && !event.shiftKey;
+
+      if (!isUndo && !isRedo) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (isRedo) {
+        redoGraphChange();
+      } else {
+        undoGraphChange();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [undoGraphChange, redoGraphChange]);
+
   // Build grid columns — optionally include validate panel between sidebar & canvas
   const gridCols = (() => {
-    const sidebarCol = `${sidebar.width}px`;
+    const sidebarCol = `${sidebarColumnWidth}px`;
     const validateCol = validateActive ? `${validatePanel.width}px` : "";
     const inspectorCol = inspectorCollapsed ? "36px" : `${inspector.width}px`;
     return validateActive
@@ -144,11 +181,13 @@ export function App() {
       </header>
 
       <Sidebar />
-      <div
-        className="resize-handle resize-handle--sidebar"
-        style={{ left: sidebar.width - 3 }}
-        onMouseDown={sidebar.onMouseDown}
-      />
+      {!sidebarCollapsed && (
+        <div
+          className="resize-handle resize-handle--sidebar"
+          style={{ left: sidebarColumnWidth - 3 }}
+          onMouseDown={sidebar.onMouseDown}
+        />
+      )}
 
       {/* Validate Panel — docked between sidebar & canvas */}
       {validateActive && (
@@ -156,7 +195,7 @@ export function App() {
           <ValidatePanel />
           <div
             className="resize-handle resize-handle--validate"
-            style={{ left: sidebar.width + validatePanel.width - 3 }}
+            style={{ left: sidebarColumnWidth + validatePanel.width - 3 }}
             onMouseDown={validatePanel.onMouseDown}
           />
         </>

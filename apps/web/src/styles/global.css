@@ -105,7 +105,89 @@ body,
   grid-area: sidebar;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
+  overflow: hidden;
+  padding: 0;
+}
+
+/* VS Code–style: thin activity bar left + content panel right */
+.sidebar.sidebar--vscode {
+  display: flex;
+  flex-direction: row;
+}
+
+.sidebar.sidebar--collapsed {
+  min-width: 0;
+}
+
+.sidebar.sidebar--collapsed .sidebar-activity {
+  width: 100%;
+  min-width: 0;
+  border-right: none;
+}
+
+.sidebar.sidebar--collapsed .sidebar-content {
+  display: none;
+}
+
+/* ─ Activity Bar (vertical icon strip) ─ */
+.sidebar-activity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 48px;
+  min-width: 48px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding-top: 4px;
+  gap: 2px;
   overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sidebar-activity-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: 6px;
+  position: relative;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.sidebar-activity-btn:hover {
+  color: var(--text);
+  background: rgba(108, 140, 255, 0.08);
+}
+
+.sidebar-activity-btn--active {
+  color: var(--accent);
+}
+
+/* Active indicator — left bar like VS Code */
+.sidebar-activity-btn--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
+
+/* ─ Content panel (scrollable) ─ */
+.sidebar-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px;
 }
 
@@ -753,33 +835,6 @@ body,
   overflow: hidden;
 }
 
-.inspector-toggle-btn {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 14px;
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  padding: 0;
-  transition: background 0.15s, color 0.15s;
-}
-.inspector-toggle-btn:hover {
-  background: var(--accent);
-  color: #fff;
-}
-
-.inspector-toggle-btn--inside {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 5;
-}
-
 .inspector h2 {
   font-size: 15px;
   font-weight: 600;
@@ -799,6 +854,34 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.inspector-header-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.inspector-header-btn:hover {
+  background: rgba(108, 140, 255, 0.16);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.inspector-header-btn--collapse {
+  margin-left: 2px;
+}
+
+.inspector-header-btn--expand {
+  margin-top: 2px;
 }
 
 .inspector-settings-toggle {
@@ -965,6 +1048,42 @@ body,
   overflow: hidden;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+.guideline-score {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.guideline-score--good {
+  color: #9de7b6;
+}
+
+.guideline-score--warn {
+  color: #ffd57f;
+}
+
+.guideline-score--bad {
+  color: #ff9a9a;
+}
+
+.guideline-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 4px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.guideline-grid span:nth-child(odd) {
+  color: var(--text);
+}
+
+.guideline-recommendations {
+  margin-top: 8px;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
 .diagram-settings-card {
@@ -1646,6 +1765,48 @@ body,
 .react-flow__edge.selected .react-flow__edge-path {
   stroke-width: 3 !important;
   filter: drop-shadow(0 0 4px rgba(108, 140, 255, 0.4));
+}
+
+/* ─── Dynamic port handles (invisible connection anchors) ──── */
+.dynamic-port-handle {
+  width: 4px !important;
+  height: 4px !important;
+  min-width: 4px !important;
+  min-height: 4px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  background: transparent !important;
+  border: none !important;
+}
+
+/* ─── Hover highlight: dim unrelated edges ─────────────────── */
+.edge-hover-dim .react-flow__edge-path {
+  opacity: 0.1 !important;
+  transition: opacity 0.2s ease;
+}
+
+.edge-hover-dim .react-flow__edge-text,
+.edge-hover-dim .react-flow__edge-textbg {
+  opacity: 0.1 !important;
+  transition: opacity 0.2s ease;
+}
+
+.edge-hover-highlight .react-flow__edge-path {
+  opacity: 1 !important;
+  stroke-width: 3 !important;
+  filter: drop-shadow(0 0 6px rgba(108, 140, 255, 0.5));
+  transition: opacity 0.2s ease, stroke-width 0.2s ease;
+}
+
+.edge-hover-highlight .react-flow__edge-text {
+  opacity: 1 !important;
+  fill: var(--text) !important;
+  transition: opacity 0.2s ease;
+}
+
+.edge-hover-highlight .react-flow__edge-textbg {
+  fill-opacity: 1 !important;
+  transition: fill-opacity 0.2s ease;
 }
 
 /* ─── Scrollbar ───────────────────────────────── */
@@ -2487,6 +2648,23 @@ body,
   z-index: 100 !important;
 }
 
+/* ── Focus-Navigate: dead-code pulse (red override) ── */
+.node-focus-highlight-dead .uml-node,
+.react-flow__node.node-focus-highlight-dead .uml-node {
+  animation: focus-pulse-dead 1.6s ease-in-out infinite;
+  border-color: var(--red) !important;
+  transition: border-color 0.2s ease;
+}
+@keyframes focus-pulse-dead {
+  0%   { box-shadow: 0 0 8px 3px rgba(255, 107, 107, 0.75); }
+  50%  { box-shadow: 0 0 18px 6px rgba(255, 107, 107, 0.45); }
+  100% { box-shadow: 0 0 8px 3px rgba(255, 107, 107, 0.75); }
+}
+.node-focus-highlight-dead,
+.react-flow__node.node-focus-highlight-dead {
+  z-index: 100 !important;
+}
+
 /* ── AI Flash: brief highlight when a node is updated by AI (kind-colored) ── */
 .ai-flash .uml-node,
 .react-flow__node.ai-flash .uml-node {
@@ -2660,6 +2838,17 @@ body,
 
 .symbol-hover-card::-webkit-scrollbar { width: 4px; }
 .symbol-hover-card::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Relation badges in hover card: same visual mapping as node badges, but tighter spacing */
+.shc-rel-badges {
+  padding: 2px 0 4px;
+  gap: 4px;
+}
+
+.shc-rel-badges .rel-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+}
 
 /* Header */
 .shc-header {
@@ -2981,22 +3170,27 @@ body,
   min-width: 0;
 }
 
-/* Ensure sidebar scrolls properly with new sections */
-.sidebar::-webkit-scrollbar {
+/* Ensure sidebar content scrolls properly */
+.sidebar-content::-webkit-scrollbar {
   width: 5px;
 }
 
-.sidebar::-webkit-scrollbar-track {
+.sidebar-content::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.sidebar::-webkit-scrollbar-thumb {
+.sidebar-content::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 4px;
 }
 
-.sidebar::-webkit-scrollbar-thumb:hover {
+.sidebar-content::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
+}
+
+/* Hide activity-bar scrollbar */
+.sidebar-activity::-webkit-scrollbar {
+  width: 0;
 }
 
 /* ─── Resize Handles ──────────────────────────── */

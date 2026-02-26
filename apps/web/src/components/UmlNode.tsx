@@ -4,6 +4,7 @@ import { useAppStore } from "../store";
 import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
 import type { Symbol as Sym } from "@dmpg/shared";
 import type { DiagramLabelMode } from "../diagramSettings";
+import type { PortInfo } from "../layout";
 
 export interface UmlNodeData {
   label: string;
@@ -19,6 +20,8 @@ export interface UmlNodeData {
   compactMode?: boolean;
   labelsMode?: DiagramLabelMode;
   location?: { file: string; startLine?: number; endLine?: number };
+  /** Dynamic port handles computed by ELK layout */
+  dynamicPorts?: PortInfo[];
   [key: string]: unknown;
 }
 
@@ -123,6 +126,8 @@ function useNodeActions(data: UmlNodeData) {
 
   const handleMouseEnter = useCallback(
     (e: React.MouseEvent) => {
+      // Do not open hover UI while any mouse button is held (drag/selection gesture).
+      if (e.buttons !== 0) return;
       const rect = e.currentTarget.getBoundingClientRect();
       scheduleShowHover(data.symbolId, rect);
     },
@@ -134,6 +139,40 @@ function useNodeActions(data: UmlNodeData) {
   }, []);
 
   return { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave };
+}
+
+/* ── Dynamic port handles from ELK layout ─────── */
+
+function portSideToPosition(side: string): Position {
+  switch (side) {
+    case "NORTH": return Position.Top;
+    case "SOUTH": return Position.Bottom;
+    case "EAST": return Position.Right;
+    case "WEST": return Position.Left;
+    default: return Position.Bottom;
+  }
+}
+
+function DynamicPorts({ ports }: { ports?: PortInfo[] }) {
+  if (!ports || ports.length === 0) return null;
+  return (
+    <>
+      {ports.map((port) => (
+        <Handle
+          key={port.id}
+          id={port.id}
+          type={port.type}
+          position={portSideToPosition(port.side)}
+          className="dynamic-port-handle"
+          style={{
+            ...(port.side === "EAST" || port.side === "WEST"
+              ? { top: port.y }
+              : { left: port.x }),
+          }}
+        />
+      ))}
+    </>
+  );
 }
 
 /* ── Default UML Node (fallback) ──────────────── */
@@ -170,6 +209,7 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
       )}
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
       <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
+      <DynamicPorts ports={d.dynamicPorts} />
     </div>
   );
 });
@@ -218,8 +258,7 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
         </div>
       )}
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
-      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
-    </div>
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />      <DynamicPorts ports={d.dynamicPorts} />    </div>
   );
 });
 
@@ -297,6 +336,7 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
 
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
       <Handle type="source" position={Position.Right} id="out-right" style={{ top: "70%" }} />
+      <DynamicPorts ports={d.dynamicPorts} />
     </div>
   );
 });
@@ -361,8 +401,7 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
       )}
 
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
-      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
-    </div>
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />      <DynamicPorts ports={d.dynamicPorts} />    </div>
   );
 });
 
@@ -402,6 +441,7 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
 
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
       <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
+      <DynamicPorts ports={d.dynamicPorts} />
     </div>
   );
 });

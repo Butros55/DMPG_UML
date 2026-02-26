@@ -24,6 +24,43 @@ export const SymbolLocationSchema = z.object({
 });
 export type SymbolLocation = z.infer<typeof SymbolLocationSchema>;
 
+export const CodingGuidelineNamingStyleEnum = z.enum([
+  "snake_case",
+  "camelCase",
+  "PascalCase",
+  "UPPER_SNAKE_CASE",
+  "mixed",
+  "unknown",
+]);
+export type CodingGuidelineNamingStyle = z.infer<typeof CodingGuidelineNamingStyleEnum>;
+
+export const CodingGuidelinesSchema = z.object({
+  score: z.number().min(0).max(100),
+  naming: z.object({
+    expected: z.string(),
+    detected: CodingGuidelineNamingStyleEnum,
+    compliant: z.boolean(),
+  }),
+  indentation: z.object({
+    tabs: z.number().int().nonnegative(),
+    spaces: z.number().int().nonnegative(),
+    consistent: z.boolean(),
+  }),
+  complexity: z.object({
+    lineCount: z.number().int().nonnegative(),
+    maxNestingDepth: z.number().int().nonnegative(),
+    functionTooLong: z.boolean(),
+    deepNesting: z.boolean(),
+  }),
+  readability: z.object({
+    longLineCount: z.number().int().nonnegative(),
+    commentLineCount: z.number().int().nonnegative(),
+    commentRatio: z.number().min(0).max(1),
+  }),
+  recommendations: z.array(z.string()),
+});
+export type CodingGuidelines = z.infer<typeof CodingGuidelinesSchema>;
+
 export const SymbolDocSchema = z.object({
   summary: z.string().optional(),
   inputs: z
@@ -41,6 +78,8 @@ export const SymbolDocSchema = z.object({
   aiGenerated: z.record(z.string(), z.boolean()).optional(),
   /** Explanation why this symbol was flagged as dead code */
   deadCodeReason: z.string().optional(),
+  /** Lightweight static checks for coding-guideline adherence. */
+  codingGuidelines: CodingGuidelinesSchema.optional(),
 });
 export type SymbolDoc = z.infer<typeof SymbolDocSchema>;
 

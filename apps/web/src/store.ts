@@ -123,6 +123,9 @@ export interface AppState {
   // Inspector
   inspectorCollapsed: boolean;
   toggleInspector: () => void;
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  toggleSidebarCollapsed: () => void;
 
   // Diagram settings
   diagramSettings: DiagramSettings;
@@ -295,6 +298,24 @@ function navigateBreadcrumb(current: string[], viewId: string): string[] {
   return [...current, viewId];
 }
 
+/** Build the full ancestor chain from root down to the given view */
+function buildViewPath(graph: { rootViewId: string; views: Array<{ id: string; parentViewId?: string | null }> }, viewId: string): string[] {
+  const viewMap = new Map(graph.views.map((v) => [v.id, v]));
+  const chain: string[] = [];
+  let cur: string | null | undefined = viewId;
+  while (cur) {
+    chain.unshift(cur);
+    const v = viewMap.get(cur);
+    if (!v || cur === graph.rootViewId) break;
+    cur = v.parentViewId ?? null;
+  }
+  // Ensure root is at the start
+  if (chain[0] !== graph.rootViewId) {
+    chain.unshift(graph.rootViewId);
+  }
+  return chain;
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   graph: null,
   currentViewId: null,
@@ -313,6 +334,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   inspectorCollapsed: false,
   toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
+  sidebarCollapsed: false,
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+  toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   diagramSettings: loadDiagramSettings(),
   diagramLayoutVersion: 1,
@@ -1204,10 +1228,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   navigateToView: (viewId) => {
-    const { breadcrumb } = get();
+    const { breadcrumb, graph } = get();
     const idx = breadcrumb.indexOf(viewId);
     if (idx >= 0) {
+      // View is already in current breadcrumb — go back to that point
       set({ currentViewId: viewId, breadcrumb: breadcrumb.slice(0, idx + 1), selectedSymbolId: null, selectedEdgeId: null });
+    } else if (graph) {
+      // Build correct ancestor path from root → target view
+      const path = buildViewPath(graph, viewId);
+      set({ currentViewId: viewId, breadcrumb: path, selectedSymbolId: null, selectedEdgeId: null });
     } else {
       set({ currentViewId: viewId, breadcrumb: [...breadcrumb, viewId], selectedSymbolId: null, selectedEdgeId: null });
     }

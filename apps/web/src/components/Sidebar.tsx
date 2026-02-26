@@ -37,6 +37,9 @@ const SCOPE_ICONS: Record<string, string> = {
   class: "bi-building",
 };
 
+type SidebarTab = "views" | "nodes" | "ai" | "project";
+const SIDEBAR_TAB_STORAGE_KEY = "dmpg.sidebar.active-tab.v1";
+
 /** Navigate to the deepest view containing a symbol and focus it */
 function goToSymbol(symbolId: string) {
   const store = useAppStore.getState();
@@ -370,6 +373,8 @@ export function Sidebar() {
   const updateGraph = useAppStore((s) => s.updateGraph);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const navigateToView = useAppStore((s) => s.navigateToView);
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed);
   const aiAnalysis = useAppStore((s) => s.aiAnalysis);
   const addAiEvent = useAppStore((s) => s.addAiEvent);
   const startAiAnalysis = useAppStore((s) => s.startAiAnalysis);
@@ -397,6 +402,40 @@ export function Sidebar() {
   const [canResume, setCanResume] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const [viewSearchQuery, setViewSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<SidebarTab>("views");
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_TAB_STORAGE_KEY);
+      if (raw === "views" || raw === "nodes" || raw === "ai" || raw === "project") {
+        setActiveTab(raw);
+      }
+    } catch {
+      // ignore invalid persisted tab state
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_TAB_STORAGE_KEY, activeTab);
+    } catch {
+      // ignore storage write errors
+    }
+  }, [activeTab]);
+
+  const activateTab = useCallback((tab: SidebarTab) => {
+    setActiveTab(tab);
+    setSidebarCollapsed(false);
+  }, [setSidebarCollapsed]);
+
+  const handleActivityTabClick = useCallback((tab: SidebarTab) => {
+    if (!sidebarCollapsed && activeTab === tab) {
+      setSidebarCollapsed(true);
+      return;
+    }
+    setActiveTab(tab);
+    setSidebarCollapsed(false);
+  }, [activeTab, sidebarCollapsed, setSidebarCollapsed]);
 
   // Load default scan path, AI config, and project list on mount
   useEffect(() => {
@@ -571,30 +610,39 @@ export function Sidebar() {
 
       switch (action) {
         case "scan":
+          activateTab("project");
           void handleScan();
           break;
         case "open-folder-browser":
+          activateTab("project");
           setShowBrowser(true);
           break;
         case "switch-project":
+          activateTab("project");
           if (detail.projectPath) void handleSwitchProject(detail.projectPath);
           break;
         case "delete-project":
+          activateTab("project");
           if (detail.projectPath) void handleDeleteProject(detail.projectPath);
           break;
         case "delete-active-project":
+          activateTab("project");
           if (activeProjectPath) void handleDeleteProject(activeProjectPath);
           break;
         case "ai-start":
+          activateTab("ai");
           void handleStartAnalysis(false);
           break;
         case "ai-resume":
+          activateTab("ai");
           void handleStartAnalysis(canResume ? true : false);
           break;
         case "ai-pause":
+          activateTab("ai");
           handlePauseAnalysis();
           break;
         case "ai-stop":
+          activateTab("ai");
           handleStopAnalysis();
           break;
         default:
@@ -613,6 +661,7 @@ export function Sidebar() {
     handleStartAnalysis,
     handleStopAnalysis,
     handleSwitchProject,
+    activateTab,
   ]);
 
   const onDragStart = (e: React.DragEvent, kind: string) => {
@@ -784,9 +833,49 @@ export function Sidebar() {
   }, [graph]);
 
   return (
-    <div className="sidebar">
+    <div className={`sidebar sidebar--vscode${sidebarCollapsed ? " sidebar--collapsed" : ""}`}>
+      <div className="sidebar-activity" role="tablist" aria-label="Sidebar Tabs">
+        <button
+          className={`sidebar-activity-btn${activeTab === "views" ? " sidebar-activity-btn--active" : ""}`}
+          onClick={() => handleActivityTabClick("views")}
+          title="Views"
+          role="tab"
+          aria-selected={activeTab === "views"}
+        >
+          <i className="bi bi-diagram-3" />
+        </button>
+        <button
+          className={`sidebar-activity-btn${activeTab === "nodes" ? " sidebar-activity-btn--active" : ""}`}
+          onClick={() => handleActivityTabClick("nodes")}
+          title="UML Nodes"
+          role="tab"
+          aria-selected={activeTab === "nodes"}
+        >
+          <i className="bi bi-boxes" />
+        </button>
+        <button
+          className={`sidebar-activity-btn${activeTab === "ai" ? " sidebar-activity-btn--active" : ""}`}
+          onClick={() => handleActivityTabClick("ai")}
+          title="AI Analysis"
+          role="tab"
+          aria-selected={activeTab === "ai"}
+        >
+          <i className="bi bi-cpu" />
+        </button>
+        <button
+          className={`sidebar-activity-btn${activeTab === "project" ? " sidebar-activity-btn--active" : ""}`}
+          onClick={() => handleActivityTabClick("project")}
+          title="Projects / Scan"
+          role="tab"
+          aria-selected={activeTab === "project"}
+        >
+          <i className="bi bi-folder2-open" />
+        </button>
+      </div>
+
+      <div className="sidebar-content">
       {/* ── Global Symbol Search ── */}
-      {allSymbols.length > 0 && (
+      {activeTab === "views" && allSymbols.length > 0 && (
         <div className="sidebar-section sidebar-section--search">
           <SymbolSearch
             symbols={allSymbols}
@@ -796,6 +885,7 @@ export function Sidebar() {
         </div>
       )}
 
+      {activeTab === "nodes" && (
       <div className="sidebar-section">
         <h2 className="sidebar-section__header" onClick={() => toggleSection("umlNodes")}>
           <span className={`sidebar-section__chevron ${sectionCollapsed.umlNodes ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
@@ -815,8 +905,10 @@ export function Sidebar() {
           </div>
         ))}
       </div>
+      )}
 
       {/* ── Collapsible View Tree ── */}
+      {activeTab === "views" && (
       <div className="sidebar-section">
         <h2 className="sidebar-section__header" onClick={() => toggleSection("views")}>
           <span className={`sidebar-section__chevron ${sectionCollapsed.views ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
@@ -857,9 +949,10 @@ export function Sidebar() {
           </div>
         )}
       </div>
+      )}
 
       {/* ── Dead Code Section ── */}
-      {deadCodeSymbols.length > 0 && (
+      {activeTab === "views" && deadCodeSymbols.length > 0 && (
         <div className="sidebar-section">
           <h2><i className="bi bi-exclamation-triangle" /> Dead Code ({deadCodeSymbols.length})</h2>
           {deadCodeSymbols.map((sym) => (
@@ -877,7 +970,7 @@ export function Sidebar() {
       )}
 
       {/* ── AI Analysis ── */}
-      {graph && (
+      {activeTab === "ai" && graph && (
         <div className="sidebar-section">
           <h2 className="sidebar-section__header" onClick={() => toggleSection("aiAnalysis")}>
             <span className={`sidebar-section__chevron ${sectionCollapsed.aiAnalysis ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
@@ -1062,6 +1155,7 @@ export function Sidebar() {
         </div>
       )}
 
+      {activeTab === "project" && (
       <div className="sidebar-section scan-section">
         <h2>Scan Project</h2>
 
@@ -1116,6 +1210,9 @@ export function Sidebar() {
         </button>
         {scanError && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4 }}>{scanError}</div>}
       </div>
+      )}
+
+      </div>{/* END sidebar-content */}
 
       {showBrowser && (
         <FolderBrowser

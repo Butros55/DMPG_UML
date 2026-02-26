@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "echo ok",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@dmpg/shared": "workspace:*",

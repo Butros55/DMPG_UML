@@ -19,8 +19,8 @@ import "@xyflow/react/dist/style.css";
 
 import { useAppStore } from "../store";
 import { UmlNode, UmlClassNode, UmlFunctionNode, UmlArtifactNode, UmlGroupNode } from "./UmlNode";
-import { SymbolHoverCard } from "./SymbolHoverCard";
-import { layoutNodes } from "../layout";
+import { SymbolHoverCard, setHoverInteractionBlocked } from "./SymbolHoverCard";
+import { layoutNodes, type LayoutResult, type PortInfo } from "../layout";
 import { exportDiagramAsHtml, exportProjectAsHtml } from "../exportHtml";
 import type { UmlNodeData } from "./UmlNode";
 import type { ProjectedEdge, Relation, RelationType, Symbol as Sym } from "@dmpg/shared";
@@ -44,11 +44,37 @@ const proOptions = { hideAttribution: true };
 
 function positionFromHandle(handle: string): Position {
   const normalized = handle.toLowerCase();
-  if (normalized.endsWith("right") || normalized.endsWith("east")) return Position.Right;
-  if (normalized.endsWith("left") || normalized.endsWith("west")) return Position.Left;
-  if (normalized.endsWith("north") || normalized.endsWith("top")) return Position.Top;
-  if (normalized.endsWith("south") || normalized.endsWith("bottom")) return Position.Bottom;
+  if (normalized.includes("right") || normalized.includes("east")) return Position.Right;
+  if (normalized.includes("left") || normalized.includes("west")) return Position.Left;
+  if (normalized.includes("north") || normalized.includes("top")) return Position.Top;
+  if (normalized.includes("south") || normalized.includes("bottom")) return Position.Bottom;
   return Position.Bottom;
+}
+
+/** Apply dynamic port handle IDs from the layout result onto edges.
+ *  DISABLED: React Flow cannot reliably resolve dynamically-added Handle
+ *  elements in the same render cycle, causing all edges to disappear.
+ *  Keep the infrastructure for future use; edges use static handles for now. */
+function withDynamicHandles(
+  edges: Edge[],
+  _handleMap: Map<string, { sourceHandle: string; targetHandle: string }>,
+): Edge[] {
+  return edges; // pass-through — use static handles
+}
+
+/** Attach dynamic port data from layout result onto node.data */
+function attachDynamicPorts(
+  nodes: Node[],
+  portsByNode: Map<string, PortInfo[]>,
+): Node[] {
+  return nodes.map((n) => {
+    const ports = portsByNode.get(n.id);
+    if (!ports || ports.length === 0) return n;
+    return {
+      ...n,
+      data: { ...(n.data as object), dynamicPorts: ports },
+    };
+  });
 }
 
 type PreparedProjectedEdge = {
@@ -228,8 +254,6 @@ export function Canvas() {
   const removeSymbol = useAppStore((s) => s.removeSymbol);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const saveNodePositions = useAppStore((s) => s.saveNodePositions);
-  const undoGraphChange = useAppStore((s) => s.undoGraphChange);
-  const redoGraphChange = useAppStore((s) => s.redoGraphChange);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
   const layoutVersion = useAppStore((s) => s.diagramLayoutVersion);
 
@@ -241,6 +265,12 @@ export function Canvas() {
   const layoutRef = useRef(false);
   const layoutPassRef = useRef(0); // 0 = idle, 1 = first pass done, 2 = second pass done
   const prevLayoutKeyRef = useRef<string>("");
+
+  // Dynamic port handle mapping from ELK layout (persists across layout passes)
+  const edgeHandlesRef = useRef<Map<string, { sourceHandle: string; targetHandle: string }>>(new Map());
+
+  // Node hover highlighting — dims unrelated edges
+  const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
 
   // AI analysis highlight
   const aiHighlightId = useAppStore((s) => s.aiAnalysis?.highlightSymbolId ?? null);
@@ -262,6 +292,12 @@ export function Canvas() {
   const [connectDialog, setConnectDialog] = useState<{ source: string; target: string } | null>(null);
   const [connectType, setConnectType] = useState<string>("calls");
   const CONNECT_TYPES = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"] as const;
+
+  useEffect(() => {
+    return () => {
+      setHoverInteractionBlocked(false);
+    };
+  }, []);
 
   // Build nodes/edges from current view using edge projection
   const { viewNodes, viewEdges } = useMemo(() => {
@@ -457,12 +493,19 @@ export function Canvas() {
         const viewNodeMap = new Map(viewNodes.map((vn) => [vn.id, vn]));
         return prev.map((n) => {
           const updated = viewNodeMap.get(n.id);
-          return updated
-            ? { ...n, data: updated.data, className: updated.className }
-            : n;
+          if (!updated) return n;
+          // Preserve dynamic ports from previous layout
+          const prevPorts = (n.data as UmlNodeData).dynamicPorts;
+          return {
+            ...n,
+            type: updated.type,
+            // Do NOT overwrite position — keep ELK/user-dragged position from prev
+            data: { ...updated.data, dynamicPorts: prevPorts },
+            className: updated.className,
+          };
         });
       });
-      setEdges(viewEdges);
+      setEdges(withDynamicHandles(viewEdges, edgeHandlesRef.current));
       return;
     }
     prevLayoutKeyRef.current = layoutKey;
@@ -476,8 +519,18 @@ export function Canvas() {
 
     if (allHaveSavedPos) {
       // All nodes already have manual/saved positions — skip ELK entirely
-      setNodes(viewNodes);
-      setEdges(viewEdges);
+      // Still run layout just for port computation (dynamic handles)
+      edgeHandlesRef.current = new Map();
+      layoutNodes(
+        viewNodes,
+        viewEdges,
+        diagramSettings.layout,
+        diagramSettings.nodeCompactMode,
+      ).then(({ portsByNode, edgeHandles }) => {
+        edgeHandlesRef.current = edgeHandles;
+        setNodes(attachDynamicPorts(viewNodes, portsByNode));
+        setEdges(withDynamicHandles(viewEdges, edgeHandles));
+      });
       layoutRef.current = false;
       layoutPassRef.current = 2;
       setLayoutDone(true);
@@ -494,16 +547,17 @@ export function Canvas() {
       viewEdges,
       diagramSettings.layout,
       diagramSettings.nodeCompactMode,
-    ).then((laid) => {
+    ).then(({ nodes: laid, portsByNode, edgeHandles }) => {
+      edgeHandlesRef.current = edgeHandles;
       // Preserve saved positions; use ELK only for new/unsaved nodes
-      const result = laid.map((n) => {
+      const positioned = laid.map((n) => {
         const saved = savedMap.get(n.id);
         return saved
           ? { ...n, position: { x: saved.x, y: saved.y } }
           : n;
       });
-      setNodes(result);
-      setEdges(viewEdges);
+      setNodes(attachDynamicPorts(positioned, portsByNode));
+      setEdges(withDynamicHandles(viewEdges, edgeHandles));
       layoutPassRef.current = 1;
       setLayoutDone(true);
     });
@@ -539,14 +593,16 @@ export function Canvas() {
       edges,
       diagramSettings.layout,
       diagramSettings.nodeCompactMode,
-    ).then((laid) => {
-      const result = laid.map((n) => {
+    ).then(({ nodes: laid, portsByNode, edgeHandles }) => {
+      edgeHandlesRef.current = edgeHandles;
+      const positioned = laid.map((n) => {
         const saved = savedMap.get(n.id);
         return saved
           ? { ...n, position: { x: saved.x, y: saved.y } }
           : n;
       });
-      setNodes(result);
+      setNodes(attachDynamicPorts(positioned, portsByNode));
+      setEdges((prev) => withDynamicHandles(prev, edgeHandles));
       // Short delay then fit
       setTimeout(() => {
         reactFlowInstance.fitView({ padding: 0.12, duration: 300 });
@@ -626,6 +682,10 @@ export function Canvas() {
 
   // Core function to apply focus zoom + highlight
   const applyFocusZoom = useCallback((nodeId: string) => {
+    const isDeadCodeFocus = !!graph?.symbols.find(
+      (s) => s.id === nodeId && (s.tags?.includes("dead-code") ?? false),
+    );
+
     const node = reactFlowInstance.getInternalNode(nodeId);
     if (node) {
       const w = node.measured?.width ?? 200;
@@ -644,14 +704,16 @@ export function Canvas() {
     }
     setTimeout(() => {
       // Clear ALL previous focus highlights — only one node should be highlighted at a time
-      document.querySelectorAll(".node-focus-highlight").forEach((prev) => {
-        prev.classList.remove("node-focus-highlight");
+      document.querySelectorAll(".node-focus-highlight, .node-focus-highlight-dead").forEach((prev) => {
+        prev.classList.remove("node-focus-highlight", "node-focus-highlight-dead");
       });
 
       const el = document.querySelector(`[data-id="${nodeId}"]`);
       if (el) {
         // Use ai-processing class during AI analysis, regular highlight otherwise
-        const cls = aiRunning ? "ai-flash" : "node-focus-highlight";
+        const cls = aiRunning
+          ? "ai-flash"
+          : (isDeadCodeFocus ? "node-focus-highlight-dead" : "node-focus-highlight");
         el.classList.add(cls);
         if (cls === "ai-flash") {
           setTimeout(() => el.classList.remove("ai-flash"), 1500);
@@ -659,7 +721,7 @@ export function Canvas() {
       }
       acknowledgeAiNavigationSettled(nodeId);
     }, 520);
-  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled]);
+  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph]);
 
   // focusSeq changes drive re-navigation even to the same node (AI events)
   // No need for the old highlightSeq-based focusAppliedRef reset.
@@ -749,18 +811,55 @@ export function Canvas() {
     };
   }, [focusNodeId, focusSeq, nodes, applyFocusZoom]);
 
-  // Clear focus highlight when user hovers over the focused node
+  // Clear focus highlight when user hovers over the focused node + edge hover highlighting
   const handleNodeMouseEnter = useCallback(
     (_: React.MouseEvent, node: Node) => {
       if (focusNodeId && node.id === focusNodeId) {
         const el = document.querySelector(`[data-id="${focusNodeId}"]`);
-        if (el) el.classList.remove("node-focus-highlight");
+        if (el) el.classList.remove("node-focus-highlight", "node-focus-highlight-dead");
         setFocusNode(null);
         focusAppliedRef.current = null;
       }
+      // Edge hover highlighting: dim edges not connected to this node
+      if (diagramSettings.hoverHighlight) {
+        setHoverNodeId(node.id);
+      }
     },
-    [focusNodeId, setFocusNode],
+    [focusNodeId, setFocusNode, diagramSettings.hoverHighlight],
   );
+
+  // Clear hover highlighting on mouse leave
+  const handleNodeMouseLeave = useCallback(() => {
+    setHoverNodeId(null);
+  }, []);
+
+  // Hover highlight effect: dim unrelated edges when hovering over a node
+  useEffect(() => {
+    if (!hoverNodeId) {
+      // Remove hover classes from all edges — use DOM for instant feedback
+      document.querySelectorAll(".edge-hover-dim, .edge-hover-highlight").forEach((el) => {
+        el.classList.remove("edge-hover-dim", "edge-hover-highlight");
+      });
+      return;
+    }
+    // Add dim to all edges, then highlight connected ones
+    document.querySelectorAll(".react-flow__edge").forEach((el) => {
+      el.classList.add("edge-hover-dim");
+      el.classList.remove("edge-hover-highlight");
+    });
+    // Find connected edges and highlight them
+    for (const e of edges) {
+      if (e.source === hoverNodeId || e.target === hoverNodeId) {
+        // React Flow edge wrappers have data-testid="rf__edge-<id>"
+        const selector = `[data-testid="rf__edge-${CSS.escape(e.id)}"]`;
+        const el = document.querySelector(selector);
+        if (el) {
+          el.classList.remove("edge-hover-dim");
+          el.classList.add("edge-hover-highlight");
+        }
+      }
+    }
+  }, [hoverNodeId, edges]);
 
   // When a connection is made between handles, show type dialog
   const onConnect = useCallback(
@@ -794,16 +893,10 @@ export function Canvas() {
       // Don't trigger when typing in inputs/textareas/selects
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          redoGraphChange();
-        } else {
-          undoGraphChange();
-        }
-        return;
-      }
       if (e.key === "Delete" || e.key === "Backspace") {
+        const hasSelection = !!selectedSymbolId || !!selectedEdgeId;
+        if (!hasSelection) return;
+        e.preventDefault();
         if (selectedSymbolId) {
           removeSymbol(selectedSymbolId);
           selectSymbol(null);
@@ -836,8 +929,6 @@ export function Canvas() {
     selectSymbol,
     selectEdge,
     graph,
-    undoGraphChange,
-    redoGraphChange,
   ]);
 
   const onNodeClick = useCallback(
@@ -949,6 +1040,15 @@ export function Canvas() {
   }, [selectSymbol, selectEdge]);
 
   // Save node positions after drag (auto-persist)
+  const onNodeDragStart = useCallback((_event: React.MouseEvent, _node: Node, _draggedNodes: Node[]) => {
+    setHoverInteractionBlocked(true);
+    setHoverNodeId(null);
+  }, []);
+
+  const onNodeDrag = useCallback((_event: React.MouseEvent, _node: Node, _draggedNodes: Node[]) => {
+    setHoverNodeId(null);
+  }, []);
+
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, _node: Node, draggedNodes: Node[]) => {
       const positions = draggedNodes.map((n) => ({
@@ -959,9 +1059,20 @@ export function Canvas() {
         height: n.measured?.height,
       }));
       saveNodePositions(positions);
+      // Prevent immediate hover re-open right after drag release.
+      setHoverInteractionBlocked(false, 560);
     },
     [saveNodePositions],
   );
+
+  const onMoveStart = useCallback(() => {
+    setHoverInteractionBlocked(true);
+    setHoverNodeId(null);
+  }, []);
+
+  const onMoveEnd = useCallback(() => {
+    setHoverInteractionBlocked(false, 560);
+  }, []);
 
   useEffect(() => {
     const onCanvasCommand = (event: Event) => {
@@ -995,9 +1106,14 @@ export function Canvas() {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeMouseEnter={handleNodeMouseEnter}
+        onNodeMouseLeave={handleNodeMouseLeave}
+        onNodeDragStart={onNodeDragStart}
+        onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         onEdgeClick={onEdgeClick}
         onEdgeDoubleClick={onEdgeDoubleClick}
+        onMoveStart={onMoveStart}
+        onMoveEnd={onMoveEnd}
         onDragOver={onDragOver}
         onDrop={onDrop}
         onPaneClick={onPaneClick}
