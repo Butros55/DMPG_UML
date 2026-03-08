@@ -1,3 +1,17 @@
+import type {
+  AiExternalContextReviewResponse,
+  AiLabelImprovementResponse,
+  AiStructureReviewResponse,
+  AiVisionImageInput,
+  DiagramImageCompareResponse,
+  DiagramImageReviewResponse,
+  DiagramImageSuggestionsResponse,
+  ProjectGraph,
+  UmlReferenceAutorefactorRequest,
+  UmlReferenceAutorefactorResponse,
+  UmlReferenceCompareResponse,
+} from "@dmpg/shared";
+
 const API_BASE = "/api";
 
 /* ── Project management ────────────────────────── */
@@ -140,6 +154,157 @@ export async function batchSummarize(symbolIds: string[]) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error ?? "Batch summarize failed");
+  }
+  return res.json();
+}
+
+export async function reviewDiagramImage(
+  images: AiVisionImageInput[],
+  instruction?: string,
+  viewId?: string,
+): Promise<DiagramImageReviewResponse> {
+  const res = await fetch(`${API_BASE}/ai/vision/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ images, instruction, viewId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "Vision review failed");
+  }
+  return res.json();
+}
+
+export async function compareDiagramImages(
+  images: AiVisionImageInput[],
+  instruction?: string,
+  viewId?: string,
+): Promise<DiagramImageCompareResponse> {
+  const res = await fetch(`${API_BASE}/ai/vision/compare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ images, instruction, viewId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "Vision compare failed");
+  }
+  return res.json();
+}
+
+export async function compareUmlDiagramImages(
+  images: AiVisionImageInput[],
+  options: {
+    instruction?: string;
+    viewId?: string;
+    graphContext?: unknown;
+    persistSuggestions?: boolean;
+  } = {},
+): Promise<UmlReferenceCompareResponse> {
+  const res = await fetch(`${API_BASE}/ai/vision/compare-uml`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      images,
+      instruction: options.instruction,
+      viewId: options.viewId,
+      graphContext: options.graphContext,
+      persistSuggestions: options.persistSuggestions,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "UML vision compare failed");
+  }
+  return res.json();
+}
+
+export async function runReferenceDrivenAutorefactor(
+  request: UmlReferenceAutorefactorRequest,
+): Promise<UmlReferenceAutorefactorResponse> {
+  const res = await fetch(`${API_BASE}/ai/vision/compare-apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "Reference-driven UML autorefactor failed");
+  }
+  return res.json();
+}
+
+export async function undoReferenceDrivenAutorefactor(
+  snapshotId: string,
+): Promise<{ ok: true; graph: ProjectGraph }> {
+  const res = await fetch(`${API_BASE}/ai/vision/compare-apply/undo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ snapshotId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "Undo for reference-driven UML autorefactor failed");
+  }
+  return res.json();
+}
+
+export async function suggestDiagramImageImprovements(
+  images: AiVisionImageInput[],
+  instruction?: string,
+  viewId?: string,
+): Promise<DiagramImageSuggestionsResponse> {
+  const res = await fetch(`${API_BASE}/ai/vision/suggestions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ images, instruction, viewId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "Vision suggestions failed");
+  }
+  return res.json();
+}
+
+export async function reviewCurrentViewStructure(
+  viewId: string,
+  options: { persist?: boolean; includeContextReview?: boolean } = {},
+): Promise<{
+  review: AiStructureReviewResponse;
+  heuristics: Record<string, unknown>;
+  contextReview?: AiExternalContextReviewResponse;
+}> {
+  const res = await fetch(`${API_BASE}/ai/uml/review-view-structure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      viewId,
+      persist: options.persist ?? true,
+      includeContextReview: options.includeContextReview ?? true,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "View structure review failed");
+  }
+  return res.json();
+}
+
+export async function improveCurrentViewLabels(
+  viewId: string,
+  options: { persist?: boolean } = {},
+): Promise<AiLabelImprovementResponse> {
+  const res = await fetch(`${API_BASE}/ai/uml/improve-view-labels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      viewId,
+      persist: options.persist ?? true,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? "Label improvement failed");
   }
   return res.json();
 }

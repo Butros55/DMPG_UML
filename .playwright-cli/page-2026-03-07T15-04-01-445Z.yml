@@ -1,0 +1,52 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "DMPG UML Editor" [level=1] [ref=e5]
+    - button "" [ref=e6] [cursor=pointer]:
+      - generic [ref=e7]: 
+  - generic [ref=e8]:
+    - tablist "Sidebar Tabs" [ref=e9]:
+      - tab "" [selected] [ref=e10] [cursor=pointer]:
+        - generic [ref=e11]: 
+      - tab "" [ref=e12] [cursor=pointer]:
+        - generic [ref=e13]: 
+      - tab "" [ref=e14] [cursor=pointer]:
+        - generic [ref=e15]: 
+      - tab "" [ref=e16] [cursor=pointer]:
+        - generic [ref=e17]: 
+    - generic [ref=e19]:
+      - heading " Views " [level=2] [ref=e20] [cursor=pointer]:
+        - generic [ref=e22]: 
+        - text: Views
+        - button "" [ref=e23]:
+          - generic [ref=e24]: 
+      - generic [ref=e26]: Keine passenden Views
+  - generic [ref=e28]:
+    - application [ref=e29]:
+      - img
+      - generic "Control Panel" [ref=e32]:
+        - button "Zoom In" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+        - button "Zoom Out" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+        - button "Fit View" [ref=e39] [cursor=pointer]:
+          - img [ref=e40]
+        - button "Toggle Interactivity" [ref=e42] [cursor=pointer]:
+          - img [ref=e43]
+      - img "Mini Map" [ref=e46]
+    - generic [ref=e48]:
+      - button " Export Projekt" [ref=e49] [cursor=pointer]:
+        - generic [ref=e50]: 
+        - text: Export Projekt
+      - button " Export View" [ref=e51] [cursor=pointer]:
+        - generic [ref=e52]: 
+        - text: Export View
+  - generic [ref=e54]:
+    - generic [ref=e55]:
+      - heading "Inspector" [level=2] [ref=e56]
+      - generic [ref=e57]:
+        - button " Diagram Settings" [ref=e58] [cursor=pointer]:
+          - generic [ref=e59]: 
+          - text: Diagram Settings
+        - button "" [ref=e60] [cursor=pointer]:
+          - generic [ref=e61]: 
+    - generic [ref=e62]: Click a node or edge to inspect it

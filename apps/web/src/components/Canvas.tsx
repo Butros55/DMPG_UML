@@ -242,6 +242,8 @@ function neighborhoodNodeIds(rootId: string, edges: PreparedProjectedEdge[], dep
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
+  const reviewHighlight = useAppStore((s) => s.reviewHighlight);
+  const clearReviewHighlight = useAppStore((s) => s.clearReviewHighlight);
   const selectSymbol = useAppStore((s) => s.selectSymbol);
   const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
   const selectEdge = useAppStore((s) => s.selectEdge);
@@ -308,6 +310,16 @@ export function Canvas() {
 
     const scope = (view as any).scope as string | undefined;
     const relationMap = new Map(graph.relations.map((rel) => [rel.id, rel]));
+    const persistentReviewNodeIds = reviewHighlight.viewId === view.id
+      ? reviewHighlight.nodeIds.filter((id) => view.nodeRefs.includes(id))
+      : [];
+    const previewReviewNodeIds = reviewHighlight.previewNodeIds.filter((id) => view.nodeRefs.includes(id));
+    const effectiveReviewNodeIds = previewReviewNodeIds.length > 0
+      ? previewReviewNodeIds
+      : persistentReviewNodeIds;
+    const effectiveReviewNodeIdSet = new Set(effectiveReviewNodeIds);
+    const previewReviewNodeIdSet = new Set(previewReviewNodeIds);
+    const hasReviewFocus = effectiveReviewNodeIdSet.size > 0;
 
     // Pre-compute relation badges per symbol: which relation types touch each symbol?
     // Badges are directional: "out:<type>" for source, "in:<type>" for target
@@ -331,7 +343,11 @@ export function Canvas() {
 
       // Choose node type based on symbol kind and view scope
       let nodeType = "uml";
-      if (sym.kind === "group") nodeType = "umlGroup";
+      if (sym.umlType === "database" || sym.umlType === "artifact" || sym.umlType === "component" || sym.umlType === "note") {
+        nodeType = "umlArtifact";
+      } else if (sym.umlType === "package") {
+        nodeType = "umlGroup";
+      } else if (sym.kind === "group") nodeType = "umlGroup";
       else if (sym.kind === "external") nodeType = "umlArtifact";
       else if (sym.kind === "class" && (scope === "group" || scope === "module")) nodeType = "umlClass";
       else if (sym.kind === "module" && scope === "group") nodeType = "umlGroup";
@@ -344,7 +360,22 @@ export function Canvas() {
 
       // Extra CSS classes
       const isDeadCode = sym.tags?.includes("dead-code");
-      const extraClass = isDeadCode ? "dead-code" : "";
+      const nodeClasses: string[] = [];
+      if (isDeadCode) nodeClasses.push("dead-code");
+      if (hasReviewFocus) {
+        if (effectiveReviewNodeIdSet.has(sym.id)) {
+          nodeClasses.push("review-highlight");
+          if (previewReviewNodeIdSet.has(sym.id)) {
+            nodeClasses.push("review-highlight--preview");
+          } else if (reviewHighlight.primaryNodeId === sym.id) {
+            nodeClasses.push("review-highlight--primary");
+          } else {
+            nodeClasses.push("review-highlight--related");
+          }
+        } else {
+          nodeClasses.push("review-dim");
+        }
+      }
 
       // Collect direct relation types for this symbol (for badge display)
       const directBadges = relBadgeMap.get(sym.id);
@@ -362,10 +393,11 @@ export function Canvas() {
         id: sym.id,
         type: nodeType,
         position: savedPos ? { x: savedPos.x, y: savedPos.y } : { x: i * 250, y: i * 120 },
-        className: extraClass || undefined,
+        className: nodeClasses.join(" ") || undefined,
         data: {
           label: sym.label,
           kind: sym.kind,
+          umlType: sym.umlType,
           summary: sym.doc?.summary,
           symbolId: sym.id,
           childViewId: sym.childViewId,
@@ -392,7 +424,9 @@ export function Canvas() {
     );
 
     const selectedInView =
-      !!selectedSymbolId && allNodes.some((node) => node.id === selectedSymbolId);
+      !hasReviewFocus &&
+      !!selectedSymbolId &&
+      allNodes.some((node) => node.id === selectedSymbolId);
 
     let visibleNodeIds: Set<string> | null = null;
     if (diagramSettings.focusMode && selectedInView && selectedSymbolId) {
@@ -425,7 +459,9 @@ export function Canvas() {
     }
 
     const hasSelectedNodeEmphasis =
-      !!selectedSymbolId && scopedNodeIdSet.has(selectedSymbolId);
+      !hasReviewFocus &&
+      !!selectedSymbolId &&
+      scopedNodeIdSet.has(selectedSymbolId);
 
     const vEdges: Edge[] = scopedEdges.map((pe) => {
       const pair = `${pe.source}|${pe.target}`;
@@ -440,6 +476,14 @@ export function Canvas() {
         ? isSelectedConnection
           ? " edge-related edge-related--active"
           : " edge-related edge-related--dim"
+        : "";
+      const isReviewConnected =
+        hasReviewFocus &&
+        (effectiveReviewNodeIdSet.has(pe.source) || effectiveReviewNodeIdSet.has(pe.target));
+      const edgeReviewClass = hasReviewFocus
+        ? isReviewConnected
+          ? " edge-review-highlight"
+          : " edge-review-dim"
         : "";
       return {
         id: pe.key,
@@ -456,14 +500,23 @@ export function Canvas() {
             : undefined
           : pe.label,
         animated: pe.animated,
-        className: `${pe.className}${edgeVisibilityClass}`,
+        className: `${pe.className}${edgeVisibilityClass}${edgeReviewClass}`,
         style: { strokeWidth: diagramSettings.edgeStrokeWidth },
         data: { relationIds: pe.relationIds, relationType: pe.type },
       };
     });
 
     return { viewNodes: scopedNodes, viewEdges: vEdges };
-  }, [graph, currentViewId, diagramSettings, selectedSymbolId]);
+  }, [
+    graph,
+    currentViewId,
+    diagramSettings,
+    selectedSymbolId,
+    reviewHighlight.nodeIds,
+    reviewHighlight.previewNodeIds,
+    reviewHighlight.primaryNodeId,
+    reviewHighlight.viewId,
+  ]);
 
   // Apply ELK layout — Pass 1 (estimate)
   // Only re-layout when the view or node set actually changes (not on position/data-only updates)
@@ -679,6 +732,7 @@ export function Canvas() {
   const lastFocusSeqRef = useRef(0);
   const pendingFocusRef = useRef<string | null>(null);
   const focusRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const appliedReviewSeqRef = useRef(0);
 
   // Core function to apply focus zoom + highlight
   const applyFocusZoom = useCallback((nodeId: string) => {
@@ -722,6 +776,17 @@ export function Canvas() {
       acknowledgeAiNavigationSettled(nodeId);
     }, 520);
   }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph]);
+
+  const applyReviewFit = useCallback((nodeIds: string[]) => {
+    const uniqueNodeIds = Array.from(new Set(nodeIds));
+    if (uniqueNodeIds.length === 0) return;
+    reactFlowInstance.fitView({
+      nodes: uniqueNodeIds.map((id) => ({ id })),
+      duration: 420,
+      padding: uniqueNodeIds.length > 1 ? 0.22 : 0.14,
+      maxZoom: uniqueNodeIds.length > 1 ? 1.4 : 1.8,
+    });
+  }, [reactFlowInstance]);
 
   // focusSeq changes drive re-navigation even to the same node (AI events)
   // No need for the old highlightSeq-based focusAppliedRef reset.
@@ -810,6 +875,33 @@ export function Canvas() {
       if (focusRetryRef.current) { clearInterval(focusRetryRef.current); focusRetryRef.current = null; }
     };
   }, [focusNodeId, focusSeq, nodes, applyFocusZoom]);
+
+  useEffect(() => {
+    if (reviewHighlight.seq <= appliedReviewSeqRef.current) return;
+
+    if (!reviewHighlight.fitView || reviewHighlight.nodeIds.length === 0) {
+      appliedReviewSeqRef.current = reviewHighlight.seq;
+      return;
+    }
+    if (!reviewHighlight.viewId || reviewHighlight.viewId !== currentViewId) return;
+    if (!layoutDone || layoutPassRef.current < 2 || !nodesInitialized) return;
+
+    const visibleTargetIds = reviewHighlight.nodeIds.filter((id) => nodes.some((node) => node.id === id));
+    appliedReviewSeqRef.current = reviewHighlight.seq;
+    if (visibleTargetIds.length === 0) return;
+
+    requestAnimationFrame(() => applyReviewFit(visibleTargetIds));
+  }, [
+    applyReviewFit,
+    currentViewId,
+    layoutDone,
+    nodes,
+    nodesInitialized,
+    reviewHighlight.fitView,
+    reviewHighlight.nodeIds,
+    reviewHighlight.seq,
+    reviewHighlight.viewId,
+  ]);
 
   // Clear focus highlight when user hovers over the focused node + edge hover highlighting
   const handleNodeMouseEnter = useCallback(
@@ -1036,8 +1128,9 @@ export function Canvas() {
   const onPaneClick = useCallback(() => {
     selectSymbol(null);
     selectEdge(null);
+    clearReviewHighlight();
     // Edge label commit is handled by onBlur already — don't trigger twice
-  }, [selectSymbol, selectEdge]);
+  }, [clearReviewHighlight, selectSymbol, selectEdge]);
 
   // Save node positions after drag (auto-persist)
   const onNodeDragStart = useCallback((_event: React.MouseEvent, _node: Node, _draggedNodes: Node[]) => {

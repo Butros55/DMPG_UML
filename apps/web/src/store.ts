@@ -87,6 +87,16 @@ export interface DebugTransportState {
   navigationSettledSeq: number;
 }
 
+export interface ReviewHighlightState {
+  activeItemId: string | null;
+  nodeIds: string[];
+  primaryNodeId: string | null;
+  viewId: string | null;
+  fitView: boolean;
+  seq: number;
+  previewNodeIds: string[];
+}
+
 export interface AppState {
   graph: ProjectGraph | null;
   currentViewId: string | null;
@@ -147,6 +157,19 @@ export interface AppState {
   focusSeq: number;
   setFocusNode: (id: string | null) => void;
 
+  // Review hint graph focus
+  reviewHighlight: ReviewHighlightState;
+  activateReviewHighlight: (payload: {
+    itemId: string;
+    nodeIds: string[];
+    primaryNodeId?: string | null;
+    viewId?: string | null;
+    fitView?: boolean;
+    inspectPrimary?: boolean;
+  }) => void;
+  previewReviewHighlight: (nodeIds: string[]) => void;
+  clearReviewHighlight: () => void;
+
   // Source viewer popup
   sourceViewerSymbol: { id: string; label: string } | null;
   openSourceViewer: (symbolId: string, label: string) => void;
@@ -171,6 +194,7 @@ export interface AppState {
   getCurrentView: () => DiagramView | null;
   getSymbol: (id: string) => Sym | undefined;
   getView: (id: string) => DiagramView | undefined;
+  updateView: (id: string, patch: Partial<DiagramView>) => void;
 
   // graph mutation actions
   addSymbolToGraph: (sym: Sym, viewId: string) => void;
@@ -409,6 +433,59 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(id
       ? { focusNodeId: id, focusSeq: (get().focusSeq ?? 0) + 1, selectedSymbolId: id, selectedEdgeId: null, inspectorCollapsed: false }
       : { focusNodeId: null }),
+
+  reviewHighlight: {
+    activeItemId: null,
+    nodeIds: [],
+    primaryNodeId: null,
+    viewId: null,
+    fitView: false,
+    seq: 0,
+    previewNodeIds: [],
+  },
+  activateReviewHighlight: (payload) =>
+    set((state) => {
+      const targetViewId = payload.viewId ?? state.currentViewId;
+      const nextBreadcrumb = state.graph && targetViewId
+        ? buildViewPath(state.graph, targetViewId)
+        : state.breadcrumb;
+      const uniqueNodeIds = Array.from(new Set(payload.nodeIds));
+      return {
+        currentViewId: targetViewId ?? state.currentViewId,
+        breadcrumb: targetViewId ? nextBreadcrumb : state.breadcrumb,
+        selectedSymbolId: payload.inspectPrimary === false ? state.selectedSymbolId : (payload.primaryNodeId ?? uniqueNodeIds[0] ?? null),
+        selectedEdgeId: null,
+        inspectorCollapsed: payload.inspectPrimary === false ? state.inspectorCollapsed : false,
+        reviewHighlight: {
+          activeItemId: payload.itemId,
+          nodeIds: uniqueNodeIds,
+          primaryNodeId: payload.primaryNodeId ?? uniqueNodeIds[0] ?? null,
+          viewId: targetViewId ?? state.currentViewId,
+          fitView: payload.fitView ?? true,
+          seq: state.reviewHighlight.seq + 1,
+          previewNodeIds: [],
+        },
+      };
+    }),
+  previewReviewHighlight: (nodeIds) =>
+    set((state) => ({
+      reviewHighlight: {
+        ...state.reviewHighlight,
+        previewNodeIds: Array.from(new Set(nodeIds)),
+      },
+    })),
+  clearReviewHighlight: () =>
+    set((state) => ({
+      reviewHighlight: {
+        ...state.reviewHighlight,
+        activeItemId: null,
+        nodeIds: [],
+        primaryNodeId: null,
+        fitView: false,
+        seq: state.reviewHighlight.seq + 1,
+        previewNodeIds: [],
+      },
+    })),
 
   sourceViewerSymbol: null,
   openSourceViewer: (symbolId, label) => set({ sourceViewerSymbol: { id: symbolId, label } }),
@@ -1144,6 +1221,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedSymbolId: null,
       selectedEdgeId: null,
       breadcrumb: [g.rootViewId],
+      reviewHighlight: {
+        activeItemId: null,
+        nodeIds: [],
+        primaryNodeId: null,
+        viewId: g.rootViewId,
+        fitView: false,
+        seq: 0,
+        previewNodeIds: [],
+      },
       graphHistoryPast: [],
       graphHistoryFuture: [],
       historyCanUndo: false,
@@ -1170,6 +1256,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       breadcrumb: viewStillExists ? breadcrumb : [g.rootViewId],
       selectedSymbolId: g.symbols.some((s) => s.id === selectedSymbolId) ? selectedSymbolId : null,
       selectedEdgeId: g.relations.some((r) => r.id === selectedEdgeId) ? selectedEdgeId : null,
+      reviewHighlight: {
+        ...get().reviewHighlight,
+        nodeIds: get().reviewHighlight.nodeIds.filter((id) => g.symbols.some((symbol) => symbol.id === id)),
+        primaryNodeId: get().reviewHighlight.primaryNodeId && g.symbols.some((symbol) => symbol.id === get().reviewHighlight.primaryNodeId)
+          ? get().reviewHighlight.primaryNodeId
+          : null,
+        viewId: viewStillExists ? get().reviewHighlight.viewId : g.rootViewId,
+        previewNodeIds: get().reviewHighlight.previewNodeIds.filter((id) => g.symbols.some((symbol) => symbol.id === id)),
+      },
       graphHistoryPast: [],
       graphHistoryFuture: [],
       historyCanUndo: false,
@@ -1267,6 +1362,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   getView: (id) => {
     const { graph } = get();
     return graph?.views.find((v) => v.id === id);
+  },
+
+  updateView: (id, patch) => {
+    const { graph } = get();
+    if (!graph) return;
+    const updated = {
+      ...graph,
+      views: graph.views.map((view) => (view.id === id ? { ...view, ...patch } : view)),
+    };
+    set((state) => ({
+      graph: updated,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
+    get().syncGraphToServer();
   },
 
   addSymbolToGraph: (sym, viewId) => {

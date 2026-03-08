@@ -12,6 +12,8 @@ import * as crypto from "node:crypto";
 const DATA_DIR = path.resolve(process.env.DMPG_DATA_DIR ?? path.join(process.cwd(), ".dmpg-data"));
 const PROJECTS_DIR = path.join(DATA_DIR, "projects");
 const META_FILE = path.join(DATA_DIR, "projects-meta.json");
+const SNAPSHOTS_DIR_NAME = "snapshots";
+const MAX_GRAPH_SNAPSHOTS = 12;
 
 // Legacy single-project files (for migration)
 const LEGACY_GRAPH_FILE = path.join(DATA_DIR, "graph.json");
@@ -118,6 +120,12 @@ migrateLegacy();
 let currentGraph: ProjectGraph | null = null;
 let currentProjectPath: string | null = null;
 
+export interface GraphSnapshotInfo {
+  snapshotId: string;
+  createdAt: string;
+  reason: string;
+}
+
 // Load the active project on startup
 {
   const idx = loadProjectsIndex();
@@ -159,6 +167,76 @@ function persistToDisk() {
   } catch (err) {
     console.error("[store] Failed to persist graph:", (err as Error).message);
   }
+}
+
+function currentProjectDataDir(): string | null {
+  if (!currentProjectPath) return null;
+  return projectDir(hashPath(currentProjectPath));
+}
+
+function snapshotsDir(): string | null {
+  const dir = currentProjectDataDir();
+  return dir ? path.join(dir, SNAPSHOTS_DIR_NAME) : null;
+}
+
+function snapshotFile(snapshotId: string): string | null {
+  const dir = snapshotsDir();
+  return dir ? path.join(dir, `${snapshotId}.json`) : null;
+}
+
+function pruneSnapshots(): void {
+  const dir = snapshotsDir();
+  if (!dir || !fs.existsSync(dir)) return;
+
+  const files = fs.readdirSync(dir)
+    .filter((entry) => entry.endsWith(".json"))
+    .map((entry) => ({
+      entry,
+      fullPath: path.join(dir, entry),
+      mtimeMs: fs.statSync(path.join(dir, entry)).mtimeMs,
+    }))
+    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+  for (const file of files.slice(MAX_GRAPH_SNAPSHOTS)) {
+    try {
+      fs.unlinkSync(file.fullPath);
+    } catch {
+      // ignore snapshot cleanup failures
+    }
+  }
+}
+
+export function createGraphSnapshot(reason = "manual"): GraphSnapshotInfo | null {
+  if (!currentGraph || !currentProjectPath) return null;
+  const dir = snapshotsDir();
+  if (!dir) return null;
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const createdAt = new Date().toISOString();
+  const snapshotId = `graph-snapshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const targetFile = snapshotFile(snapshotId);
+  if (!targetFile) return null;
+
+  const payload = {
+    snapshotId,
+    createdAt,
+    reason,
+    graph: currentGraph,
+  };
+
+  fs.writeFileSync(targetFile, JSON.stringify(payload), "utf-8");
+  pruneSnapshots();
+  return { snapshotId, createdAt, reason };
+}
+
+export function restoreGraphSnapshot(snapshotId: string): ProjectGraph | null {
+  const targetFile = snapshotFile(snapshotId);
+  if (!targetFile || !fs.existsSync(targetFile)) return null;
+
+  const raw = JSON.parse(fs.readFileSync(targetFile, "utf-8")) as { graph?: ProjectGraph };
+  if (!raw.graph) return null;
+  setGraph(raw.graph);
+  return raw.graph;
 }
 
 export function setGraph(g: ProjectGraph): void {

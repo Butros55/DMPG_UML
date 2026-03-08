@@ -1,35 +1,21 @@
 import { Router, type Router as RouterType } from "express";
 import { AiDocRequestSchema, SymbolDocSchema } from "@dmpg/shared";
-import type { Symbol as Sym, Relation, DiagramView } from "@dmpg/shared";
+import type { Symbol as Sym, Relation, DiagramView, RelationType } from "@dmpg/shared";
 import { getGraph, setGraph, getCurrentProjectPath, loadAiProgress, saveAiProgress, clearAiProgress } from "../store.js";
+import { callAiJson } from "../ai/client.js";
+import { formatAiModelRoutingSummary } from "../ai/modelRouting.js";
+import { AI_USE_CASES, getTaskTypeForUseCase } from "../ai/useCases.js";
+import { aiUmlRouter } from "./ai-uml.js";
+import { aiVisionRouter } from "./ai-vision.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 export const aiRouter: RouterType = Router();
+aiRouter.use("/uml", aiUmlRouter);
+aiRouter.use("/vision", aiVisionRouter);
 
 /* ── AI Provider config ─────────────────────────── */
-const AI_PROVIDER = (process.env.AI_PROVIDER ?? "cloud").toLowerCase(); // "local" | "cloud"
-
-const OLLAMA_CLOUD_URL = normalizeBaseUrl(
-  process.env.OLLAMA_BASE_URL ?? "https://ollama.com",
-);
-const OLLAMA_LOCAL_URL = normalizeBaseUrl(
-  process.env.OLLAMA_LOCAL_URL ?? "http://127.0.0.1:11434",
-);
-const OLLAMA_BASE_URL = AI_PROVIDER === "local" ? OLLAMA_LOCAL_URL : OLLAMA_CLOUD_URL;
-const OLLAMA_API_KEY = AI_PROVIDER === "local" ? "" : (process.env.OLLAMA_API_KEY ?? "");
-const OLLAMA_MODEL = AI_PROVIDER === "local"
-  ? (process.env.OLLAMA_LOCAL_MODEL ?? process.env.OLLAMA_MODEL ?? "llama3.1:8b")
-  : (process.env.OLLAMA_CLOUD_MODEL ?? process.env.OLLAMA_MODEL ?? "llama3.1:8b");
-
-console.log(`[AI] Provider: ${AI_PROVIDER}, URL: ${OLLAMA_BASE_URL}, Model: ${OLLAMA_MODEL}`);
-
-/** Normalize the base URL: strip trailing /api and trailing slashes */
-function normalizeBaseUrl(raw: string): string {
-  let url = raw.trim().replace(/\/+$/, "");
-  if (url.endsWith("/api")) url = url.slice(0, -4);
-  return url;
-}
+console.log(`[AI] ${formatAiModelRoutingSummary()}`);
 
 /** Try to read source code for a symbol from its location path */
 function readSourceForSymbol(
@@ -74,6 +60,119 @@ function readSourceCode(sym: Sym, scanRoot?: string): string | undefined {
   }
 }
 
+const AI_DISCOVERABLE_RELATION_TYPES = [
+  "calls",
+  "reads",
+  "writes",
+  "uses_config",
+  "instantiates",
+] as const satisfies readonly RelationType[];
+
+type AiDiscoverableRelationType = typeof AI_DISCOVERABLE_RELATION_TYPES[number];
+
+interface AiRelationCandidate {
+  type: AiDiscoverableRelationType;
+  targetName: string;
+  confidence?: number;
+  reason?: string;
+}
+
+const AI_DISCOVERABLE_RELATION_TYPE_SET = new Set<string>(AI_DISCOVERABLE_RELATION_TYPES);
+
+function isAiDiscoverableRelationType(value: unknown): value is AiDiscoverableRelationType {
+  return typeof value === "string" && AI_DISCOVERABLE_RELATION_TYPE_SET.has(value);
+}
+
+function normalizeRelationCandidate(candidate: unknown): AiRelationCandidate | null {
+  if (!candidate || typeof candidate !== "object") return null;
+
+  const rel = candidate as {
+    type?: unknown;
+    targetName?: unknown;
+    confidence?: unknown;
+    reason?: unknown;
+  };
+
+  if (!isAiDiscoverableRelationType(rel.type)) return null;
+
+  const targetName = typeof rel.targetName === "string" ? rel.targetName.trim() : "";
+  if (!targetName) return null;
+
+  const confidence = typeof rel.confidence === "number" && Number.isFinite(rel.confidence)
+    ? Math.max(0, Math.min(1, rel.confidence))
+    : undefined;
+  const reason = typeof rel.reason === "string" && rel.reason.trim().length > 0
+    ? rel.reason.trim()
+    : undefined;
+
+  return {
+    type: rel.type,
+    targetName,
+    confidence,
+    reason,
+  };
+}
+
+function extractRelationCandidates(raw: unknown): AiRelationCandidate[] {
+  if (!Array.isArray(raw)) return [];
+
+  const deduped = new Map<string, AiRelationCandidate>();
+  for (const candidate of raw.slice(0, 8)) {
+    const normalized = normalizeRelationCandidate(candidate);
+    if (!normalized) continue;
+
+    const key = `${normalized.type}|${normalized.targetName.toLowerCase()}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, normalized);
+    }
+  }
+
+  return Array.from(deduped.values());
+}
+
+async function validateRelationCandidatesForSymbol(params: {
+  symbol: Sym;
+  code: string;
+  existingRelationsSummary: string;
+  candidates: AiRelationCandidate[];
+}): Promise<AiRelationCandidate[]> {
+  if (params.candidates.length === 0) return [];
+
+  try {
+    const { data: result } = await callAiJson({
+      taskType: getTaskTypeForUseCase(AI_USE_CASES.RELATION_VALIDATION),
+      systemPrompt: `You validate inferred software relations before they are written into a UML graph.
+Return JSON: {"relations": [{"type": "calls"|"reads"|"writes"|"uses_config"|"instantiates", "targetName": "name", "confidence": 0.0, "reason": "short evidence"}]}
+Rules:
+- Keep ONLY candidates that are directly supported by the code snippet
+- Remove speculative, indirect, duplicate or overly generic relations
+- Reuse the provided targetName instead of inventing new targets
+- confidence must be between 0 and 1
+- reason must briefly explain the concrete evidence
+- If none of the candidates are solid, return {"relations": []}
+Respond ONLY with valid JSON.`,
+      userPrompt: `Symbol: ${params.symbol.label} (${params.symbol.kind})
+Existing relations: ${params.existingRelationsSummary || "none"}
+Candidate relations:
+${JSON.stringify(params.candidates, null, 2)}
+Code:
+${params.code.slice(0, 2500)}`,
+    });
+
+    const rawRelations = (result as { relations?: unknown } | null)?.relations;
+    if (!Array.isArray(rawRelations)) {
+      console.warn(`[AI-Analyze] Relation validation returned invalid payload for "${params.symbol.label}", keeping discovered candidates.`);
+      return params.candidates;
+    }
+
+    return extractRelationCandidates(rawRelations);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.warn(`[AI-Analyze] Relation validation failed for "${params.symbol.label}", keeping discovered candidates: ${message}`);
+    return params.candidates;
+  }
+}
+
 /** POST /api/ai/summarize — generate AI docs for a symbol */
 aiRouter.post("/summarize", async (req, res) => {
   const parsed = AiDocRequestSchema.safeParse(req.body);
@@ -105,7 +204,11 @@ ${code ? `Code:\n${code}` : ""}
 ${context ? `Context:\n${context}` : ""}`;
 
   try {
-    const doc = await callOllama(systemPrompt, userPrompt);
+    const { data: doc } = await callAiJson({
+      taskType: getTaskTypeForUseCase(AI_USE_CASES.SYMBOL_SUMMARY),
+      systemPrompt,
+      userPrompt,
+    });
     const docParsed = SymbolDocSchema.safeParse(doc);
     if (!docParsed.success) {
       res
@@ -153,7 +256,11 @@ aiRouter.post("/batch-summarize", async (req, res) => {
     const userPrompt = `Symbol: ${sym.label}\nKind: ${sym.kind}\n${code ? `Code:\n${code}` : ""}`;
 
     try {
-      const doc = await callOllama(systemPrompt, userPrompt);
+      const { data: doc } = await callAiJson({
+        taskType: getTaskTypeForUseCase(AI_USE_CASES.BATCH_SYMBOL_SUMMARY),
+        systemPrompt,
+        userPrompt,
+      });
       const docParsed = SymbolDocSchema.safeParse(doc);
       if (docParsed.success) {
         sym.doc = { ...sym.doc, ...docParsed.data };
@@ -314,7 +421,7 @@ aiRouter.post("/analyze", async (req, res) => {
   console.log(`[AI-Analyze] Graph: ${g.symbols.length} symbols, ${g.relations.length} relations, ${g.views.length} views`);
   console.log(`[AI-Analyze] Scope: ${scopeLabel}${scopeSymbolIds ? ` (${scopeSymbolIds.size} symbols)` : ""}`);
   console.log(`[AI-Analyze] Resume: ${resumeMode} (${completedDocs.size} docs, ${completedLabels.size} labels already done)`);
-  console.log(`[AI-Analyze] Ollama config: model=${OLLAMA_MODEL}, url=${OLLAMA_BASE_URL}`);
+  console.log(`[AI-Analyze] AI config: ${formatAiModelRoutingSummary()}`);
 
   cancelRequested = false;
   pauseRequested = false;
@@ -441,8 +548,9 @@ aiRouter.post("/analyze", async (req, res) => {
       updateState("labels", labelIdx, labelCount, sym.id, sym.label, `Kürze Label: \u201E${sym.label}\u201C`);
       send({ phase: "labels", action: "focus", symbolId: sym.id, symbolLabel: sym.label, viewId: findBestView(sym.id), current: labelIdx, total: labelCount, thought: `Kürze Label: \u201E${sym.label}\u201C` });
       try {
-        const result = await callOllama(
-          `You are a UML diagram labeling assistant. Simplify the given symbol label by removing ONLY path prefixes, directory prefixes, and module prefixes. CRITICAL RULES:
+        const { data: result } = await callAiJson({
+          taskType: getTaskTypeForUseCase(AI_USE_CASES.LABEL_CLEANUP),
+          systemPrompt: `You are a UML diagram labeling assistant. Simplify the given symbol label by removing ONLY path prefixes, directory prefixes, and module prefixes. CRITICAL RULES:
 - For file paths like "data_pipeline/output/trainings_data/df_data.csv", keep ONLY the filename without extension.
 - For dotted names like "module.Class.method", keep ONLY the last segment (the actual defined name).
 - For class-prefixed methods like "DataExtraction._set_material_cluster", keep ONLY the method name "_set_material_cluster".
@@ -450,8 +558,8 @@ aiRouter.post("/analyze", async (req, res) => {
 - NEVER invent new names, use camelCase conversion, or shorten words.
 - For group labels with emojis like "📦 Libraries / Imports (20)", just remove emojis and parenthesized counts.
 Return JSON: {"label": "cleaned label"}`,
-          `Current label: "${sym.label}"\nKind: ${sym.kind}`,
-        );
+          userPrompt: `Current label: "${sym.label}"\nKind: ${sym.kind}`,
+        });
         const newLabel = (result as any)?.label;
         if (newLabel && typeof newLabel === "string" && newLabel.length > 0 && newLabel.length < 40 && newLabel !== sym.label) {
           const oldLabel = sym.label;
@@ -525,8 +633,9 @@ Return JSON: {"label": "cleaned label"}`,
       send({ phase: "docs", action: "focus", symbolId: sym.id, symbolLabel: sym.label, viewId: findBestView(sym.id), current: docsProcessed, total: docsLimit, thought: `Generiere Docs: \u201E${sym.label}\u201C` });
 
       try {
-        const result = await callOllama(
-          `You are a code documentation expert. Analyze the given code thoroughly and produce comprehensive, useful documentation.
+        const { data: result } = await callAiJson({
+          taskType: getTaskTypeForUseCase(AI_USE_CASES.DOCUMENTATION_GENERATION),
+          systemPrompt: `You are a code documentation expert. Analyze the given code thoroughly and produce comprehensive, useful documentation.
 Return a JSON object with these fields:
 - "summary" (string, 2-3 sentences, max 200 chars): What this ${sym.kind} does, its purpose, and why it exists. Be specific — mention data types, algorithms, or domain concepts.
 - "inputs" (array of {"name": string, "type": string, "description": string}): ALL parameters/inputs with full type info and what each one represents. For each parameter explain what values are expected and how it is used.
@@ -541,8 +650,8 @@ Rules:
 - For modules/packages: describe the module's purpose, its main exports, and how it fits in the project.
 - Write in the language of the code comments (German if code has German comments, otherwise English).
 Respond ONLY with valid JSON, no markdown.`,
-          `Symbol: ${sym.label}\nKind: ${sym.kind}\nRelations: ${relContext || "none known"}\n${code ? `\nSource code:\n${code.slice(0, 3000)}` : "(no source code available)"}`,
-        );
+          userPrompt: `Symbol: ${sym.label}\nKind: ${sym.kind}\nRelations: ${relContext || "none known"}\n${code ? `\nSource code:\n${code.slice(0, 3000)}` : "(no source code available)"}`,
+        });
 
         const docParsed = SymbolDocSchema.safeParse(result);
         if (docParsed.success && docParsed.data.summary) {
@@ -646,8 +755,9 @@ Respond ONLY with valid JSON, no markdown.`,
       send({ phase: "relations", action: "focus", symbolId: sym.id, symbolLabel: sym.label, viewId: findBestView(sym.id), current: relIdx, total: relLimit, thought: `Analysiere Relationen: \u201E${sym.label}\u201C` });
 
       try {
-        const result = await callOllama(
-          `You analyze Python/JS code to discover function calls, data reads/writes, and dependencies NOT already known.
+        const { data: result } = await callAiJson({
+          taskType: getTaskTypeForUseCase(AI_USE_CASES.RELATION_DISCOVERY),
+          systemPrompt: `You analyze Python/JS code to discover function calls, data reads/writes, and dependencies NOT already known.
 Return JSON: {"relations": [{"type": "calls"|"reads"|"writes"|"uses_config"|"instantiates", "targetName": "name"}]}
 Rules:
 - Only include relations you see DIRECTLY in the code
@@ -657,66 +767,77 @@ Rules:
 - "instantiates": class instantiation (use class name)
 - Max 8 relations. Skip trivial calls like print/len/str.
 Respond ONLY with valid JSON.`,
-          `Symbol: ${sym.label} (${sym.kind})\nExisting relations: ${existingForSym || "none"}\nCode:\n${code.slice(0, 2500)}`,
-        );
+          userPrompt: `Symbol: ${sym.label} (${sym.kind})\nExisting relations: ${existingForSym || "none"}\nCode:\n${code.slice(0, 2500)}`,
+        });
 
-        const rels = (result as any)?.relations;
-        if (Array.isArray(rels)) {
-          for (const rel of rels.slice(0, 8)) {
-            const targetName = (rel.targetName ?? "").toLowerCase().trim();
-            const relType = rel.type;
-            if (!targetName || !["calls", "reads", "writes", "uses_config", "instantiates"].includes(relType)) continue;
+        const discoveredCandidates = extractRelationCandidates((result as { relations?: unknown } | null)?.relations);
+        const approvedCandidates = await validateRelationCandidatesForSymbol({
+          symbol: sym,
+          code,
+          existingRelationsSummary: existingForSym,
+          candidates: discoveredCandidates,
+        });
 
-            let targetIds = labelToIds.get(targetName) ?? [];
-            if (targetIds.length === 0) {
-              for (const [key, ids] of labelToIds) {
-                if (key.includes(targetName) || targetName.includes(key)) {
-                  targetIds = ids;
-                  break;
-                }
+        if (discoveredCandidates.length > 0 && approvedCandidates.length !== discoveredCandidates.length) {
+          console.log(
+            `[AI-Analyze] Relation validation kept ${approvedCandidates.length}/${discoveredCandidates.length} candidates for "${sym.label}"`,
+          );
+        }
+
+        for (const rel of approvedCandidates.slice(0, 8)) {
+          const targetName = rel.targetName.toLowerCase().trim();
+          const relType = rel.type;
+
+          let targetIds = labelToIds.get(targetName) ?? [];
+          if (targetIds.length === 0) {
+            for (const [key, ids] of labelToIds) {
+              if (key.includes(targetName) || targetName.includes(key)) {
+                targetIds = ids;
+                break;
               }
             }
+          }
 
-            for (const targetId of targetIds.slice(0, 1)) {
-              if (targetId === sym.id) continue;
-              const key = `${sym.id}|${targetId}|${relType}`;
-              if (existingRels.has(key)) continue;
-              existingRels.add(key);
+          for (const targetId of targetIds.slice(0, 1)) {
+            if (targetId === sym.id) continue;
+            const key = `${sym.id}|${targetId}|${relType}`;
+            if (existingRels.has(key)) continue;
+            existingRels.add(key);
 
-              const newRel: Relation = {
-                id: `ai-rel-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                type: relType as any,
-                source: sym.id,
-                target: targetId,
-                label: relType,
-                confidence: 0.7,
-                aiGenerated: true,
-              };
-              g.relations.push(newRel);
-              for (const view of g.views) {
-                if (view.nodeRefs.includes(sym.id) && view.nodeRefs.includes(targetId)) {
-                  if (!view.edgeRefs.includes(newRel.id)) view.edgeRefs.push(newRel.id);
-                }
+            const newRel: Relation = {
+              id: `ai-rel-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              type: relType,
+              source: sym.id,
+              target: targetId,
+              label: relType,
+              confidence: rel.confidence ?? 0.7,
+              aiGenerated: true,
+            };
+            g.relations.push(newRel);
+            for (const view of g.views) {
+              if (view.nodeRefs.includes(sym.id) && view.nodeRefs.includes(targetId)) {
+                if (!view.edgeRefs.includes(newRel.id)) view.edgeRefs.push(newRel.id);
               }
-              stats.relationsAdded++;
-
-              const targetSym = g.symbols.find((s) => s.id === targetId);
-              send({
-                phase: "relations",
-                action: "added",
-                symbolId: sym.id,
-                relationType: relType,
-                sourceLabel: sym.label,
-                targetLabel: targetSym?.label ?? rel.targetName,
-                relationId: newRel.id,
-                source: newRel.source,
-                target: newRel.target,
-                relationLabel: newRel.label,
-                confidence: newRel.confidence,
-                current: relIdx,
-                total: relLimit,
-              });
             }
+            stats.relationsAdded++;
+
+            const targetSym = g.symbols.find((s) => s.id === targetId);
+            send({
+              phase: "relations",
+              action: "added",
+              symbolId: sym.id,
+              relationType: relType,
+              sourceLabel: sym.label,
+              targetLabel: targetSym?.label ?? rel.targetName,
+              relationId: newRel.id,
+              source: newRel.source,
+              target: newRel.target,
+              relationLabel: newRel.label,
+              confidence: newRel.confidence,
+              reason: rel.reason,
+              current: relIdx,
+              total: relLimit,
+            });
           }
         }
         completedRelations.add(sym.id);
@@ -777,8 +898,9 @@ Respond ONLY with valid JSON.`,
 
       if (code) {
         try {
-          const result = await callOllama(
-            `Analysiere ob diese Python/JS-Funktion Dead Code (ungenutzt) ist.
+          const { data: result } = await callAiJson({
+            taskType: getTaskTypeForUseCase(AI_USE_CASES.DEAD_CODE_REVIEW),
+            systemPrompt: `Analysiere ob diese Python/JS-Funktion Dead Code (ungenutzt) ist.
 Return JSON: {"isDead": true/false, "reason": "1-2 Sätze in Englisch, spezifisch"}
 
 Die "reason" MUSS konkret erklären WARUM der Code dead ist. Beispiele guter Gründe:
@@ -791,8 +913,8 @@ NICHT dead wenn: Entry-Point, API-Handler, Event-Callback, Test, dynamisch aufge
 Dead wenn: Keine Aufrufer, kein Entry-Point, kein Callback-Pattern, scheint Überbleibsel zu sein.
 
 Sei spezifisch — nenne den wahrscheinlichen Grund (z.B. "keine Aufrufer", "auskommentiert", "ersetzt", "unerreichbar").`,
-            `Funktion: ${sym.label}\nArt: ${sym.kind}\nDatei: ${sym.location?.file ?? "unbekannt"}\nAusgehende Beziehungen: ${outSummary}\nEingehende Aufrufe: 0\n${code ? `Code:\n${code.slice(0, 1500)}` : ""}`,
-          );
+            userPrompt: `Funktion: ${sym.label}\nArt: ${sym.kind}\nDatei: ${sym.location?.file ?? "unbekannt"}\nAusgehende Beziehungen: ${outSummary}\nEingehende Aufrufe: 0\n${code ? `Code:\n${code.slice(0, 1500)}` : ""}`,
+          });
           confirmed = (result as any)?.isDead === true;
           reason = (result as any)?.reason ?? reason;
         } catch {
@@ -860,8 +982,9 @@ Sei spezifisch — nenne den wahrscheinlichen Grund (z.B. "keine Aufrufer", "aus
       });
 
       try {
-        const result = await callOllama(
-          `You review the grouping structure of a UML class diagram generated from a Python project.
+        const { data: result } = await callAiJson({
+          taskType: getTaskTypeForUseCase(AI_USE_CASES.STRUCTURE_REVIEW),
+          systemPrompt: `You review the grouping structure of a UML class diagram generated from a Python project.
 The groups were auto-generated from the directory structure. Your task is to improve readability.
 
 ## Hard constraints:
@@ -915,8 +1038,8 @@ Rules:
 - Do NOT split groups that already have childGroups (they are already hierarchical)
 - Module IDs must be used EXACTLY as given in the input
 - Respond ONLY with valid JSON, no markdown or explanation`,
-          `Project structure:\n${JSON.stringify(structureSummary, null, 2)}`,
-        );
+          userPrompt: `Project structure:\n${JSON.stringify(structureSummary, null, 2)}`,
+        });
 
         // Apply renames
         const renames = (result as any)?.renames;
@@ -1149,60 +1272,3 @@ Rules:
   res.end();
 });
 
-/* ── Shared Ollama call helper ────────────────── */
-
-async function callOllama(systemPrompt: string, userPrompt: string): Promise<unknown> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (OLLAMA_API_KEY) {
-    headers["Authorization"] = `Bearer ${OLLAMA_API_KEY}`;
-  }
-
-  const url = `${OLLAMA_BASE_URL}/api/chat`;
-  console.log(`[Ollama] Request: ${url} (model: ${OLLAMA_MODEL}, prompt: ${userPrompt.slice(0, 120)}...)`);
-  const _ollamaStart = Date.now();
-
-  const ollamaRes = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      stream: false,
-      format: "json",
-    }),
-  });
-
-  if (!ollamaRes.ok) {
-    const text = await ollamaRes.text();
-    console.error(`[Ollama] ❌ Error ${ollamaRes.status}: ${text.slice(0, 200)}`);
-    throw new Error(`Ollama error ${ollamaRes.status}: ${text}`);
-  }
-
-  const ollamaData = (await ollamaRes.json()) as any;
-  const elapsedMs = Date.now() - _ollamaStart;
-  let content = (ollamaData?.message?.content ?? "{}").trim();
-  console.log(`[Ollama] ✅ Response in ${elapsedMs}ms (raw): ${content.slice(0, 500)}`);
-
-  // Strip markdown code fences that some models wrap around JSON
-  if (content.startsWith("```")) {
-    content = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
-    console.log(`[Ollama] Stripped fences: ${content.slice(0, 120)}...`);
-  }
-
-  try {
-    return JSON.parse(content);
-  } catch {
-    // Last resort: try to extract JSON object/array from the string
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        console.log(`[Ollama] Extracted JSON from response`);
-        return JSON.parse(jsonMatch[0]);
-      } catch { /* fall through */ }
-    }
-    throw new Error(`Ollama returned invalid JSON: ${content.slice(0, 200)}`);
-  }
-}

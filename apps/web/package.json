@@ -13,6 +13,7 @@
     "@dmpg/shared": "workspace:*",
     "@xyflow/react": "^12.4.4",
     "elkjs": "^0.9.3",
+    "html-to-image": "^1.11.13",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",

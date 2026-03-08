@@ -1,0 +1,174 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "DMPG UML Editor" [level=1] [ref=e5]
+    - generic [ref=e64]: Data Pipeline — Overview
+    - generic [ref=e65]: 392 symbols · 1313 relations · 46 views
+    - button "" [ref=e6] [cursor=pointer]:
+      - generic [ref=e7]: 
+  - generic [ref=e8]:
+    - tablist "Sidebar Tabs" [ref=e9]:
+      - tab "" [active] [selected] [ref=e10] [cursor=pointer]:
+        - generic [ref=e11]: 
+      - tab "" [ref=e12] [cursor=pointer]:
+        - generic [ref=e13]: 
+      - tab "" [ref=e14] [cursor=pointer]:
+        - generic [ref=e15]: 
+      - tab "" [ref=e16] [cursor=pointer]:
+        - generic [ref=e17]: 
+    - generic [ref=e18]:
+      - generic [ref=e1817]:
+        - generic [ref=e1819]: 
+        - textbox "Suche nach Symbolen…" [ref=e1820]
+      - generic [ref=e1821]:
+        - heading " Views " [level=2] [ref=e1822] [cursor=pointer]:
+          - generic [ref=e1824]: 
+          - text: Views
+          - button "" [ref=e1825]:
+            - generic [ref=e1826]: 
+        - generic [ref=e1827]:
+          - generic [ref=e1828] [cursor=pointer]:
+            - generic [ref=e1830]: 
+            - generic [ref=e1832]: 
+            - generic [ref=e1833]: Data Pipeline — Overview
+          - generic [ref=e1834] [cursor=pointer]:
+            - generic [ref=e1836]: 
+            - generic [ref=e1838]: 
+            - generic [ref=e1839]: Datenquellen
+          - generic [ref=e1840] [cursor=pointer]:
+            - generic [ref=e1842]: 
+            - generic [ref=e1844]: 
+            - generic [ref=e1845]: Connector
+          - generic [ref=e1846] [cursor=pointer]:
+            - generic [ref=e1848]: 
+            - generic [ref=e1850]: 
+            - generic [ref=e1851]: Data Pipeline
+          - generic [ref=e1852] [cursor=pointer]:
+            - generic [ref=e1854]: 
+            - generic [ref=e1856]: 
+            - generic [ref=e1857]: Datenpipeline & Orchestrierung
+          - generic [ref=e1858] [cursor=pointer]:
+            - generic [ref=e1860]: 
+            - generic [ref=e1862]: 
+            - generic [ref=e1863]: Is Table
+          - generic [ref=e1864] [cursor=pointer]:
+            - generic [ref=e1866]: 
+            - generic [ref=e1868]: 
+            - generic [ref=e1869]: Analytik & Modellierung
+          - generic [ref=e1870] [cursor=pointer]:
+            - generic [ref=e1872]: 
+            - generic [ref=e1874]: 
+            - generic [ref=e1875]: Distribution
+          - generic [ref=e1876] [cursor=pointer]:
+            - generic [ref=e1878]: 
+            - generic [ref=e1880]: 
+            - generic [ref=e1881]: Util
+          - generic [ref=e1882] [cursor=pointer]:
+            - generic [ref=e1884]: 
+            - generic [ref=e1886]: 
+            - generic [ref=e1887]: Simulation
+          - generic [ref=e1888] [cursor=pointer]:
+            - generic [ref=e1890]: 
+            - generic [ref=e1892]: 
+            - generic [ref=e1893]: Arrival Table
+          - generic [ref=e1894] [cursor=pointer]:
+            - generic [ref=e1896]: 
+            - generic [ref=e1898]: 
+            - generic [ref=e1899]: Utilities / Shared
+          - generic [ref=e1900] [cursor=pointer]:
+            - generic [ref=e1902]: 
+            - generic [ref=e1904]: 
+            - generic [ref=e1905]: Constant
+  - generic [ref=e28]:
+    - application [ref=e29]:
+      - generic [ref=e31]:
+        - generic:
+          - generic:
+            - img:
+              - group "Edge from grp:domain:data-sources to grp:domain:analytics" [ref=e1680] [cursor=pointer]:
+                - generic [ref=e1683]:
+                  - generic: 11x imports, 7x calls, 1x creates
+            - img:
+              - group "Edge from grp:domain:simulation to grp:domain:data-sources" [ref=e1685] [cursor=pointer]:
+                - generic [ref=e1688]:
+                  - generic: 2x imports, 1x creates
+            - img:
+              - group "Edge from grp:domain:simulation to grp:domain:orchestration" [ref=e1690] [cursor=pointer]:
+                - generic [ref=e1693]:
+                  - generic: 2x calls
+            - img:
+              - group "Edge from grp:domain:analytics to grp:domain:data-sources" [ref=e1695] [cursor=pointer]:
+                - generic [ref=e1698]:
+                  - generic: 2x imports
+            - img:
+              - group "Edge from grp:domain:orchestration to grp:domain:analytics" [ref=e1700] [cursor=pointer]:
+                - generic [ref=e1703]:
+                  - generic: 2x imports, 2x calls
+          - generic:
+            - group [ref=e1705]:
+              - generic [ref=e1706]:
+                - generic [ref=e1708]:
+                  - generic [ref=e1709]: group
+                  - generic [ref=e1710]: Datenquellen
+                - generic [ref=e1711] [cursor=pointer]:
+                  - generic [ref=e1712]: 
+                  - text: Drill down
+            - group [ref=e1714]:
+              - generic [ref=e1715]:
+                - generic [ref=e1717]:
+                  - generic [ref=e1718]: group
+                  - generic [ref=e1719]: Datenpipeline & Orchestrierung
+                - generic [ref=e1720] [cursor=pointer]:
+                  - generic [ref=e1721]: 
+                  - text: Drill down
+            - group [ref=e1723]:
+              - generic [ref=e1724]:
+                - generic [ref=e1726]:
+                  - generic [ref=e1727]: group
+                  - generic [ref=e1728]: Analytik & Modellierung
+                - generic [ref=e1729] [cursor=pointer]:
+                  - generic [ref=e1730]: 
+                  - text: Drill down
+            - group [ref=e1732]:
+              - generic [ref=e1733]:
+                - generic [ref=e1735]:
+                  - generic [ref=e1736]: group
+                  - generic [ref=e1737]: Simulation
+                - generic [ref=e1738] [cursor=pointer]:
+                  - generic [ref=e1739]: 
+                  - text: Drill down
+            - group [ref=e1741]:
+              - generic [ref=e1742]:
+                - generic [ref=e1744]:
+                  - generic [ref=e1745]: group
+                  - generic [ref=e1746]: Utilities / Shared
+                - generic [ref=e1747] [cursor=pointer]:
+                  - generic [ref=e1748]: 
+                  - text: Drill down
+      - img
+      - generic "Control Panel" [ref=e32]:
+        - button "Zoom In" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+        - button "Zoom Out" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+        - button "Fit View" [ref=e39] [cursor=pointer]:
+          - img [ref=e40]
+        - button "Toggle Interactivity" [ref=e42] [cursor=pointer]:
+          - img [ref=e43]
+      - img "Mini Map" [ref=e46]
+    - generic [ref=e48]:
+      - button " Export Projekt" [ref=e49] [cursor=pointer]:
+        - generic [ref=e50]: 
+        - text: Export Projekt
+      - button " Export View" [ref=e51] [cursor=pointer]:
+        - generic [ref=e52]: 
+        - text: Export View
+  - generic [ref=e54]:
+    - generic [ref=e55]:
+      - heading "Inspector" [level=2] [ref=e56]
+      - generic [ref=e57]:
+        - button " Diagram Settings" [ref=e1755] [cursor=pointer]:
+          - generic [ref=e59]: 
+          - text: Diagram Settings
+        - button "" [ref=e1756] [cursor=pointer]:
+          - generic [ref=e61]: 
+    - generic [ref=e62]: Click a node or edge to inspect it

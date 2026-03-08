@@ -2,7 +2,7 @@ import { memo, useCallback, useRef, useEffect, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useAppStore } from "../store";
 import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
-import type { Symbol as Sym } from "@dmpg/shared";
+import type { Symbol as Sym, SymbolUmlType } from "@dmpg/shared";
 import type { DiagramLabelMode } from "../diagramSettings";
 import type { PortInfo } from "../layout";
 
@@ -19,6 +19,7 @@ export interface UmlNodeData {
   relationBadges?: string[];
   compactMode?: boolean;
   labelsMode?: DiagramLabelMode;
+  umlType?: SymbolUmlType;
   location?: { file: string; startLine?: number; endLine?: number };
   /** Dynamic port handles computed by ELK layout */
   dynamicPorts?: PortInfo[];
@@ -175,6 +176,47 @@ function DynamicPorts({ ports }: { ports?: PortInfo[] }) {
   );
 }
 
+function renderKindBadge(kind: string, umlType?: SymbolUmlType) {
+  if (umlType === "package") return "package";
+  if (umlType) return umlType;
+  return kind;
+}
+
+function resolveArtifactMeta(umlType: SymbolUmlType | undefined, label: string) {
+  switch (umlType) {
+    case "database":
+      return { iconCls: "bi-database", stereotype: "database" };
+    case "component":
+      return { iconCls: "bi-cpu", stereotype: "component" };
+    case "note":
+      return { iconCls: "bi-journal-text", stereotype: "note" };
+    case "artifact":
+      return { iconCls: "bi-file-earmark-code", stereotype: "artifact" };
+    case "package":
+      return { iconCls: "bi-box", stereotype: "package" };
+    default:
+      break;
+  }
+
+  const normalized = label.toLowerCase();
+  if (normalized.includes(".csv") || normalized.includes(".xlsx") || normalized.includes(".xls")) {
+    return { iconCls: "bi-file-earmark-spreadsheet", stereotype: "artifact" };
+  }
+  if (normalized.includes(".json")) {
+    return { iconCls: "bi-filetype-json", stereotype: "artifact" };
+  }
+  if (normalized.includes(".pkl") || normalized.includes(".pickle")) {
+    return { iconCls: "bi-archive", stereotype: "artifact" };
+  }
+  if (normalized.includes("db") || normalized.includes("sql") || normalized.includes("database")) {
+    return { iconCls: "bi-database", stereotype: "database" };
+  }
+  if (normalized.includes("http") || normalized.includes("api")) {
+    return { iconCls: "bi-globe", stereotype: "component" };
+  }
+  return { iconCls: "bi-file-earmark", stereotype: "artifact" };
+}
+
 /* ── Default UML Node (fallback) ──────────────── */
 
 export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
@@ -188,7 +230,7 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={`uml-node kind-${d.kind} ${compactMode ? "node-compact" : ""} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
+      className={`uml-node kind-${d.kind} ${d.umlType ? `uml-type-${d.umlType}` : ""} ${compactMode ? "node-compact" : ""} ${isDead ? "dead-code" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -196,7 +238,7 @@ export const UmlNode = memo(function UmlNode({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="in-top" />
       <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
       <div className="node-header">
-        <span className="kind-badge">{d.kind}</span>
+        <span className="kind-badge">{renderKindBadge(d.kind, d.umlType)}</span>
         <span className="node-label">{d.label}</span>
         {isDead && <span className="dead-code-badge" title="Unused — no callers"><i className="bi bi-x-circle" /></span>}
       </div>
@@ -236,7 +278,7 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
 
   return (
     <div
-      className={`uml-node kind-${d.kind} group-node ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""} ${animClass}`}
+      className={`uml-node kind-${d.kind} ${d.umlType ? `uml-type-${d.umlType}` : ""} group-node ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""} ${animClass}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -244,8 +286,11 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
       <Handle type="target" position={Position.Top} id="in-top" />
       <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
       <div className="node-header">
-        <span className="kind-badge">{d.kind}</span>
-        <span className="node-label">{d.label}</span>
+        <span className="kind-badge">{renderKindBadge(d.kind, d.umlType)}</span>
+        <div className="group-node__title">
+          {d.umlType === "package" && <div className="stereotype">«package»</div>}
+          <span className="node-label">{d.label}</span>
+        </div>
       </div>
       {!compactMode && fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
       <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
@@ -412,19 +457,11 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
   const { handleClick, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
   const compactMode = !!d.compactMode;
   const labelsMode = d.labelsMode ?? "detailed";
-
-  // Determine icon based on label
-  const label = d.label.toLowerCase();
-  let iconCls = "bi-file-earmark";
-  if (label.includes(".csv") || label.includes(".xlsx") || label.includes(".xls")) iconCls = "bi-file-earmark-spreadsheet";
-  else if (label.includes(".json")) iconCls = "bi-filetype-json";
-  else if (label.includes(".pkl") || label.includes(".pickle")) iconCls = "bi-archive";
-  else if (label.includes("db") || label.includes("sql") || label.includes("database")) iconCls = "bi-database";
-  else if (label.includes("http") || label.includes("api")) iconCls = "bi-globe";
+  const artifactMeta = resolveArtifactMeta(d.umlType, d.label);
 
   return (
     <div
-      className={`uml-node uml-artifact-node kind-external ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""}`}
+      className={`uml-node uml-artifact-node kind-external ${d.umlType ? `uml-type-${d.umlType}` : ""} ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -433,8 +470,11 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
       <Handle type="target" position={Position.Left} id="in-left" className="handle-alt" />
 
       <div className="node-header artifact-header">
-        <span className="artifact-icon"><i className={`bi ${iconCls}`} /></span>
-        <span className="node-label">{d.label}</span>
+        <span className="artifact-icon"><i className={`bi ${artifactMeta.iconCls}`} /></span>
+        <div className="artifact-header__title">
+          <div className="stereotype">«{artifactMeta.stereotype}»</div>
+          <span className="node-label">{d.label}</span>
+        </div>
       </div>
 
       <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />

@@ -17,6 +17,15 @@ export const SymbolKindEnum = z.enum([
 ]);
 export type SymbolKind = z.infer<typeof SymbolKindEnum>;
 
+export const SymbolUmlTypeEnum = z.enum([
+  "package",
+  "database",
+  "artifact",
+  "component",
+  "note",
+]);
+export type SymbolUmlType = z.infer<typeof SymbolUmlTypeEnum>;
+
 export const SymbolLocationSchema = z.object({
   file: z.string(),
   startLine: z.number().int().optional(),
@@ -61,14 +70,17 @@ export const CodingGuidelinesSchema = z.object({
 });
 export type CodingGuidelines = z.infer<typeof CodingGuidelinesSchema>;
 
+export const SymbolDocItemSchema = z.object({
+  name: z.string(),
+  type: z.string().optional(),
+  description: z.string().optional(),
+});
+export type SymbolDocItem = z.infer<typeof SymbolDocItemSchema>;
+
 export const SymbolDocSchema = z.object({
   summary: z.string().optional(),
-  inputs: z
-    .array(z.object({ name: z.string(), type: z.string().optional(), description: z.string().optional() }))
-    .optional(),
-  outputs: z
-    .array(z.object({ name: z.string(), type: z.string().optional(), description: z.string().optional() }))
-    .optional(),
+  inputs: z.array(SymbolDocItemSchema).optional(),
+  outputs: z.array(SymbolDocItemSchema).optional(),
   sideEffects: z.array(z.string()).optional(),
   calls: z.array(z.string()).optional(),
   calledBy: z.array(z.string()).optional(),
@@ -87,6 +99,7 @@ export const SymbolSchema = z.object({
   id: z.string(),
   label: z.string(),
   kind: SymbolKindEnum,
+  umlType: SymbolUmlTypeEnum.optional(),
   location: SymbolLocationSchema.optional(),
   doc: SymbolDocSchema.optional(),
   tags: z.array(z.string()).optional(),
@@ -130,6 +143,138 @@ export const RelationSchema = z.object({
 });
 export type Relation = z.infer<typeof RelationSchema>;
 
+export const ViewReviewIssueTypeEnum = z.enum([
+  "sparse_view",
+  "missing_context",
+  "group_too_broad",
+  "group_too_thin",
+  "naming_unclear",
+  "layering_issue",
+  "external_dependency_overload",
+]);
+export type ViewReviewIssueType = z.infer<typeof ViewReviewIssueTypeEnum>;
+
+export const ReviewSeverityEnum = z.enum(["low", "medium", "high"]);
+export type ReviewSeverity = z.infer<typeof ReviewSeverityEnum>;
+
+export const ReviewItemStatusEnum = z.enum(["new", "acknowledged", "applied", "dismissed"]);
+export type ReviewItemStatus = z.infer<typeof ReviewItemStatusEnum>;
+
+export const ReviewItemSourceEnum = z.enum([
+  "structure_review",
+  "external_context_review",
+  "label_improvement",
+  "vision_review",
+  "uml_reference_compare",
+]);
+export type ReviewItemSource = z.infer<typeof ReviewItemSourceEnum>;
+
+export const ReviewCategoryEnum = z.enum([
+  "notation",
+  "layout",
+  "grouping",
+  "missing_element",
+  "relation_visibility",
+  "context",
+  "layering",
+  "naming",
+]);
+export type ReviewCategory = z.infer<typeof ReviewCategoryEnum>;
+
+export const ViewReviewIssueSchema = z.object({
+  type: ViewReviewIssueTypeEnum,
+  severity: ReviewSeverityEnum,
+  message: z.string(),
+  suggestedAction: z.string().optional(),
+  targetIds: z.array(z.string()).optional(),
+  reviewId: z.string().optional(),
+  source: ReviewItemSourceEnum.optional(),
+  category: ReviewCategoryEnum.optional(),
+  title: z.string().optional(),
+  target: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  status: ReviewItemStatusEnum.optional(),
+  createdAt: z.string().optional(),
+});
+export type ViewReviewIssue = z.infer<typeof ViewReviewIssueSchema>;
+
+export const LabelImprovementSchema = z.object({
+  targetId: z.string(),
+  oldLabel: z.string(),
+  newLabel: z.string(),
+  reason: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  reviewId: z.string().optional(),
+  source: ReviewItemSourceEnum.optional(),
+  status: ReviewItemStatusEnum.optional(),
+  createdAt: z.string().optional(),
+});
+export type LabelImprovement = z.infer<typeof LabelImprovementSchema>;
+
+export const ExternalContextSuggestionSchema = z.object({
+  label: z.string(),
+  relatedSymbolIds: z.array(z.string()),
+  reason: z.string(),
+  confidence: z.number().min(0).max(1),
+  reviewId: z.string().optional(),
+  source: ReviewItemSourceEnum.optional(),
+  status: ReviewItemStatusEnum.optional(),
+  createdAt: z.string().optional(),
+});
+export type ExternalContextSuggestion = z.infer<typeof ExternalContextSuggestionSchema>;
+
+export const ViewGraphSuggestionTypeEnum = z.enum([
+  "view_refactor",
+  "node_type_change",
+  "context_stub_addition",
+  "relation_aggregation",
+]);
+export type ViewGraphSuggestionType = z.infer<typeof ViewGraphSuggestionTypeEnum>;
+
+export const ViewGraphSuggestionSchema = z.object({
+  id: z.string().optional(),
+  source: ReviewItemSourceEnum.optional(),
+  type: ViewGraphSuggestionTypeEnum,
+  targetIds: z.array(z.string()).optional(),
+  message: z.string(),
+  confidence: z.number().min(0).max(1).optional(),
+  status: ReviewItemStatusEnum.optional(),
+  createdAt: z.string().optional(),
+});
+export type ViewGraphSuggestion = z.infer<typeof ViewGraphSuggestionSchema>;
+
+export const ViewRecommendedActionSchema = z.object({
+  id: z.string().optional(),
+  source: ReviewItemSourceEnum.optional(),
+  priority: z.number().int().positive(),
+  action: z.string(),
+  target: z.string().optional(),
+  targetIds: z.array(z.string()).optional(),
+  status: ReviewItemStatusEnum.optional(),
+  createdAt: z.string().optional(),
+});
+export type ViewRecommendedAction = z.infer<typeof ViewRecommendedActionSchema>;
+
+export const ViewReviewSummarySchema = z.object({
+  source: ReviewItemSourceEnum.optional(),
+  summary: z.string(),
+  umlQualityDelta: z.enum(["better_reference", "roughly_equal", "better_current"]).optional(),
+  mainProblem: z.enum(["notation", "grouping", "relations", "context", "layering", "naming"]).optional(),
+  isCurrentDiagramTooUiLike: z.boolean().optional(),
+  createdAt: z.string().optional(),
+});
+export type ViewReviewSummary = z.infer<typeof ViewReviewSummarySchema>;
+
+export const AiRelationSuggestionSchema = z.object({
+  sourceId: z.string(),
+  targetId: z.string(),
+  relationType: RelationTypeEnum,
+  label: z.string().optional(),
+  rationale: z.string().optional(),
+  confidence: z.number().min(0).max(1),
+});
+export type AiRelationSuggestion = z.infer<typeof AiRelationSuggestionSchema>;
+
 /* ───────────── Diagram View ───────────── */
 
 export const NodePositionSchema = z.object({
@@ -152,6 +297,12 @@ export const DiagramViewSchema = z.object({
   nodeRefs: z.array(z.string()),
   edgeRefs: z.array(z.string()),
   nodePositions: z.array(NodePositionSchema).optional(),
+  reviewHints: z.array(ViewReviewIssueSchema).optional(),
+  labelSuggestions: z.array(LabelImprovementSchema).optional(),
+  contextSuggestions: z.array(ExternalContextSuggestionSchema).optional(),
+  graphSuggestions: z.array(ViewGraphSuggestionSchema).optional(),
+  reviewActions: z.array(ViewRecommendedActionSchema).optional(),
+  reviewSummary: ViewReviewSummarySchema.optional(),
 });
 export type DiagramView = z.infer<typeof DiagramViewSchema>;
 
@@ -177,6 +328,405 @@ export type AiDocRequest = z.infer<typeof AiDocRequestSchema>;
 
 export const AiDocResponseSchema = SymbolDocSchema;
 export type AiDocResponse = z.infer<typeof AiDocResponseSchema>;
+
+export const AiSymbolEnrichmentRequestSchema = z.object({
+  symbolId: z.string(),
+});
+export type AiSymbolEnrichmentRequest = z.infer<typeof AiSymbolEnrichmentRequestSchema>;
+
+export const AiViewRequestSchema = z.object({
+  viewId: z.string(),
+});
+export type AiViewRequest = z.infer<typeof AiViewRequestSchema>;
+
+export const AiViewActionRequestSchema = AiViewRequestSchema.extend({
+  apply: z.boolean().optional(),
+  persist: z.boolean().optional(),
+  limit: z.number().int().positive().max(50).optional(),
+  includeContextReview: z.boolean().optional(),
+});
+export type AiViewActionRequest = z.infer<typeof AiViewActionRequestSchema>;
+
+export const AiSymbolEnrichmentResponseSchema = z.object({
+  symbolId: z.string(),
+  summary: z.string().optional(),
+  inputs: z.array(SymbolDocItemSchema).optional(),
+  outputs: z.array(SymbolDocItemSchema).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+});
+export type AiSymbolEnrichmentResponse = z.infer<typeof AiSymbolEnrichmentResponseSchema>;
+
+export const AiRelationSuggestionsResponseSchema = z.object({
+  viewId: z.string().optional(),
+  suggestions: z.array(AiRelationSuggestionSchema),
+});
+export type AiRelationSuggestionsResponse = z.infer<typeof AiRelationSuggestionsResponseSchema>;
+
+export const AiStructureReviewResponseSchema = z.object({
+  viewId: z.string(),
+  issues: z.array(ViewReviewIssueSchema),
+});
+export type AiStructureReviewResponse = z.infer<typeof AiStructureReviewResponseSchema>;
+
+export const AiLabelImprovementResponseSchema = z.object({
+  viewId: z.string(),
+  improvements: z.array(LabelImprovementSchema),
+});
+export type AiLabelImprovementResponse = z.infer<typeof AiLabelImprovementResponseSchema>;
+
+export const AiExternalContextReviewResponseSchema = z.object({
+  viewId: z.string(),
+  suggestedContextNodes: z.array(ExternalContextSuggestionSchema),
+});
+export type AiExternalContextReviewResponse = z.infer<typeof AiExternalContextReviewResponseSchema>;
+
+export const AiVisionImageInputSchema = z.object({
+  label: z.string().min(1).max(80).optional(),
+  mimeType: z.string().min(1),
+  dataBase64: z.string().min(1),
+  viewId: z.string().optional(),
+  graphMetadata: z.record(z.unknown()).optional(),
+});
+export type AiVisionImageInput = z.infer<typeof AiVisionImageInputSchema>;
+
+export const AiVisionBaseRequestSchema = z.object({
+  images: z.array(AiVisionImageInputSchema).min(1),
+  instruction: z.string().max(4000).optional(),
+  viewId: z.string().optional(),
+  graphContext: z.record(z.unknown()).optional(),
+});
+export type AiVisionBaseRequest = z.infer<typeof AiVisionBaseRequestSchema>;
+
+export const DiagramImageReviewRequestSchema = AiVisionBaseRequestSchema;
+export type DiagramImageReviewRequest = z.infer<typeof DiagramImageReviewRequestSchema>;
+
+export const DiagramImageCompareRequestSchema = AiVisionBaseRequestSchema.superRefine((value, ctx) => {
+  if (value.images.length !== 2) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["images"],
+      message: "diagram_image_compare requires exactly two images: current and reference.",
+    });
+  }
+});
+export type DiagramImageCompareRequest = z.infer<typeof DiagramImageCompareRequestSchema>;
+
+export const DiagramImageSuggestionsRequestSchema = AiVisionBaseRequestSchema;
+export type DiagramImageSuggestionsRequest = z.infer<typeof DiagramImageSuggestionsRequestSchema>;
+
+export const DiagramImageReviewIssueTypeEnum = z.enum([
+  "missing_relations",
+  "weak_grouping",
+  "non_uml_shape",
+  "too_sparse",
+  "too_dense",
+  "missing_context",
+  "naming_unclear",
+]);
+export type DiagramImageReviewIssueType = z.infer<typeof DiagramImageReviewIssueTypeEnum>;
+
+export const DiagramImageReviewIssueSchema = z.object({
+  type: DiagramImageReviewIssueTypeEnum,
+  severity: ReviewSeverityEnum,
+  message: z.string(),
+  suggestion: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+});
+export type DiagramImageReviewIssue = z.infer<typeof DiagramImageReviewIssueSchema>;
+
+export const DiagramRecommendedNodeTypeEnum = z.enum([
+  "package",
+  "database",
+  "artifact",
+  "component",
+  "note",
+]);
+export type DiagramRecommendedNodeType = z.infer<typeof DiagramRecommendedNodeTypeEnum>;
+
+export const DiagramRecommendedNodeTypeSchema = z.object({
+  targetLabel: z.string(),
+  umlType: DiagramRecommendedNodeTypeEnum,
+});
+export type DiagramRecommendedNodeTypeEntry = z.infer<typeof DiagramRecommendedNodeTypeSchema>;
+
+export const DiagramImageReviewResponseSchema = z.object({
+  summary: z.string(),
+  issues: z.array(DiagramImageReviewIssueSchema),
+  recommendedNodeTypes: z.array(DiagramRecommendedNodeTypeSchema).optional(),
+});
+export type DiagramImageReviewResponse = z.infer<typeof DiagramImageReviewResponseSchema>;
+
+export const DiagramImageDifferenceCategoryEnum = z.enum([
+  "notation",
+  "layout",
+  "grouping",
+  "missing_element",
+  "relation_visibility",
+]);
+export type DiagramImageDifferenceCategory = z.infer<typeof DiagramImageDifferenceCategoryEnum>;
+
+export const DiagramImageDifferenceSchema = z.object({
+  category: DiagramImageDifferenceCategoryEnum,
+  message: z.string(),
+  suggestion: z.string().optional(),
+});
+export type DiagramImageDifference = z.infer<typeof DiagramImageDifferenceSchema>;
+
+export const DiagramImageCompareResponseSchema = z.object({
+  summary: z.string(),
+  differences: z.array(DiagramImageDifferenceSchema),
+});
+export type DiagramImageCompareResponse = z.infer<typeof DiagramImageCompareResponseSchema>;
+
+export const DiagramImageSuggestionTypeEnum = z.enum([
+  "add_context_stub",
+  "change_group_type",
+  "promote_to_package",
+  "use_database_shape",
+  "split_view",
+  "aggregate_relations",
+]);
+export type DiagramImageSuggestionType = z.infer<typeof DiagramImageSuggestionTypeEnum>;
+
+export const DiagramImageSuggestionSchema = z.object({
+  type: DiagramImageSuggestionTypeEnum,
+  target: z.string().optional(),
+  message: z.string(),
+  confidence: z.number().min(0).max(1).optional(),
+});
+export type DiagramImageSuggestion = z.infer<typeof DiagramImageSuggestionSchema>;
+
+export const DiagramImageSuggestionsResponseSchema = z.object({
+  summary: z.string(),
+  suggestions: z.array(DiagramImageSuggestionSchema),
+});
+export type DiagramImageSuggestionsResponse = z.infer<typeof DiagramImageSuggestionsResponseSchema>;
+
+export const UmlReferenceCompareRequestSchema = AiVisionBaseRequestSchema.extend({
+  persistSuggestions: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.images.length !== 2) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["images"],
+      message: "uml_reference_compare requires exactly two images: current and reference.",
+    });
+  }
+});
+export type UmlReferenceCompareRequest = z.infer<typeof UmlReferenceCompareRequestSchema>;
+
+export const UmlQualityDeltaEnum = z.enum(["better_reference", "roughly_equal", "better_current"]);
+export type UmlQualityDelta = z.infer<typeof UmlQualityDeltaEnum>;
+
+export const UmlCompareMainProblemEnum = z.enum(["notation", "grouping", "relations", "context", "layering", "naming"]);
+export type UmlCompareMainProblem = z.infer<typeof UmlCompareMainProblemEnum>;
+
+export const UmlCompareOverallAssessmentSchema = z.object({
+  umlQualityDelta: UmlQualityDeltaEnum,
+  mainProblem: UmlCompareMainProblemEnum,
+});
+export type UmlCompareOverallAssessment = z.infer<typeof UmlCompareOverallAssessmentSchema>;
+
+export const UmlCompareDifferenceCategoryEnum = z.enum([
+  "notation",
+  "layout",
+  "grouping",
+  "missing_element",
+  "relation_visibility",
+  "context",
+  "layering",
+  "naming",
+]);
+export type UmlCompareDifferenceCategory = z.infer<typeof UmlCompareDifferenceCategoryEnum>;
+
+export const UmlCompareDifferenceSchema = z.object({
+  category: UmlCompareDifferenceCategoryEnum,
+  severity: ReviewSeverityEnum,
+  message: z.string(),
+  suggestion: z.string(),
+  target: z.string().optional(),
+  confidence: z.number().min(0).max(1),
+});
+export type UmlCompareDifference = z.infer<typeof UmlCompareDifferenceSchema>;
+
+export const UmlCompareMigrationSuggestionTypeEnum = z.enum([
+  "replace_group_with_package",
+  "use_database_shape",
+  "add_context_stub",
+  "split_view",
+  "aggregate_relations",
+  "rename_group",
+  "add_note",
+  "promote_artifact_shape",
+]);
+export type UmlCompareMigrationSuggestionType = z.infer<typeof UmlCompareMigrationSuggestionTypeEnum>;
+
+export const UmlCompareMigrationSuggestionSchema = z.object({
+  type: UmlCompareMigrationSuggestionTypeEnum,
+  target: z.string().optional(),
+  message: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+export type UmlCompareMigrationSuggestion = z.infer<typeof UmlCompareMigrationSuggestionSchema>;
+
+export const UmlCompareRecommendedActionSchema = z.object({
+  priority: z.number().int().positive(),
+  action: z.string(),
+});
+export type UmlCompareRecommendedAction = z.infer<typeof UmlCompareRecommendedActionSchema>;
+
+export const UmlCompareGraphSuggestionTypeEnum = z.enum([
+  "view_refactor",
+  "node_type_change",
+  "context_stub_addition",
+  "relation_aggregation",
+]);
+export type UmlCompareGraphSuggestionType = z.infer<typeof UmlCompareGraphSuggestionTypeEnum>;
+
+export const UmlCompareGraphSuggestionSchema = z.object({
+  type: UmlCompareGraphSuggestionTypeEnum,
+  targetIds: z.array(z.string()).optional(),
+  message: z.string(),
+});
+export type UmlCompareGraphSuggestion = z.infer<typeof UmlCompareGraphSuggestionSchema>;
+
+export const UmlReferenceCompareResponseSchema = z.object({
+  summary: z.string(),
+  overallAssessment: UmlCompareOverallAssessmentSchema,
+  differences: z.array(UmlCompareDifferenceSchema),
+  migrationSuggestions: z.array(UmlCompareMigrationSuggestionSchema),
+  recommendedActions: z.array(UmlCompareRecommendedActionSchema),
+  graphSuggestions: z.array(UmlCompareGraphSuggestionSchema).optional(),
+  isCurrentDiagramTooUiLike: z.boolean().optional(),
+});
+export type UmlReferenceCompareResponse = z.infer<typeof UmlReferenceCompareResponseSchema>;
+
+export const UmlReferenceRefactorActionTypeEnum = z.enum([
+  "set_uml_type",
+  "rename_symbol",
+  "rename_view",
+  "add_context_stub",
+  "add_note",
+  "add_artifact",
+  "add_database_node",
+  "add_component_node",
+  "move_symbol",
+  "split_group",
+  "merge_group",
+  "reassign_parent",
+  "create_view",
+  "rebuild_view",
+  "add_relation",
+  "remove_relation",
+  "aggregate_relations",
+  "change_view_scope",
+  "rerun_layout",
+]);
+export type UmlReferenceRefactorActionType = z.infer<typeof UmlReferenceRefactorActionTypeEnum>;
+
+export const UmlReferenceRefactorActionSchema = z.object({
+  id: z.string(),
+  type: UmlReferenceRefactorActionTypeEnum,
+  targetIds: z.array(z.string()).default([]),
+  viewId: z.string().optional(),
+  payload: z.record(z.string(), z.unknown()).default({}),
+  confidence: z.number().min(0).max(1),
+  severity: ReviewSeverityEnum,
+  autoApplicable: z.boolean(),
+});
+export type UmlReferenceRefactorAction = z.infer<typeof UmlReferenceRefactorActionSchema>;
+
+export const UmlReferenceRefactorReviewOnlyItemSchema = z.object({
+  message: z.string(),
+  reason: z.string(),
+  actionId: z.string().optional(),
+  targetIds: z.array(z.string()).optional(),
+  viewId: z.string().optional(),
+});
+export type UmlReferenceRefactorReviewOnlyItem = z.infer<typeof UmlReferenceRefactorReviewOnlyItemSchema>;
+
+export const UmlReferenceRefactorPlanSchema = z.object({
+  summary: z.string(),
+  actions: z.array(UmlReferenceRefactorActionSchema),
+  primaryFocusTargetIds: z.array(z.string()).default([]),
+  changedViewIds: z.array(z.string()).default([]),
+  remainingReviewOnlyItems: z.array(UmlReferenceRefactorReviewOnlyItemSchema).default([]),
+});
+export type UmlReferenceRefactorPlan = z.infer<typeof UmlReferenceRefactorPlanSchema>;
+
+export const UmlReferenceRefactorDecisionEnum = z.enum(["apply", "review_only", "skip"]);
+export type UmlReferenceRefactorDecision = z.infer<typeof UmlReferenceRefactorDecisionEnum>;
+
+export const UmlReferenceRefactorValidationDecisionSchema = z.object({
+  actionId: z.string(),
+  decision: UmlReferenceRefactorDecisionEnum,
+  reason: z.string(),
+});
+export type UmlReferenceRefactorValidationDecision = z.infer<typeof UmlReferenceRefactorValidationDecisionSchema>;
+
+export const UmlReferenceRefactorValidationSchema = z.object({
+  summary: z.string(),
+  decisions: z.array(UmlReferenceRefactorValidationDecisionSchema),
+});
+export type UmlReferenceRefactorValidation = z.infer<typeof UmlReferenceRefactorValidationSchema>;
+
+export const UmlReferenceAutorefactorOptionsSchema = z.object({
+  autoApply: z.boolean().optional(),
+  allowStructuralChanges: z.boolean().optional(),
+  allowLabelChanges: z.boolean().optional(),
+  allowRelationChanges: z.boolean().optional(),
+  persistSuggestions: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+});
+export type UmlReferenceAutorefactorOptions = z.infer<typeof UmlReferenceAutorefactorOptionsSchema>;
+
+export const UmlReferenceAutorefactorRequestSchema = z.object({
+  currentViewImage: AiVisionImageInputSchema,
+  referenceImage: AiVisionImageInputSchema,
+  instruction: z.string().optional(),
+  viewId: z.string().optional(),
+  graphContext: z.unknown().optional(),
+  options: UmlReferenceAutorefactorOptionsSchema.optional(),
+});
+export type UmlReferenceAutorefactorRequest = z.infer<typeof UmlReferenceAutorefactorRequestSchema>;
+
+export const UmlReferenceAutorefactorActionResultSchema = z.object({
+  actionId: z.string(),
+  type: UmlReferenceRefactorActionTypeEnum,
+  targetIds: z.array(z.string()).default([]),
+  viewId: z.string().optional(),
+  reason: z.string(),
+});
+export type UmlReferenceAutorefactorActionResult = z.infer<typeof UmlReferenceAutorefactorActionResultSchema>;
+
+export const UmlReferenceAutorefactorUndoInfoSchema = z.object({
+  snapshotId: z.string(),
+  applyRunId: z.string(),
+});
+export type UmlReferenceAutorefactorUndoInfo = z.infer<typeof UmlReferenceAutorefactorUndoInfoSchema>;
+
+export const UmlReferenceAutorefactorResponseSchema = z.object({
+  compare: UmlReferenceCompareResponseSchema,
+  plan: UmlReferenceRefactorPlanSchema,
+  validation: UmlReferenceRefactorValidationSchema,
+  appliedActions: z.array(UmlReferenceAutorefactorActionResultSchema),
+  skippedActions: z.array(UmlReferenceAutorefactorActionResultSchema),
+  reviewOnlyActions: z.array(UmlReferenceAutorefactorActionResultSchema),
+  changedTargetIds: z.array(z.string()).default([]),
+  changedViewIds: z.array(z.string()).default([]),
+  highlightTargetIds: z.array(z.string()).default([]),
+  primaryFocusTargetIds: z.array(z.string()).default([]),
+  focusViewId: z.string().optional(),
+  autoApplied: z.boolean(),
+  undoInfo: UmlReferenceAutorefactorUndoInfoSchema.optional(),
+  graph: z.lazy(() => ProjectGraphSchema).optional(),
+});
+export type UmlReferenceAutorefactorResponse = z.infer<typeof UmlReferenceAutorefactorResponseSchema>;
+
+export const UmlReferenceAutorefactorUndoRequestSchema = z.object({
+  snapshotId: z.string().min(1),
+});
+export type UmlReferenceAutorefactorUndoRequest = z.infer<typeof UmlReferenceAutorefactorUndoRequestSchema>;
 
 /* ───────────── Scan Request ───────────── */
 

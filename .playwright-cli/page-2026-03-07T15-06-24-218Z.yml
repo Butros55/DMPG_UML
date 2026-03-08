@@ -1,0 +1,161 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "DMPG UML Editor" [level=1] [ref=e5]
+    - generic [ref=e63]:
+      - button "Data Pipeline — Overview" [ref=e332] [cursor=pointer]
+      - generic [ref=e333]: ›Analytik & Modellierung
+    - generic [ref=e65]: 392 symbols · 1313 relations · 46 views
+    - button "" [ref=e6] [cursor=pointer]:
+      - generic [ref=e7]: 
+  - generic [ref=e8]:
+    - tablist "Sidebar Tabs" [ref=e9]:
+      - tab "" [selected] [ref=e10] [cursor=pointer]:
+        - generic [ref=e11]: 
+      - tab "" [ref=e12] [cursor=pointer]:
+        - generic [ref=e13]: 
+      - tab "" [ref=e14] [cursor=pointer]:
+        - generic [ref=e15]: 
+      - tab "" [ref=e16] [cursor=pointer]:
+        - generic [ref=e17]: 
+    - generic [ref=e18]:
+      - generic [ref=e68]:
+        - generic [ref=e70]: 
+        - textbox "Suche nach Symbolen…" [active] [ref=e71]
+      - generic [ref=e19]:
+        - heading " Views " [level=2] [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: 
+          - text: Views
+          - button "" [ref=e23]:
+            - generic [ref=e24]: 
+        - generic [ref=e25]:
+          - generic [ref=e72] [cursor=pointer]:
+            - generic [ref=e74]: 
+            - generic [ref=e76]: 
+            - generic [ref=e77]: Data Pipeline — Overview
+          - generic [ref=e78] [cursor=pointer]:
+            - generic [ref=e80]: 
+            - generic [ref=e82]: 
+            - generic [ref=e83]: Datenquellen
+          - generic [ref=e334] [cursor=pointer]:
+            - generic [ref=e336]: 
+            - generic [ref=e338]: 
+            - generic [ref=e339]: Connector
+          - generic [ref=e90] [cursor=pointer]:
+            - generic [ref=e92]: 
+            - generic [ref=e94]: 
+            - generic [ref=e95]: Data Pipeline
+          - generic [ref=e340] [cursor=pointer]:
+            - generic [ref=e342]: 
+            - generic [ref=e344]: 
+            - generic [ref=e345]: Datenpipeline & Orchestrierung
+          - generic [ref=e346] [cursor=pointer]:
+            - generic [ref=e348]: 
+            - generic [ref=e350]: 
+            - generic [ref=e351]: Is Table
+          - generic [ref=e352] [cursor=pointer]:
+            - generic [ref=e354]: 
+            - generic [ref=e356]: 
+            - generic [ref=e357]: Analytik & Modellierung
+          - generic [ref=e358] [cursor=pointer]:
+            - generic [ref=e360]: 
+            - generic [ref=e362]: 
+            - generic [ref=e363]: Distribution
+          - generic [ref=e364] [cursor=pointer]:
+            - generic [ref=e366]: 
+            - generic [ref=e368]: 
+            - generic [ref=e369]: Util
+          - generic [ref=e370] [cursor=pointer]:
+            - generic [ref=e372]: 
+            - generic [ref=e374]: 
+            - generic [ref=e375]: Simulation
+          - generic [ref=e376] [cursor=pointer]:
+            - generic [ref=e378]: 
+            - generic [ref=e380]: 
+            - generic [ref=e381]: Arrival Table
+          - generic [ref=e382] [cursor=pointer]:
+            - generic [ref=e384]: 
+            - generic [ref=e386]: 
+            - generic [ref=e387]: Utilities / Shared
+          - generic [ref=e388] [cursor=pointer]:
+            - generic [ref=e390]: 
+            - generic [ref=e392]: 
+            - generic [ref=e393]: Constant
+  - generic [ref=e28]:
+    - application [ref=e29]:
+      - generic [ref=e31]:
+        - generic:
+          - generic:
+            - group [ref=e394]:
+              - generic [ref=e395]:
+                - generic [ref=e397]:
+                  - generic [ref=e398]: group
+                  - generic [ref=e399]: Distribution
+                - generic [ref=e400] [cursor=pointer]:
+                  - generic [ref=e401]: 
+                  - text: Drill down
+            - group [ref=e403]:
+              - generic [ref=e404]:
+                - generic [ref=e406]:
+                  - generic [ref=e407]: group
+                  - generic [ref=e408]: Util
+                - generic [ref=e409] [cursor=pointer]:
+                  - generic [ref=e410]: 
+                  - text: Drill down
+      - img
+      - generic "Control Panel" [ref=e32]:
+        - button "Zoom In" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+        - button "Zoom Out" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+        - button "Fit View" [ref=e39] [cursor=pointer]:
+          - img [ref=e40]
+        - button "Toggle Interactivity" [ref=e42] [cursor=pointer]:
+          - img [ref=e43]
+      - img "Mini Map" [ref=e46]
+    - generic [ref=e48]:
+      - button " Export Projekt" [ref=e49] [cursor=pointer]:
+        - generic [ref=e50]: 
+        - text: Export Projekt
+      - button " Export View" [ref=e51] [cursor=pointer]:
+        - generic [ref=e52]: 
+        - text: Export View
+  - generic [ref=e54]:
+    - generic [ref=e55]:
+      - heading "Inspector" [level=2] [ref=e56]
+      - generic [ref=e57]:
+        - button " Settings" [ref=e414] [cursor=pointer]:
+          - generic [ref=e59]: 
+          - text: Settings
+        - button " Bearbeiten" [ref=e415] [cursor=pointer]:
+          - generic [ref=e61]: 
+          - text: Bearbeiten
+        - button "" [ref=e416] [cursor=pointer]:
+          - generic [ref=e417]: 
+    - generic [ref=e62]:
+      - heading "group Distribution" [level=3] [ref=e418]:
+        - generic [ref=e419]: group
+        - text: Distribution
+      - generic [ref=e420]:
+        - generic [ref=e421]: dir:distribution
+        - generic [ref=e422]: top-level
+    - generic [ref=e423]:
+      - generic [ref=e424]:
+        - generic [ref=e425]: 
+        - text: Übergeordnet
+      - text: Analytik & Modellierung
+      - generic [ref=e426]: (group)
+    - generic [ref=e427]:
+      - generic [ref=e428] [cursor=pointer]:
+        - generic [ref=e430]: 
+        - generic [ref=e431]: 
+        - text: Enthält (6)
+      - list [ref=e432]:
+        - listitem [ref=e433]: module__init__
+        - listitem [ref=e434]: modulecheck_distribution
+        - listitem [ref=e435]: modulefit_distribution
+        - listitem [ref=e436]: modulenew_distribution
+        - listitem [ref=e437]: modulesave_object
+        - listitem [ref=e438]: moduleworker_effectiveness
+    - button " Generate AI Docs" [ref=e440] [cursor=pointer]:
+      - generic [ref=e441]: 
+      - text: Generate AI Docs

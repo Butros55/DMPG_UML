@@ -1,0 +1,1053 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "DMPG UML Editor" [level=1] [ref=e5]
+    - generic [ref=e63]:
+      - button "Data Pipeline — Overview" [ref=e332] [cursor=pointer]
+      - generic [ref=e333]:
+        - text: ›
+        - button "Analytik & Modellierung" [ref=e442] [cursor=pointer]
+      - generic [ref=e443]: ›Distribution
+    - generic [ref=e65]: 392 symbols · 1313 relations · 46 views
+    - button "" [ref=e6] [cursor=pointer]:
+      - generic [ref=e7]: 
+  - generic [ref=e8]:
+    - tablist "Sidebar Tabs" [ref=e9]:
+      - tab "" [selected] [ref=e10] [cursor=pointer]:
+        - generic [ref=e11]: 
+      - tab "" [ref=e12] [cursor=pointer]:
+        - generic [ref=e13]: 
+      - tab "" [ref=e14] [cursor=pointer]:
+        - generic [ref=e15]: 
+      - tab "" [ref=e16] [cursor=pointer]:
+        - generic [ref=e17]: 
+    - generic [ref=e18]:
+      - generic [ref=e68]:
+        - generic [ref=e70]: 
+        - textbox "Suche nach Symbolen…" [ref=e71]
+      - generic [ref=e19]:
+        - heading " Views " [level=2] [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: 
+          - text: Views
+          - button "" [ref=e23]:
+            - generic [ref=e24]: 
+        - generic [ref=e25]:
+          - generic [ref=e72] [cursor=pointer]:
+            - generic [ref=e74]: 
+            - generic [ref=e76]: 
+            - generic [ref=e77]: Data Pipeline — Overview
+          - generic [ref=e78] [cursor=pointer]:
+            - generic [ref=e80]: 
+            - generic [ref=e82]: 
+            - generic [ref=e83]: Datenquellen
+          - generic [ref=e334] [cursor=pointer]:
+            - generic [ref=e336]: 
+            - generic [ref=e338]: 
+            - generic [ref=e339]: Connector
+          - generic [ref=e90] [cursor=pointer]:
+            - generic [ref=e92]: 
+            - generic [ref=e94]: 
+            - generic [ref=e95]: Data Pipeline
+          - generic [ref=e340] [cursor=pointer]:
+            - generic [ref=e342]: 
+            - generic [ref=e344]: 
+            - generic [ref=e345]: Datenpipeline & Orchestrierung
+          - generic [ref=e346] [cursor=pointer]:
+            - generic [ref=e348]: 
+            - generic [ref=e350]: 
+            - generic [ref=e351]: Is Table
+          - generic [ref=e352] [cursor=pointer]:
+            - generic [ref=e354]: 
+            - generic [ref=e356]: 
+            - generic [ref=e357]: Analytik & Modellierung
+          - generic [ref=e358] [cursor=pointer]:
+            - generic [ref=e360]: 
+            - generic [ref=e362]: 
+            - generic [ref=e363]: Distribution
+          - generic [ref=e364] [cursor=pointer]:
+            - generic [ref=e366]: 
+            - generic [ref=e368]: 
+            - generic [ref=e369]: Util
+          - generic [ref=e370] [cursor=pointer]:
+            - generic [ref=e372]: 
+            - generic [ref=e374]: 
+            - generic [ref=e375]: Simulation
+          - generic [ref=e376] [cursor=pointer]:
+            - generic [ref=e378]: 
+            - generic [ref=e380]: 
+            - generic [ref=e381]: Arrival Table
+          - generic [ref=e382] [cursor=pointer]:
+            - generic [ref=e384]: 
+            - generic [ref=e386]: 
+            - generic [ref=e387]: Utilities / Shared
+          - generic [ref=e388] [cursor=pointer]:
+            - generic [ref=e390]: 
+            - generic [ref=e392]: 
+            - generic [ref=e393]: Constant
+  - generic [ref=e28]:
+    - application [ref=e29]:
+      - generic [ref=e31]:
+        - generic:
+          - generic:
+            - img:
+              - group "Edge from mod:distribution.new_distribution to mod:distribution.worker_effectiveness" [ref=e444] [cursor=pointer]
+            - img:
+              - group "Edge from mod:distribution.new_distribution to mod:distribution.fit_distribution" [ref=e449] [cursor=pointer]:
+                - generic [ref=e452]:
+                  - generic: 2x calls, 1x imports
+            - img:
+              - group "Edge from mod:distribution.worker_effectiveness to mod:distribution.save_object" [ref=e454] [cursor=pointer]
+          - generic:
+            - group [ref=e459]:
+              - generic [ref=e460]:
+                - generic [ref=e462]:
+                  - generic [ref=e463]: module
+                  - generic [ref=e464]: distribution.__init__
+                - generic "distribution\\__init__.py" [ref=e465]:
+                  - generic [ref=e466]: 
+                  - text: __init__.py:1
+            - group [ref=e468]:
+              - generic [ref=e469]:
+                - generic [ref=e471]:
+                  - generic [ref=e472]: module
+                  - generic [ref=e473]: distribution.check_distribution
+                - generic "distribution\\check_distribution.py" [ref=e474]:
+                  - generic [ref=e475]: 
+                  - text: check_distribution.py:1
+            - group [ref=e477]:
+              - generic [ref=e478]:
+                - generic [ref=e480]:
+                  - generic [ref=e481]: module
+                  - generic [ref=e482]: distribution.fit_distribution
+                - generic "distribution\\fit_distribution.py" [ref=e483]:
+                  - generic [ref=e484]: 
+                  - text: fit_distribution.py:1
+                - generic [ref=e485]:
+                  - generic [ref=e486]:
+                    - generic [ref=e487]: 
+                    - text: calls
+                  - generic [ref=e488]:
+                    - generic [ref=e489]: 
+                    - generic [ref=e490]: 
+                    - text: called by
+                  - generic [ref=e491]:
+                    - generic [ref=e492]: 
+                    - text: writes
+                - generic [ref=e493]: 6 fn
+                - generic [ref=e494] [cursor=pointer]:
+                  - generic [ref=e495]: 
+                  - text: Drill down
+            - group [ref=e497]:
+              - generic [ref=e498]:
+                - generic [ref=e500]:
+                  - generic [ref=e501]: module
+                  - generic [ref=e502]: distribution.new_distribution
+                - generic "distribution\\new_distribution.py" [ref=e503]:
+                  - generic [ref=e504]: 
+                  - text: new_distribution.py:1
+                - generic [ref=e505]:
+                  - generic [ref=e506]:
+                    - generic [ref=e507]: 
+                    - text: reads
+                  - generic [ref=e508]:
+                    - generic [ref=e509]: 
+                    - text: calls
+                  - generic [ref=e510]:
+                    - generic [ref=e511]: 
+                    - generic [ref=e512]: 
+                    - text: created by
+                  - generic [ref=e513]:
+                    - generic [ref=e514]: 
+                    - text: inherits
+                - generic [ref=e515]: 1 class
+                - generic [ref=e516] [cursor=pointer]:
+                  - generic [ref=e517]: 
+                  - text: Drill down
+            - group [ref=e519]:
+              - generic [ref=e520]:
+                - generic [ref=e522]:
+                  - generic [ref=e523]: module
+                  - generic [ref=e524]: distribution.save_object
+                - generic "distribution\\save_object.py" [ref=e525]:
+                  - generic [ref=e526]: 
+                  - text: save_object.py:1
+                - generic [ref=e527]: 1 class
+                - generic [ref=e528] [cursor=pointer]:
+                  - generic [ref=e529]: 
+                  - text: Drill down
+            - group [ref=e531]:
+              - generic [ref=e532]:
+                - generic [ref=e534]:
+                  - generic [ref=e535]: module
+                  - generic [ref=e536]: distribution.worker_effectiveness
+                - generic "distribution\\worker_effectiveness.py" [ref=e537]:
+                  - generic [ref=e538]: 
+                  - text: worker_effectiveness.py:1
+                - generic [ref=e539]:
+                  - generic [ref=e540]:
+                    - generic [ref=e541]: 
+                    - text: calls
+                  - generic [ref=e542]:
+                    - generic [ref=e543]: 
+                    - generic [ref=e544]: 
+                    - text: called by
+                  - generic [ref=e545]:
+                    - generic [ref=e546]: 
+                    - text: writes
+                - generic [ref=e547]: 2 fn
+                - generic [ref=e548] [cursor=pointer]:
+                  - generic [ref=e549]: 
+                  - text: Drill down
+      - img
+      - generic "Control Panel" [ref=e32]:
+        - button "Zoom In" [ref=e33] [cursor=pointer]:
+          - img [ref=e34]
+        - button "Zoom Out" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+        - button "Fit View" [ref=e39] [cursor=pointer]:
+          - img [ref=e40]
+        - button "Toggle Interactivity" [ref=e42] [cursor=pointer]:
+          - img [ref=e43]
+      - img "Mini Map" [ref=e46]
+    - generic [ref=e48]:
+      - button " Export Projekt" [ref=e49] [cursor=pointer]:
+        - generic [ref=e50]: 
+        - text: Export Projekt
+      - button " Export View" [ref=e51] [cursor=pointer]:
+        - generic [ref=e52]: 
+        - text: Export View
+  - generic [ref=e54]:
+    - generic [ref=e55]:
+      - heading "Inspector" [level=2] [ref=e56]
+      - generic [ref=e57]:
+        - button " Settings" [ref=e628] [cursor=pointer]:
+          - generic [ref=e59]: 
+          - text: Settings
+        - button " Bearbeiten" [ref=e629] [cursor=pointer]:
+          - generic [ref=e61]: 
+          - text: Bearbeiten
+        - button "" [ref=e630] [cursor=pointer]:
+          - generic [ref=e631]: 
+    - generic [ref=e62]:
+      - heading "module distribution.fit_distribution" [level=3] [ref=e632]:
+        - generic [ref=e633]: module
+        - text: distribution.fit_distribution
+      - generic [ref=e634]:
+        - generic [ref=e635]: 
+        - text: distribution\fit_distribution.py:1
+        - button " Code" [active] [ref=e636] [cursor=pointer]:
+          - generic [ref=e637]: 
+          - text: Code
+    - generic [ref=e638]:
+      - generic [ref=e639]:
+        - generic [ref=e640]: 
+        - text: Übergeordnet
+      - text: Distribution
+      - generic [ref=e641]: (group)
+    - generic [ref=e642]:
+      - generic [ref=e643]:
+        - generic [ref=e644]: 
+        - text: Coding Guidelines
+      - generic [ref=e645]:
+        - text: "Score:"
+        - strong [ref=e646]: 76/100
+      - generic [ref=e647]:
+        - generic [ref=e648]: Naming
+        - generic [ref=e649]: "snake_case (expected: snake_case)"
+        - generic [ref=e650]: Line length
+        - generic [ref=e651]: 2 over 120 chars
+        - generic [ref=e652]: Nesting
+        - generic [ref=e653]: max depth 12
+        - generic [ref=e654]: Comments
+        - generic [ref=e655]: 3%
+      - list [ref=e656]:
+        - listitem [ref=e657]: Reduce nesting depth by extracting guard clauses/helpers.
+        - listitem [ref=e658]: Wrap lines above 120 characters.
+    - generic [ref=e659]:
+      - generic [ref=e660] [cursor=pointer]:
+        - generic [ref=e662]: 
+        - generic [ref=e663]: 
+        - text: Ruft auf (1)
+        - generic [ref=e664]:
+          - generic [ref=e665]: 
+          - text: calls
+      - list [ref=e666]:
+        - listitem [ref=e667] [cursor=pointer]:
+          - generic [ref=e669]: 
+          - text: Vordefiniert (1)
+    - generic [ref=e671] [cursor=pointer]:
+      - generic [ref=e673]: 
+      - generic [ref=e674]: 
+      - text: Importiert (10)
+      - generic [ref=e675]:
+        - generic [ref=e676]: 
+        - text: imports
+    - generic [ref=e677]:
+      - generic [ref=e678] [cursor=pointer]:
+        - generic [ref=e680]: 
+        - generic [ref=e681]: 
+        - text: Enthält (6)
+      - list [ref=e682]:
+        - listitem [ref=e683]: functionheadline
+        - listitem [ref=e684]: functionfit_distributions
+        - listitem [ref=e685]: functionprint_distribution_parameters
+        - listitem [ref=e686]:
+          - text: functionfit_dist
+          - generic [ref=e687]: — "Observations" "Generations"
+        - listitem [ref=e688]: functionsave_distribution
+        - listitem [ref=e689]: functionsave_to_file
+    - button " Generate AI Docs" [ref=e691] [cursor=pointer]:
+      - generic [ref=e692]: 
+      - text: Generate AI Docs
+  - generic [ref=e694]:
+    - generic [ref=e695]:
+      - generic [ref=e696]:
+        - generic [ref=e698]: 
+        - generic [ref=e699]: distribution.fit_distribution
+        - generic [ref=e700]: distribution\fit_distribution.py:1-280
+      - generic [ref=e701]:
+        - button " In IDE öffnen" [ref=e703] [cursor=pointer]:
+          - generic [ref=e704]: 
+          - text: In IDE öffnen
+        - button "" [ref=e705] [cursor=pointer]:
+          - generic [ref=e706]: 
+    - code [ref=e710]:
+      - generic [ref=e711]:
+        - generic [ref=e712]: "1"
+        - generic [ref=e713]: "# some links"
+      - generic [ref=e714]:
+        - generic [ref=e715]: "2"
+        - generic [ref=e716]: "# https://stackoverflow.com/questions/6620471/fitting-empirical-distribution-to-theoretical-ones-with-scipy-python/16651955#16651955"
+      - generic [ref=e717]:
+        - generic [ref=e718]: "3"
+        - generic [ref=e719]: "# https://erdogant.github.io/distfit/pages/html/index.html"
+      - generic [ref=e720]:
+        - generic [ref=e721]: "4"
+        - generic [ref=e722]: import json
+      - generic [ref=e723]:
+        - generic [ref=e724]: "5"
+        - generic [ref=e725]: import math
+      - generic [ref=e726]:
+        - generic [ref=e727]: "6"
+        - generic [ref=e728]: import random
+      - generic [ref=e729]:
+        - generic [ref=e730]: "7"
+        - generic [ref=e731]: import warnings
+      - generic [ref=e732]:
+        - generic [ref=e733]: "8"
+        - generic [ref=e734]: from typing import Any, Tuple, List
+      - generic [ref=e736]: "9"
+      - generic [ref=e738]:
+        - generic [ref=e739]: "10"
+        - generic [ref=e740]: import distfit
+      - generic [ref=e741]:
+        - generic [ref=e742]: "11"
+        - generic [ref=e743]: import numpy as np
+      - generic [ref=e744]:
+        - generic [ref=e745]: "12"
+        - generic [ref=e746]: import pandas as pd
+      - generic [ref=e747]:
+        - generic [ref=e748]: "13"
+        - generic [ref=e749]: import scipy
+      - generic [ref=e750]:
+        - generic [ref=e751]: "14"
+        - generic [ref=e752]: from pandas import DataFrame
+      - generic [ref=e753]:
+        - generic [ref=e754]: "15"
+        - generic [ref=e755]: from data_pipeline.data_analyzer import DataAnalyzer
+      - generic [ref=e757]: "16"
+      - generic [ref=e760]: "17"
+      - generic [ref=e762]:
+        - generic [ref=e763]: "18"
+        - generic [ref=e764]: warnings.filterwarnings("ignore")
+      - generic [ref=e766]: "19"
+      - generic [ref=e768]:
+        - generic [ref=e769]: "20"
+        - generic [ref=e770]: "test = {}"
+      - generic [ref=e771]:
+        - generic [ref=e772]: "21"
+        - generic [ref=e773]: "fallback = {}"
+      - generic [ref=e775]: "22"
+      - generic [ref=e777]:
+        - generic [ref=e778]: "23"
+        - generic [ref=e779]: "def headline(inline: str):"
+      - generic [ref=e780]:
+        - generic [ref=e781]: "24"
+        - generic [ref=e782]: "return f\"** {inline} **\""
+      - generic [ref=e784]: "25"
+      - generic [ref=e786]:
+        - generic [ref=e787]: "26"
+        - generic [ref=e788]: "def fit_distributions(y: List[float],"
+      - generic [ref=e789]:
+        - generic [ref=e790]: "27"
+        - generic [ref=e791]: "distributions_to_fit: Tuple[str, ...] = ['uniform', 'triang', 'expon', 'norm', 'lognorm'],"
+      - generic [ref=e792]:
+        - generic [ref=e793]: "28"
+        - generic [ref=e794]: "fitting_algorithm: str = 'energy',"
+      - generic [ref=e795]:
+        - generic [ref=e796]: "29"
+        - generic [ref=e797]: bins='auto',
+      - generic [ref=e798]:
+        - generic [ref=e799]: "30"
+        - generic [ref=e800]: "alpha: float = 0.01,"
+      - generic [ref=e801]:
+        - generic [ref=e802]: "31"
+        - generic [ref=e803]: smooth=None,
+      - generic [ref=e804]:
+        - generic [ref=e805]: "32"
+        - generic [ref=e806]: "distributions_to_plot: int = 1):"
+      - generic [ref=e808]: "33"
+      - generic [ref=e811]: "34"
+      - generic [ref=e813]:
+        - generic [ref=e814]: "35"
+        - generic [ref=e815]: dfit = distfit.distfit(distr=distributions_to_fit, stats=fitting_algorithm, bins=bins, alpha=alpha, smooth=smooth)
+      - generic [ref=e816]:
+        - generic [ref=e817]: "36"
+        - generic [ref=e818]: dfit.fit_transform(y)
+      - generic [ref=e819]:
+        - generic [ref=e820]: "37"
+        - generic [ref=e821]: return dfit
+      - generic [ref=e823]: "38"
+      - generic [ref=e826]: "39"
+      - generic [ref=e828]:
+        - generic [ref=e829]: "40"
+        - generic [ref=e830]: "def print_distribution_parameters(dfit, station, material, att, is_fallback, min_value, max_value):"
+      - generic [ref=e831]:
+        - generic [ref=e832]: "41"
+        - generic [ref=e833]: print(headline("Best fitted distribution with parameters:"))
+      - generic [ref=e835]: "42"
+      - generic [ref=e837]:
+        - generic [ref=e838]: "43"
+        - generic [ref=e839]: "\"\"\""
+      - generic [ref=e840]:
+        - generic [ref=e841]: "44"
+        - generic [ref=e842]: "print('score: ', dfit.model['score'])"
+      - generic [ref=e843]:
+        - generic [ref=e844]: "45"
+        - generic [ref=e845]: "print('name: ', dfit.model['name'])"
+      - generic [ref=e846]:
+        - generic [ref=e847]: "46"
+        - generic [ref=e848]: "print('model: ', dfit.model['model'])"
+      - generic [ref=e849]:
+        - generic [ref=e850]: "47"
+        - generic [ref=e851]: "print('params: ', dfit.model['params'])"
+      - generic [ref=e852]:
+        - generic [ref=e853]: "48"
+        - generic [ref=e854]: "print('loc: ', dfit.model['loc'])"
+      - generic [ref=e855]:
+        - generic [ref=e856]: "49"
+        - generic [ref=e857]: "print('scale: ', dfit.model['scale'])"
+      - generic [ref=e858]:
+        - generic [ref=e859]: "50"
+        - generic [ref=e860]: "print('arg: ', dfit.model['arg'])"
+      - generic [ref=e861]:
+        - generic [ref=e862]: "51"
+        - generic [ref=e863]: "\"\"\""
+      - generic [ref=e865]: "52"
+      - generic [ref=e867]:
+        - generic [ref=e868]: "53"
+        - generic [ref=e869]: dist_name = dfit.model['name']
+      - generic [ref=e870]:
+        - generic [ref=e871]: "54"
+        - generic [ref=e872]: loc = dfit.model['loc']
+      - generic [ref=e873]:
+        - generic [ref=e874]: "55"
+        - generic [ref=e875]: scale = dfit.model['scale']
+      - generic [ref=e877]: "56"
+      - generic [ref=e879]:
+        - generic [ref=e880]: "57"
+        - generic [ref=e881]: print('Distribution:', dist_name)
+      - generic [ref=e882]:
+        - generic [ref=e883]: "58"
+        - generic [ref=e884]: print("Parameters:")
+      - generic [ref=e885]:
+        - generic [ref=e886]: "59"
+        - generic [ref=e887]: dist = getattr(scipy.stats, dist_name)
+      - generic [ref=e889]: "60"
+      - generic [ref=e891]:
+        - generic [ref=e892]: "61"
+        - generic [ref=e893]: "if dist_name == \"uniform\":"
+      - generic [ref=e894]:
+        - generic [ref=e895]: "62"
+        - generic [ref=e896]: (min_value, max_value) = dist.interval(1.0, loc=loc, scale=scale)
+      - generic [ref=e897]:
+        - generic [ref=e898]: "63"
+        - generic [ref=e899]: print("min:", min_value)
+      - generic [ref=e900]:
+        - generic [ref=e901]: "64"
+        - generic [ref=e902]: print("max:", max_value)
+      - generic [ref=e904]: "65"
+      - generic [ref=e906]:
+        - generic [ref=e907]: "66"
+        - generic [ref=e908]: "save_distribution(station, material, att, {'dist': 'uniform',"
+      - generic [ref=e909]:
+        - generic [ref=e910]: "67"
+        - generic [ref=e911]: "'loc': loc,"
+      - generic [ref=e912]:
+        - generic [ref=e913]: "68"
+        - generic [ref=e914]: "'scale': scale,"
+      - generic [ref=e915]:
+        - generic [ref=e916]: "69"
+        - generic [ref=e917]: "'min': min_value,"
+      - generic [ref=e918]:
+        - generic [ref=e919]: "70"
+        - generic [ref=e920]: "'max': max_value},"
+      - generic [ref=e921]:
+        - generic [ref=e922]: "71"
+        - generic [ref=e923]: is_fallback)
+      - generic [ref=e925]: "72"
+      - generic [ref=e927]:
+        - generic [ref=e928]: "73"
+        - generic [ref=e929]: "elif dist_name == \"triang\":"
+      - generic [ref=e930]:
+        - generic [ref=e931]: "74"
+        - generic [ref=e932]: "# fitted parameters"
+      - generic [ref=e933]:
+        - generic [ref=e934]: "75"
+        - generic [ref=e935]: c = dfit.model['arg'][0]
+      - generic [ref=e937]: "76"
+      - generic [ref=e939]:
+        - generic [ref=e940]: "77"
+        - generic [ref=e941]: "'''"
+      - generic [ref=e942]:
+        - generic [ref=e943]: "78"
+        - generic [ref=e944]: loc = left
+      - generic [ref=e945]:
+        - generic [ref=e946]: "79"
+        - generic [ref=e947]: scale = right - left
+      - generic [ref=e948]:
+        - generic [ref=e949]: "80"
+        - generic [ref=e950]: c = (mode - left) / (right - left)
+      - generic [ref=e951]:
+        - generic [ref=e952]: "81"
+        - generic [ref=e953]: "'''"
+      - generic [ref=e954]:
+        - generic [ref=e955]: "82"
+        - generic [ref=e956]: left = loc
+      - generic [ref=e957]:
+        - generic [ref=e958]: "83"
+        - generic [ref=e959]: print("min:", left)
+      - generic [ref=e960]:
+        - generic [ref=e961]: "84"
+        - generic [ref=e962]: right = scale + left
+      - generic [ref=e963]:
+        - generic [ref=e964]: "85"
+        - generic [ref=e965]: mode = c * (right - left) + left
+      - generic [ref=e966]:
+        - generic [ref=e967]: "86"
+        - generic [ref=e968]: print("mode:", mode)
+      - generic [ref=e969]:
+        - generic [ref=e970]: "87"
+        - generic [ref=e971]: print("max:", right)
+      - generic [ref=e973]: "88"
+      - generic [ref=e975]:
+        - generic [ref=e976]: "89"
+        - generic [ref=e977]: "save_distribution(station, material, att, {'dist': 'triang',"
+      - generic [ref=e978]:
+        - generic [ref=e979]: "90"
+        - generic [ref=e980]: "'loc': loc,"
+      - generic [ref=e981]:
+        - generic [ref=e982]: "91"
+        - generic [ref=e983]: "'scale': scale,"
+      - generic [ref=e984]:
+        - generic [ref=e985]: "92"
+        - generic [ref=e986]: "'s': dfit.model['arg'][0],"
+      - generic [ref=e987]:
+        - generic [ref=e988]: "93"
+        - generic [ref=e989]: "'min': min_value,"
+      - generic [ref=e990]:
+        - generic [ref=e991]: "94"
+        - generic [ref=e992]: "'max': max_value},"
+      - generic [ref=e993]:
+        - generic [ref=e994]: "95"
+        - generic [ref=e995]: is_fallback)
+      - generic [ref=e997]: "96"
+      - generic [ref=e999]:
+        - generic [ref=e1000]: "97"
+        - generic [ref=e1001]: "elif dist_name == \"expon\" or dist_name == \"norm\":"
+      - generic [ref=e1002]:
+        - generic [ref=e1003]: "98"
+        - generic [ref=e1004]: print("mean:", loc)
+      - generic [ref=e1005]:
+        - generic [ref=e1006]: "99"
+        - generic [ref=e1007]: print("stddev:", scale)
+      - generic [ref=e1009]: "100"
+      - generic [ref=e1011]:
+        - generic [ref=e1012]: "101"
+        - generic [ref=e1013]: "save_distribution(station, material, att, {'dist': dist_name,"
+      - generic [ref=e1014]:
+        - generic [ref=e1015]: "102"
+        - generic [ref=e1016]: "'loc': loc,"
+      - generic [ref=e1017]:
+        - generic [ref=e1018]: "103"
+        - generic [ref=e1019]: "'scale': scale,"
+      - generic [ref=e1020]:
+        - generic [ref=e1021]: "104"
+        - generic [ref=e1022]: "'min': min_value,"
+      - generic [ref=e1023]:
+        - generic [ref=e1024]: "105"
+        - generic [ref=e1025]: "'max': max_value},"
+      - generic [ref=e1026]:
+        - generic [ref=e1027]: "106"
+        - generic [ref=e1028]: is_fallback)
+      - generic [ref=e1030]: "107"
+      - generic [ref=e1032]:
+        - generic [ref=e1033]: "108"
+        - generic [ref=e1034]: "elif dist_name == \"lognorm\":"
+      - generic [ref=e1035]:
+        - generic [ref=e1036]: "109"
+        - generic [ref=e1037]: print("mean:", loc)
+      - generic [ref=e1038]:
+        - generic [ref=e1039]: "110"
+        - generic [ref=e1040]: print("stddev:", scale)
+      - generic [ref=e1041]:
+        - generic [ref=e1042]: "111"
+        - generic [ref=e1043]: print("s:", dfit.model['arg'][0])
+      - generic [ref=e1045]: "112"
+      - generic [ref=e1047]:
+        - generic [ref=e1048]: "113"
+        - generic [ref=e1049]: "save_distribution(station, material, att, {'dist': 'lognorm',"
+      - generic [ref=e1050]:
+        - generic [ref=e1051]: "114"
+        - generic [ref=e1052]: "'loc': loc,"
+      - generic [ref=e1053]:
+        - generic [ref=e1054]: "115"
+        - generic [ref=e1055]: "'scale': scale,"
+      - generic [ref=e1056]:
+        - generic [ref=e1057]: "116"
+        - generic [ref=e1058]: "'s': dfit.model['arg'][0],"
+      - generic [ref=e1059]:
+        - generic [ref=e1060]: "117"
+        - generic [ref=e1061]: "'min': min_value,"
+      - generic [ref=e1062]:
+        - generic [ref=e1063]: "118"
+        - generic [ref=e1064]: "'max': max_value},"
+      - generic [ref=e1065]:
+        - generic [ref=e1066]: "119"
+        - generic [ref=e1067]: is_fallback)
+      - generic [ref=e1069]: "120"
+      - generic [ref=e1071]:
+        - generic [ref=e1072]: "121"
+        - generic [ref=e1073]: "elif dist_name == \"beta\":"
+      - generic [ref=e1074]:
+        - generic [ref=e1075]: "122"
+        - generic [ref=e1076]: print("mean:", loc)
+      - generic [ref=e1077]:
+        - generic [ref=e1078]: "123"
+        - generic [ref=e1079]: print("stddev:", scale)
+      - generic [ref=e1080]:
+        - generic [ref=e1081]: "124"
+        - generic [ref=e1082]: "save_distribution(station, material, att, {'dist': dist_name,"
+      - generic [ref=e1083]:
+        - generic [ref=e1084]: "125"
+        - generic [ref=e1085]: "'loc': loc,"
+      - generic [ref=e1086]:
+        - generic [ref=e1087]: "126"
+        - generic [ref=e1088]: "'scale': scale,"
+      - generic [ref=e1089]:
+        - generic [ref=e1090]: "127"
+        - generic [ref=e1091]: "'a': dist.a,"
+      - generic [ref=e1092]:
+        - generic [ref=e1093]: "128"
+        - generic [ref=e1094]: "'b': dist.b,"
+      - generic [ref=e1095]:
+        - generic [ref=e1096]: "129"
+        - generic [ref=e1097]: "'min': min_value,"
+      - generic [ref=e1098]:
+        - generic [ref=e1099]: "130"
+        - generic [ref=e1100]: "'max': max_value},"
+      - generic [ref=e1101]:
+        - generic [ref=e1102]: "131"
+        - generic [ref=e1103]: is_fallback)
+      - generic [ref=e1105]: "132"
+      - generic [ref=e1107]:
+        - generic [ref=e1108]: "133"
+        - generic [ref=e1109]: "elif dist_name == \"gamma\":"
+      - generic [ref=e1110]:
+        - generic [ref=e1111]: "134"
+        - generic [ref=e1112]: print("mean:", loc)
+      - generic [ref=e1113]:
+        - generic [ref=e1114]: "135"
+        - generic [ref=e1115]: print("stddev:", scale)
+      - generic [ref=e1116]:
+        - generic [ref=e1117]: "136"
+        - generic [ref=e1118]: "save_distribution(station, material, att, {'dist': dist_name,"
+      - generic [ref=e1119]:
+        - generic [ref=e1120]: "137"
+        - generic [ref=e1121]: "'loc': loc,"
+      - generic [ref=e1122]:
+        - generic [ref=e1123]: "138"
+        - generic [ref=e1124]: "'scale': scale,"
+      - generic [ref=e1125]:
+        - generic [ref=e1126]: "139"
+        - generic [ref=e1127]: "'min': min_value,"
+      - generic [ref=e1128]:
+        - generic [ref=e1129]: "140"
+        - generic [ref=e1130]: "'max': max_value},"
+      - generic [ref=e1131]:
+        - generic [ref=e1132]: "141"
+        - generic [ref=e1133]: is_fallback)
+      - generic [ref=e1135]: "142"
+      - generic [ref=e1138]: "143"
+      - generic [ref=e1140]:
+        - generic [ref=e1141]: "144"
+        - generic [ref=e1142]: "elif dist_name == \"loggamma\":"
+      - generic [ref=e1143]:
+        - generic [ref=e1144]: "145"
+        - generic [ref=e1145]: "save_distribution(station, material, att, {'dist': dist_name,"
+      - generic [ref=e1146]:
+        - generic [ref=e1147]: "146"
+        - generic [ref=e1148]: "'loc': loc,"
+      - generic [ref=e1149]:
+        - generic [ref=e1150]: "147"
+        - generic [ref=e1151]: "'scale': scale,"
+      - generic [ref=e1152]:
+        - generic [ref=e1153]: "148"
+        - generic [ref=e1154]: "'min': min_value,"
+      - generic [ref=e1155]:
+        - generic [ref=e1156]: "149"
+        - generic [ref=e1157]: "'max': max_value},"
+      - generic [ref=e1158]:
+        - generic [ref=e1159]: "150"
+        - generic [ref=e1160]: is_fallback)
+      - generic [ref=e1162]: "151"
+      - generic [ref=e1164]:
+        - generic [ref=e1165]: "152"
+        - generic [ref=e1166]: "elif dist_name == \"t\":"
+      - generic [ref=e1167]:
+        - generic [ref=e1168]: "153"
+        - generic [ref=e1169]: "save_distribution(station, material, att, {'dist': dist_name,"
+      - generic [ref=e1170]:
+        - generic [ref=e1171]: "154"
+        - generic [ref=e1172]: "'loc': loc,"
+      - generic [ref=e1173]:
+        - generic [ref=e1174]: "155"
+        - generic [ref=e1175]: "'scale': scale,"
+      - generic [ref=e1176]:
+        - generic [ref=e1177]: "156"
+        - generic [ref=e1178]: "'min': min_value,"
+      - generic [ref=e1179]:
+        - generic [ref=e1180]: "157"
+        - generic [ref=e1181]: "'max': max_value},"
+      - generic [ref=e1182]:
+        - generic [ref=e1183]: "158"
+        - generic [ref=e1184]: is_fallback)
+      - generic [ref=e1186]: "159"
+      - generic [ref=e1188]:
+        - generic [ref=e1189]: "160"
+        - generic [ref=e1190]: "elif dist_name == \"genextreme\":"
+      - generic [ref=e1191]:
+        - generic [ref=e1192]: "161"
+        - generic [ref=e1193]: c = dfit.model['arg'][0]
+      - generic [ref=e1194]:
+        - generic [ref=e1195]: "162"
+        - generic [ref=e1196]: "save_distribution(station, material, att, {'dist': dist_name,"
+      - generic [ref=e1197]:
+        - generic [ref=e1198]: "163"
+        - generic [ref=e1199]: "'loc': loc,"
+      - generic [ref=e1200]:
+        - generic [ref=e1201]: "164"
+        - generic [ref=e1202]: "'scale': scale,"
+      - generic [ref=e1203]:
+        - generic [ref=e1204]: "165"
+        - generic [ref=e1205]: "'c': c,"
+      - generic [ref=e1206]:
+        - generic [ref=e1207]: "166"
+        - generic [ref=e1208]: "'min': min_value,"
+      - generic [ref=e1209]:
+        - generic [ref=e1210]: "167"
+        - generic [ref=e1211]: "'max': max_value},"
+      - generic [ref=e1212]:
+        - generic [ref=e1213]: "168"
+        - generic [ref=e1214]: is_fallback)
+      - generic [ref=e1216]: "169"
+      - generic [ref=e1218]:
+        - generic [ref=e1219]: "170"
+        - generic [ref=e1220]: "else:"
+      - generic [ref=e1221]:
+        - generic [ref=e1222]: "171"
+        - generic [ref=e1223]: print("Non-'Standard' Distribution")
+      - generic [ref=e1224]:
+        - generic [ref=e1225]: "172"
+        - generic [ref=e1226]: print(dfit.model)
+      - generic [ref=e1228]: "173"
+      - generic [ref=e1230]:
+        - generic [ref=e1231]: "174"
+        - generic [ref=e1232]: print('CII_min_alpha (lower level confidence interval):', dfit.model['CII_min_alpha'])
+      - generic [ref=e1233]:
+        - generic [ref=e1234]: "175"
+        - generic [ref=e1235]: print('CII_max_alpha (higher level confidence interval):', dfit.model['CII_max_alpha'])
+      - generic [ref=e1237]: "176"
+      - generic [ref=e1239]:
+        - generic [ref=e1240]: "177"
+        - generic [ref=e1241]: print("")
+      - generic [ref=e1243]: "178"
+      - generic [ref=e1246]: "179"
+      - generic [ref=e1248]:
+        - generic [ref=e1249]: "180"
+        - generic [ref=e1250]: "def fit_dist(df: pd.DataFrame, column: str, station: str, material: str, att: str, is_fallback=False, n=50):"
+      - generic [ref=e1251]:
+        - generic [ref=e1252]: "181"
+        - generic [ref=e1253]: "\"\"\""
+      - generic [ref=e1254]:
+        - generic [ref=e1255]: "182"
+        - generic [ref=e1256]: "\"Observations\""
+      - generic [ref=e1257]:
+        - generic [ref=e1258]: "183"
+        - generic [ref=e1259]: "\"Generations\""
+      - generic [ref=e1260]:
+        - generic [ref=e1261]: "184"
+        - generic [ref=e1262]: "\"\"\""
+      - generic [ref=e1263]:
+        - generic [ref=e1264]: "185"
+        - generic [ref=e1265]: "# generate_data(EXCEL_FILE_NAME, \"Generations\", NUMBER_OF_DATA_POINTS)"
+      - generic [ref=e1267]: "186"
+      - generic [ref=e1269]:
+        - generic [ref=e1270]: "187"
+        - generic [ref=e1271]: data = df
+      - generic [ref=e1273]: "188"
+      - generic [ref=e1275]:
+        - generic [ref=e1276]: "189"
+        - generic [ref=e1277]: "\"\"\""
+      - generic [ref=e1278]:
+        - generic [ref=e1279]: "190"
+        - generic [ref=e1280]: "\"ExponentialData\""
+      - generic [ref=e1281]:
+        - generic [ref=e1282]: "191"
+        - generic [ref=e1283]: "\"UniformData\""
+      - generic [ref=e1284]:
+        - generic [ref=e1285]: "192"
+        - generic [ref=e1286]: "\"UniformDataNoise0.1\""
+      - generic [ref=e1287]:
+        - generic [ref=e1288]: "193"
+        - generic [ref=e1289]: "\"UniformDataNoise0.3\""
+      - generic [ref=e1290]:
+        - generic [ref=e1291]: "194"
+        - generic [ref=e1292]: "\"UniformDataNoise0.5\""
+      - generic [ref=e1293]:
+        - generic [ref=e1294]: "195"
+        - generic [ref=e1295]: "\"UniformDataNoise1.0\""
+      - generic [ref=e1296]:
+        - generic [ref=e1297]: "196"
+        - generic [ref=e1298]: "\"TriangularData\""
+      - generic [ref=e1299]:
+        - generic [ref=e1300]: "197"
+        - generic [ref=e1301]: "\"NormData\""
+      - generic [ref=e1302]:
+        - generic [ref=e1303]: "198"
+        - generic [ref=e1304]: "\"LogNormData\""
+      - generic [ref=e1305]:
+        - generic [ref=e1306]: "199"
+        - generic [ref=e1307]: "\"\"\""
+      - generic [ref=e1308]:
+        - generic [ref=e1309]: "200"
+        - generic [ref=e1310]: y = data[column]
+      - generic [ref=e1311]:
+        - generic [ref=e1312]: "201"
+        - generic [ref=e1313]: "if len(y) >= n:"
+      - generic [ref=e1314]:
+        - generic [ref=e1315]: "202"
+        - generic [ref=e1316]: y.dropna(inplace=True)
+      - generic [ref=e1317]:
+        - generic [ref=e1318]: "203"
+        - generic [ref=e1319]: "# plt.plot(y, np.arange(len(y)), '.', color='black')"
+      - generic [ref=e1320]:
+        - generic [ref=e1321]: "204"
+        - generic [ref=e1322]: df1_desc = y.describe()
+      - generic [ref=e1323]:
+        - generic [ref=e1324]: "205"
+        - generic [ref=e1325]: "try:"
+      - generic [ref=e1326]:
+        - generic [ref=e1327]: "206"
+        - generic [ref=e1328]: dfit = fit_distributions(y)
+      - generic [ref=e1329]:
+        - generic [ref=e1330]: "207"
+        - generic [ref=e1331]: "except Exception as e:"
+      - generic [ref=e1332]:
+        - generic [ref=e1333]: "208"
+        - generic [ref=e1334]: pass
+      - generic [ref=e1336]: "209"
+      - generic [ref=e1338]:
+        - generic [ref=e1339]: "210"
+        - generic [ref=e1340]: "# lt.show()"
+      - generic [ref=e1342]: "211"
+      - generic [ref=e1344]:
+        - generic [ref=e1345]: "212"
+        - generic [ref=e1346]: print_distribution_parameters(dfit, station, material, att, is_fallback, y.min(), y.max())
+      - generic [ref=e1347]:
+        - generic [ref=e1348]: "213"
+        - generic [ref=e1349]: y_generate = []
+      - generic [ref=e1351]: "214"
+      - generic [ref=e1353]:
+        - generic [ref=e1354]: "215"
+        - generic [ref=e1355]: "def generate_values(dfit, min_value, max_value):"
+      - generic [ref=e1356]:
+        - generic [ref=e1357]: "216"
+        - generic [ref=e1358]: "\"\"\""
+      - generic [ref=e1359]:
+        - generic [ref=e1360]: "217"
+        - generic [ref=e1361]: value = dfit.generate(1)[0]
+      - generic [ref=e1362]:
+        - generic [ref=e1363]: "218"
+        - generic [ref=e1364]: "if min_value <= value <= max_value:"
+      - generic [ref=e1365]:
+        - generic [ref=e1366]: "219"
+        - generic [ref=e1367]: y_generate.append(value)
+      - generic [ref=e1368]:
+        - generic [ref=e1369]: "220"
+        - generic [ref=e1370]: "else:"
+      - generic [ref=e1371]:
+        - generic [ref=e1372]: "221"
+        - generic [ref=e1373]: generate_values(dfit, min_value, max_value)
+      - generic [ref=e1374]:
+        - generic [ref=e1375]: "222"
+        - generic [ref=e1376]: "\"\"\""
+      - generic [ref=e1377]:
+        - generic [ref=e1378]: "223"
+        - generic [ref=e1379]: y_generate.append(0)
+      - generic [ref=e1381]: "224"
+      - generic [ref=e1383]:
+        - generic [ref=e1384]: "225"
+        - generic [ref=e1385]: dist_name = dfit.model['name']
+      - generic [ref=e1386]:
+        - generic [ref=e1387]: "226"
+        - generic [ref=e1388]: "for i in range(len(y)):"
+      - generic [ref=e1389]:
+        - generic [ref=e1390]: "227"
+        - generic [ref=e1391]: generate_values(dfit, y.min(), y.max())
+      - generic [ref=e1392]:
+        - generic [ref=e1393]: "228"
+        - generic [ref=e1394]: "#DataAnalyzer.histogram_line_comparing(station + '_' + material, y, pd.Series(y_generate))"
+      - generic [ref=e1396]: "229"
+      - generic [ref=e1399]: "230"
+      - generic [ref=e1401]:
+        - generic [ref=e1402]: "231"
+        - generic [ref=e1403]: df = pd.DataFrame(data=y_generate, index=np.arange(len(y_generate))).squeeze()
+      - generic [ref=e1404]:
+        - generic [ref=e1405]: "232"
+        - generic [ref=e1406]: df2_desc = df.describe()
+      - generic [ref=e1408]: "233"
+      - generic [ref=e1410]:
+        - generic [ref=e1411]: "234"
+        - generic [ref=e1412]: "# Print summary statistics side by side"
+      - generic [ref=e1413]:
+        - generic [ref=e1414]: "235"
+        - generic [ref=e1415]: print("files".ljust(35) + "\t generated files")
+      - generic [ref=e1416]:
+        - generic [ref=e1417]: "236"
+        - generic [ref=e1418]: "for stat in df1_desc.index:"
+      - generic [ref=e1419]:
+        - generic [ref=e1420]: "237"
+        - generic [ref=e1421]: "print(f\"{stat.ljust(6)} : {str(df1_desc[stat]).ljust(25)} \""
+      - generic [ref=e1422]:
+        - generic [ref=e1423]: "238"
+        - generic [ref=e1424]: "f\"\\t {stat.ljust(6)} : {str(df2_desc[stat]).ljust(25)}\""
+      - generic [ref=e1425]:
+        - generic [ref=e1426]: "239"
+        - generic [ref=e1427]: "f\"difference : {df2_desc[stat] - df1_desc[stat]}\", end=\"\")"
+      - generic [ref=e1429]: "240"
+      - generic [ref=e1431]:
+        - generic [ref=e1432]: "241"
+        - generic [ref=e1433]: print("\t(median)" if stat == '50%' else "")
+      - generic [ref=e1435]: "242"
+      - generic [ref=e1437]:
+        - generic [ref=e1438]: "243"
+        - generic [ref=e1439]: return pd.Series(y_generate), dist_name
+      - generic [ref=e1441]: "244"
+      - generic [ref=e1443]:
+        - generic [ref=e1444]: "245"
+        - generic [ref=e1445]: "else:"
+      - generic [ref=e1446]:
+        - generic [ref=e1447]: "246"
+        - generic [ref=e1448]: "save_distribution(station, material, att, {'dist': 'mean',"
+      - generic [ref=e1449]:
+        - generic [ref=e1450]: "247"
+        - generic [ref=e1451]: "'mean': y.mean(),"
+      - generic [ref=e1452]:
+        - generic [ref=e1453]: "248"
+        - generic [ref=e1454]: "'min': y.min(),"
+      - generic [ref=e1455]:
+        - generic [ref=e1456]: "249"
+        - generic [ref=e1457]: "'max': y.max()},"
+      - generic [ref=e1458]:
+        - generic [ref=e1459]: "250"
+        - generic [ref=e1460]: is_fallback)
+      - generic [ref=e1461]:
+        - generic [ref=e1462]: "251"
+        - generic [ref=e1463]: return None
+      - generic [ref=e1465]: "252"
+      - generic [ref=e1468]: "253"
+      - generic [ref=e1470]:
+        - generic [ref=e1471]: "254"
+        - generic [ref=e1472]: "def save_distribution(station, material, att, dist, is_fallback):"
+      - generic [ref=e1473]:
+        - generic [ref=e1474]: "255"
+        - generic [ref=e1475]: "if is_fallback:"
+      - generic [ref=e1476]:
+        - generic [ref=e1477]: "256"
+        - generic [ref=e1478]: "if station in fallback:"
+      - generic [ref=e1479]:
+        - generic [ref=e1480]: "257"
+        - generic [ref=e1481]: "if material in fallback[station]:"
+      - generic [ref=e1482]:
+        - generic [ref=e1483]: "258"
+        - generic [ref=e1484]: fallback[station][material][att] = dist
+      - generic [ref=e1485]:
+        - generic [ref=e1486]: "259"
+        - generic [ref=e1487]: "else:"
+      - generic [ref=e1488]:
+        - generic [ref=e1489]: "260"
+        - generic [ref=e1490]: "fallback[station][material] = {att: dist}"
+      - generic [ref=e1491]:
+        - generic [ref=e1492]: "261"
+        - generic [ref=e1493]: "else:"
+      - generic [ref=e1494]:
+        - generic [ref=e1495]: "262"
+        - generic [ref=e1496]: "fallback[station] = {material: {att: dist}}"
+      - generic [ref=e1497]:
+        - generic [ref=e1498]: "263"
+        - generic [ref=e1499]: "else:"
+      - generic [ref=e1500]:
+        - generic [ref=e1501]: "264"
+        - generic [ref=e1502]: "if station in test:"
+      - generic [ref=e1503]:
+        - generic [ref=e1504]: "265"
+        - generic [ref=e1505]: "if material in test[station]:"
+      - generic [ref=e1506]:
+        - generic [ref=e1507]: "266"
+        - generic [ref=e1508]: test[station][material][att] = dist
+      - generic [ref=e1509]:
+        - generic [ref=e1510]: "267"
+        - generic [ref=e1511]: "else:"
+      - generic [ref=e1512]:
+        - generic [ref=e1513]: "268"
+        - generic [ref=e1514]: "test[station][material] = {att: dist}"
+      - generic [ref=e1515]:
+        - generic [ref=e1516]: "269"
+        - generic [ref=e1517]: "else:"
+      - generic [ref=e1518]:
+        - generic [ref=e1519]: "270"
+        - generic [ref=e1520]: "test[station] = {material: {att: dist}}"
+      - generic [ref=e1522]: "271"
+      - generic [ref=e1525]: "272"
+      - generic [ref=e1527]:
+        - generic [ref=e1528]: "273"
+        - generic [ref=e1529]: "def save_to_file(path='beschichtungssimulation/data/files/distribution.json', path2 = 'beschichtungssimulation/data/files/fallback.json'):"
+      - generic [ref=e1530]:
+        - generic [ref=e1531]: "274"
+        - generic [ref=e1532]: "with open(path, 'w') as f:"
+      - generic [ref=e1533]:
+        - generic [ref=e1534]: "275"
+        - generic [ref=e1535]: json.dump(test, f)
+      - generic [ref=e1536]:
+        - generic [ref=e1537]: "276"
+        - generic [ref=e1538]: test.clear()
+      - generic [ref=e1540]: "277"
+      - generic [ref=e1542]:
+        - generic [ref=e1543]: "278"
+        - generic [ref=e1544]: "with open(path2, 'w') as f:"
+      - generic [ref=e1545]:
+        - generic [ref=e1546]: "279"
+        - generic [ref=e1547]: json.dump(fallback, f)
+      - generic [ref=e1548]:
+        - generic [ref=e1549]: "280"
+        - generic [ref=e1550]: fallback.clear()

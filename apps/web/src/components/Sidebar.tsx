@@ -3,6 +3,7 @@ import { useAppStore } from "../store";
 import { scanProject, browseFolders, fetchConfig, startAnalysis, cancelAnalysis, pauseAnalysis, fetchAnalyzeStatus, fetchGraph, fetchProjects, switchProject as switchProjectApi, deleteProjectApi } from "../api";
 import type { ProjectMeta } from "../api";
 import type { DiagramView, Symbol as Sym } from "@dmpg/shared";
+import { ReviewHintsPanel } from "./ReviewHintsPanel";
 
 const NODE_KINDS = [
   { kind: "module", label: "Module", color: "#6c8cff" },
@@ -37,7 +38,7 @@ const SCOPE_ICONS: Record<string, string> = {
   class: "bi-building",
 };
 
-type SidebarTab = "views" | "nodes" | "ai" | "project";
+type SidebarTab = "views" | "review" | "nodes" | "ai" | "project";
 const SIDEBAR_TAB_STORAGE_KEY = "dmpg.sidebar.active-tab.v1";
 
 /** Navigate to the deepest view containing a symbol and focus it */
@@ -407,7 +408,7 @@ export function Sidebar() {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(SIDEBAR_TAB_STORAGE_KEY);
-      if (raw === "views" || raw === "nodes" || raw === "ai" || raw === "project") {
+      if (raw === "views" || raw === "review" || raw === "nodes" || raw === "ai" || raw === "project") {
         setActiveTab(raw);
       }
     } catch {
@@ -517,6 +518,15 @@ export function Sidebar() {
           selectedSymbolId: null,
           selectedEdgeId: null,
           breadcrumb: [],
+          reviewHighlight: {
+            activeItemId: null,
+            nodeIds: [],
+            primaryNodeId: null,
+            viewId: null,
+            fitView: false,
+            seq: 0,
+            previewNodeIds: [],
+          },
           graphHistoryPast: [],
           graphHistoryFuture: [],
           historyCanUndo: false,
@@ -845,6 +855,15 @@ export function Sidebar() {
           <i className="bi bi-diagram-3" />
         </button>
         <button
+          className={`sidebar-activity-btn${activeTab === "review" ? " sidebar-activity-btn--active" : ""}`}
+          onClick={() => handleActivityTabClick("review")}
+          title="Review Hints"
+          role="tab"
+          aria-selected={activeTab === "review"}
+        >
+          <i className="bi bi-clipboard2-check" />
+        </button>
+        <button
           className={`sidebar-activity-btn${activeTab === "nodes" ? " sidebar-activity-btn--active" : ""}`}
           onClick={() => handleActivityTabClick("nodes")}
           title="UML Nodes"
@@ -883,6 +902,10 @@ export function Sidebar() {
             onQueryChange={setViewSearchQuery}
           />
         </div>
+      )}
+
+      {activeTab === "review" && (
+        <ReviewHintsPanel />
       )}
 
       {activeTab === "nodes" && (
