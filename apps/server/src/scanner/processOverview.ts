@@ -7,16 +7,20 @@ import type {
   RelationType,
   Symbol,
 } from "@dmpg/shared";
+import { buildProcessDiagramConfigFromGraph } from "./processOverview.auto.js";
 
 const PROCESS_TAG = "process-overview";
 const STUB_TAG = "external-stub";
 const PROCESS_REL_PREFIX = "process-edge:";
 const STUB_REL_PREFIX = "stub-edge:";
 const STUB_TOP_K = 6;
+const PROCESS_VIEW_ID = "view:process-overview";
 
 interface DrilldownConfig {
   viewSearch?: string[];
   symbolSearch?: string[];
+  preferredViewIds?: string[];
+  preferredSymbolIds?: string[];
 }
 
 interface PositionConfig {
@@ -86,6 +90,8 @@ type ProcessUmlType =
 
 type DiagramNodePosition = NonNullable<DiagramView["nodePositions"]>[number];
 
+export { buildProcessDiagramConfigFromGraph } from "./processOverview.auto.js";
+
 export function augmentGraphWithUmlOverlays(graph: ProjectGraph): ProjectGraph {
   const withBaseUmlTypes = applyDefaultUmlTypes(graph);
   const withProcess = createProcessOverviewView(withBaseUmlTypes);
@@ -93,13 +99,24 @@ export function augmentGraphWithUmlOverlays(graph: ProjectGraph): ProjectGraph {
 }
 
 function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
-  const config = loadProcessDiagramConfig();
+  const oldRootViewId =
+    graph.rootViewId === PROCESS_VIEW_ID ? findFallbackRootViewId(graph) : graph.rootViewId;
+  const config = resolveProcessDiagramConfig(graph);
   if (!config) return graph;
 
   removeExistingProcessOverlay(graph, config.viewId);
+  if (!graph.views.some((view) => view.id === oldRootViewId)) {
+    graph.rootViewId = findFallbackRootViewId(graph);
+  } else {
+    graph.rootViewId = oldRootViewId;
+  }
+
+  const restoredRoot = graph.views.find((view) => view.id === graph.rootViewId);
+  if (restoredRoot && restoredRoot.parentViewId === PROCESS_VIEW_ID) {
+    restoredRoot.parentViewId = null;
+  }
 
   const symbolMap = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
-  const oldRootViewId = graph.rootViewId;
 
   const processSymbols: Symbol[] = [];
   const processPositions: DiagramNodePosition[] = [];
@@ -388,6 +405,35 @@ function applyDefaultUmlTypes(graph: ProjectGraph): ProjectGraph {
   return graph;
 }
 
+function resolveProcessDiagramConfig(graph: ProjectGraph): ProcessDiagramConfig | null {
+  const preferManual = process.env.DMPG_PROCESS_OVERVIEW_MODE === "manual";
+  const manualFallback = process.env.DMPG_PROCESS_OVERVIEW_DEBUG_JSON === "1";
+
+  if (preferManual) {
+    return loadProcessDiagramConfig() ?? buildProcessDiagramConfigFromGraph(graph);
+  }
+
+  try {
+    return buildProcessDiagramConfigFromGraph(graph);
+  } catch {
+    return manualFallback ? loadProcessDiagramConfig() : null;
+  }
+}
+
+function findFallbackRootViewId(graph: ProjectGraph): string {
+  const childRoot = graph.views.find(
+    (view) => view.parentViewId === PROCESS_VIEW_ID && view.scope === "root",
+  );
+  if (childRoot) return childRoot.id;
+
+  const plainRoot = graph.views.find(
+    (view) => view.id !== PROCESS_VIEW_ID && view.parentViewId == null,
+  );
+  if (plainRoot) return plainRoot.id;
+
+  return "view:root";
+}
+
 function loadProcessDiagramConfig(): ProcessDiagramConfig | null {
   const candidates = [
     path.resolve(import.meta.dirname, "../../process-diagram.json"),
@@ -415,6 +461,16 @@ function loadProcessDiagramConfig(): ProcessDiagramConfig | null {
 function resolveDrilldownViewId(graph: ProjectGraph, drilldown?: DrilldownConfig): string | undefined {
   if (!drilldown) return undefined;
 
+  const preferredView = drilldown.preferredViewIds?.find((viewId) =>
+    graph.views.some((view) => view.id === viewId),
+  );
+  if (preferredView) return preferredView;
+
+  const preferredSymbols = drilldown.preferredSymbolIds?.length
+    ? resolveViewFromPreferredSymbols(graph, drilldown.preferredSymbolIds)
+    : undefined;
+  if (preferredSymbols) return preferredSymbols;
+
   const bySymbol = drilldown.symbolSearch?.length
     ? resolveViewFromSymbolSearch(graph, drilldown.symbolSearch)
     : undefined;
@@ -426,6 +482,29 @@ function resolveDrilldownViewId(graph: ProjectGraph, drilldown?: DrilldownConfig
   if (byView) return byView;
 
   return undefined;
+}
+
+function resolveViewFromPreferredSymbols(
+  graph: ProjectGraph,
+  preferredSymbolIds: string[],
+): string | undefined {
+  const scores = new Map<string, number>();
+
+  for (const symbolId of preferredSymbolIds) {
+    const symbol = graph.symbols.find((candidate) => candidate.id === symbolId);
+    if (!symbol) continue;
+
+    if (symbol.childViewId && graph.views.some((view) => view.id === symbol.childViewId)) {
+      scores.set(symbol.childViewId, (scores.get(symbol.childViewId) ?? 0) + 16);
+    }
+
+    const bestView = findBestViewForSymbol(graph, symbolId);
+    if (bestView) {
+      scores.set(bestView, (scores.get(bestView) ?? 0) + 10);
+    }
+  }
+
+  return [...scores.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
 }
 
 function resolveViewFromViewSearch(graph: ProjectGraph, searchTerms: string[]): string | undefined {
@@ -549,6 +628,9 @@ function removeExistingProcessOverlay(graph: ProjectGraph, processViewId: string
   for (const view of graph.views) {
     view.nodeRefs = view.nodeRefs.filter((nodeId) => !processIds.has(nodeId));
     view.edgeRefs = view.edgeRefs.filter((edgeId) => !edgeId.startsWith(PROCESS_REL_PREFIX));
+    if (view.parentViewId === processViewId) {
+      view.parentViewId = null;
+    }
     if (view.nodePositions?.length) {
       view.nodePositions = view.nodePositions.filter((position) => !processIds.has(position.symbolId));
     }
@@ -786,5 +868,11 @@ function sanitizeId(value: string): string {
 }
 
 function normalizeSearch(value: string): string {
-  return value.trim().toLowerCase();
+  return value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[\\/_.:()[\]-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
