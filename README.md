@@ -34,8 +34,9 @@ packages/
 
 ```bash
 pnpm install
-pnpm --filter @dmpg/shared build
 ```
+
+`pnpm install` baut `@dmpg/shared` automatisch mit, damit die Workspace-Exports aktuell sind.
 
 ### Entwicklung starten
 
@@ -43,7 +44,7 @@ pnpm --filter @dmpg/shared build
 pnpm dev
 ```
 
-Das startet Server (Port 3001) und Web-UI (Port 5173) parallel.
+Das baut `@dmpg/shared` initial, startet danach den Shared-Watch-Compiler sowie Server (Port 3001) und Web-UI (Port 5173) parallel.
 
 ### Einzelne Apps
 

@@ -1,0 +1,237 @@
+{
+  "viewId": "view:process-overview",
+  "title": "Layer 1 - Process Overview",
+  "packages": [
+    {
+      "id": "proc:pkg:sources",
+      "label": "SQL-Datenquellen",
+      "stereotype": "<<package>>",
+      "position": { "x": 40, "y": 120, "width": 340, "height": 280 },
+      "drilldown": { "viewSearch": ["Datenquellen", "data-sources", "source", "connector", "connectors"] }
+    },
+    {
+      "id": "proc:pkg:connectors",
+      "label": "Connectoren",
+      "stereotype": "<<package>>",
+      "position": { "x": 410, "y": 120, "width": 340, "height": 280 },
+      "drilldown": { "viewSearch": ["connector", "connectors", "infra"] }
+    },
+    {
+      "id": "proc:pkg:extract",
+      "label": "Data Extraction & Vorverarbeitung",
+      "stereotype": "<<package>>",
+      "position": { "x": 780, "y": 120, "width": 380, "height": 300 },
+      "drilldown": { "viewSearch": ["extract", "extraction", "vorverarbeitung", "pipeline"] }
+    },
+    {
+      "id": "proc:pkg:transform",
+      "label": "Transformation / Matching / Filtering",
+      "stereotype": "<<package>>",
+      "position": { "x": 1190, "y": 120, "width": 420, "height": 320 },
+      "drilldown": { "viewSearch": ["transform", "matching", "filter", "analytics"] }
+    },
+    {
+      "id": "proc:pkg:persist",
+      "label": "Distributionen / KDE / Persistenz",
+      "stereotype": "<<package>>",
+      "position": { "x": 1640, "y": 120, "width": 400, "height": 320 },
+      "drilldown": { "viewSearch": ["distribution", "kde", "persist", "analytics"] }
+    },
+    {
+      "id": "proc:pkg:simulate",
+      "label": "Simulation / Konsum",
+      "stereotype": "<<package>>",
+      "position": { "x": 2070, "y": 120, "width": 360, "height": 300 },
+      "drilldown": { "viewSearch": ["simulation", "generator", "consumer"] }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "proc:note:overview",
+      "label": "Layer-1 zeigt den End-to-End Datenfluss\nmit Persistenz-Artefakten und Subflows.",
+      "umlType": "note",
+      "stereotype": "<<note>>",
+      "position": { "x": 920, "y": 20, "width": 520, "height": 80 }
+    },
+    {
+      "id": "proc:db:mes",
+      "label": "MES DB",
+      "umlType": "database",
+      "stereotype": "<<database>>",
+      "parentId": "proc:pkg:sources",
+      "position": { "x": 26, "y": 76, "width": 130, "height": 90 }
+    },
+    {
+      "id": "proc:db:druid",
+      "label": "Druid DB",
+      "umlType": "database",
+      "stereotype": "<<database>>",
+      "parentId": "proc:pkg:sources",
+      "position": { "x": 182, "y": 76, "width": 130, "height": 90 }
+    },
+    {
+      "id": "proc:cmp:mes-connector",
+      "label": "MESConnector",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:connectors",
+      "position": { "x": 26, "y": 76, "width": 140, "height": 88 },
+      "drilldown": { "symbolSearch": ["MESConnector", "mes_connector"] }
+    },
+    {
+      "id": "proc:cmp:druid-connector",
+      "label": "DruidConnector",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:connectors",
+      "position": { "x": 186, "y": 76, "width": 140, "height": 88 },
+      "drilldown": { "symbolSearch": ["DruidConnector", "druid_connector"] }
+    },
+    {
+      "id": "proc:cmp:extractor",
+      "label": "DataExtractor",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:extract",
+      "position": { "x": 24, "y": 76, "width": 164, "height": 92 },
+      "drilldown": { "symbolSearch": ["DataExtraction", "data_extraction", "DataExtractor"] }
+    },
+    {
+      "id": "proc:cmp:prefilter",
+      "label": "PreFilter + QC",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:extract",
+      "position": { "x": 208, "y": 76, "width": 146, "height": 92 }
+    },
+    {
+      "id": "proc:art:raw-csv",
+      "label": "raw_events.csv",
+      "umlType": "artifact",
+      "stereotype": "<<artifact>>",
+      "parentId": "proc:pkg:extract",
+      "position": { "x": 124, "y": 200, "width": 160, "height": 80 }
+    },
+    {
+      "id": "proc:pkg:transform-sub",
+      "label": "Subflow: Matching + Filtering",
+      "umlType": "package",
+      "stereotype": "<<package>>",
+      "parentId": "proc:pkg:transform",
+      "position": { "x": 24, "y": 62, "width": 370, "height": 170 }
+    },
+    {
+      "id": "proc:cmp:matcher",
+      "label": "StationMatcher",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:transform-sub",
+      "position": { "x": 18, "y": 56, "width": 156, "height": 84 }
+    },
+    {
+      "id": "proc:cmp:filter",
+      "label": "IQRFilter / Rules",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:transform-sub",
+      "position": { "x": 196, "y": 56, "width": 156, "height": 84 },
+      "drilldown": { "symbolSearch": ["remove_outliners_with_iqr", "filter", "FilterMethods"] }
+    },
+    {
+      "id": "proc:art:clean-csv",
+      "label": "filtered_dataset.csv",
+      "umlType": "artifact",
+      "stereotype": "<<artifact>>",
+      "parentId": "proc:pkg:transform",
+      "position": { "x": 126, "y": 246, "width": 192, "height": 78 }
+    },
+    {
+      "id": "proc:cmp:distribution",
+      "label": "Distribution",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:persist",
+      "position": { "x": 24, "y": 74, "width": 156, "height": 92 },
+      "drilldown": { "symbolSearch": ["Distribution", "distribution", "fit_distribution"] }
+    },
+    {
+      "id": "proc:cmp:load-kde",
+      "label": "load_kde()",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:persist",
+      "position": { "x": 198, "y": 74, "width": 170, "height": 92 },
+      "drilldown": { "symbolSearch": ["load_kde", "kde"] }
+    },
+    {
+      "id": "proc:art:dist-json",
+      "label": "distribution_parameters.json",
+      "umlType": "artifact",
+      "stereotype": "<<artifact>>",
+      "parentId": "proc:pkg:persist",
+      "position": { "x": 28, "y": 218, "width": 172, "height": 82 }
+    },
+    {
+      "id": "proc:art:kde-pkl",
+      "label": "kde_models.pkl",
+      "umlType": "artifact",
+      "stereotype": "<<artifact>>",
+      "parentId": "proc:pkg:persist",
+      "position": { "x": 216, "y": 218, "width": 152, "height": 82 }
+    },
+    {
+      "id": "proc:art:model-py",
+      "label": "model.py",
+      "umlType": "artifact",
+      "stereotype": "<<artifact>>",
+      "parentId": "proc:pkg:simulate",
+      "position": { "x": 24, "y": 74, "width": 120, "height": 80 },
+      "drilldown": { "symbolSearch": ["model.py", "model"] }
+    },
+    {
+      "id": "proc:cmp:sim-generator",
+      "label": "SimulationDataGenerator",
+      "umlType": "component",
+      "stereotype": "<<component>>",
+      "parentId": "proc:pkg:simulate",
+      "position": { "x": 160, "y": 64, "width": 178, "height": 98 },
+      "drilldown": { "symbolSearch": ["SimulationDataGenerator", "simulation_data_generator"] }
+    },
+    {
+      "id": "proc:art:sim-csv",
+      "label": "simulation_output.csv",
+      "umlType": "artifact",
+      "stereotype": "<<artifact>>",
+      "parentId": "proc:pkg:simulate",
+      "position": { "x": 24, "y": 206, "width": 156, "height": 82 }
+    },
+    {
+      "id": "proc:art:sim-json",
+      "label": "simulation_payload.json",
+      "umlType": "artifact",
+      "stereotype": "<<artifact>>",
+      "parentId": "proc:pkg:simulate",
+      "position": { "x": 196, "y": 206, "width": 150, "height": 82 }
+    }
+  ],
+  "edges": [
+    { "id": "sources-mes", "source": "proc:db:mes", "target": "proc:cmp:mes-connector", "type": "reads", "label": "SQL query" },
+    { "id": "sources-druid", "source": "proc:db:druid", "target": "proc:cmp:druid-connector", "type": "reads", "label": "Timeseries query" },
+    { "id": "conn-mes", "source": "proc:cmp:mes-connector", "target": "proc:cmp:extractor", "type": "calls", "label": "extract batches" },
+    { "id": "conn-druid", "source": "proc:cmp:druid-connector", "target": "proc:cmp:extractor", "type": "calls", "label": "extract traces" },
+    { "id": "extract-prefilter", "source": "proc:cmp:extractor", "target": "proc:cmp:prefilter", "type": "calls", "label": "normalize" },
+    { "id": "prefilter-raw", "source": "proc:cmp:prefilter", "target": "proc:art:raw-csv", "type": "writes", "label": "persist raw" },
+    { "id": "raw-match", "source": "proc:art:raw-csv", "target": "proc:cmp:matcher", "type": "reads", "label": "load raw" },
+    { "id": "match-filter", "source": "proc:cmp:matcher", "target": "proc:cmp:filter", "type": "calls", "label": "match + filter" },
+    { "id": "filter-clean", "source": "proc:cmp:filter", "target": "proc:art:clean-csv", "type": "writes", "label": "write clean" },
+    { "id": "clean-dist", "source": "proc:art:clean-csv", "target": "proc:cmp:distribution", "type": "reads", "label": "fit inputs" },
+    { "id": "dist-kde", "source": "proc:cmp:distribution", "target": "proc:cmp:load-kde", "type": "calls", "label": "prepare KDE" },
+    { "id": "dist-json", "source": "proc:cmp:distribution", "target": "proc:art:dist-json", "type": "writes", "label": "export json" },
+    { "id": "kde-pkl", "source": "proc:cmp:load-kde", "target": "proc:art:kde-pkl", "type": "writes", "label": "persist pkl" },
+    { "id": "sim-model", "source": "proc:art:model-py", "target": "proc:cmp:sim-generator", "type": "uses_config", "label": "load model" },
+    { "id": "sim-json", "source": "proc:art:dist-json", "target": "proc:cmp:sim-generator", "type": "reads", "label": "read distributions" },
+    { "id": "sim-kde", "source": "proc:art:kde-pkl", "target": "proc:cmp:sim-generator", "type": "reads", "label": "read KDE" },
+    { "id": "sim-out-csv", "source": "proc:cmp:sim-generator", "target": "proc:art:sim-csv", "type": "writes", "label": "export csv" },
+    { "id": "sim-out-json", "source": "proc:cmp:sim-generator", "target": "proc:art:sim-json", "type": "writes", "label": "export json" }
+  ]
+}

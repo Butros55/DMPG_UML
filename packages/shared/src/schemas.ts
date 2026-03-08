@@ -23,8 +23,19 @@ export const SymbolUmlTypeEnum = z.enum([
   "artifact",
   "component",
   "note",
+  "module",
+  "class",
+  "function",
+  "method",
+  "group",
+  "external",
 ]);
 export type SymbolUmlType = z.infer<typeof SymbolUmlTypeEnum>;
+
+export const SymbolPreviewSchema = z.object({
+  lines: z.array(z.string()),
+});
+export type SymbolPreview = z.infer<typeof SymbolPreviewSchema>;
 
 export const SymbolLocationSchema = z.object({
   file: z.string(),
@@ -100,6 +111,8 @@ export const SymbolSchema = z.object({
   label: z.string(),
   kind: SymbolKindEnum,
   umlType: SymbolUmlTypeEnum.optional(),
+  stereotype: z.string().optional(),
+  preview: SymbolPreviewSchema.optional(),
   location: SymbolLocationSchema.optional(),
   doc: SymbolDocSchema.optional(),
   tags: z.array(z.string()).optional(),
@@ -283,6 +296,8 @@ export const NodePositionSchema = z.object({
   y: z.number(),
   width: z.number().optional(),
   height: z.number().optional(),
+  parentId: z.string().optional(),
+  extent: z.enum(["parent"]).optional(),
 });
 export type NodePosition = z.infer<typeof NodePositionSchema>;
 

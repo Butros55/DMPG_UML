@@ -3,7 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "concurrently \"pnpm --filter @dmpg/server dev\" \"pnpm --filter @dmpg/web dev\"",
+    "postinstall": "pnpm --filter @dmpg/shared build",
+    "dev": "pnpm --filter @dmpg/shared build && concurrently \"pnpm --filter @dmpg/shared dev\" \"pnpm --filter @dmpg/server dev\" \"pnpm --filter @dmpg/web dev\"",
     "build": "pnpm --filter @dmpg/shared build && pnpm --filter @dmpg/server build && pnpm --filter @dmpg/web build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
