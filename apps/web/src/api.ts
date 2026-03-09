@@ -119,7 +119,7 @@ export async function fetchGraph() {
   return res.json();
 }
 
-export async function replaceGraph(graph: ProjectGraph): Promise<void> {
+export async function replaceGraph(graph: ProjectGraph): Promise<ProjectGraph> {
   const res = await fetch(`${API_BASE}/graph`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -129,6 +129,8 @@ export async function replaceGraph(graph: ProjectGraph): Promise<void> {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as any).error ?? "Graph import failed");
   }
+  const payload = await res.json().catch(() => ({}));
+  return (payload as { graph?: ProjectGraph }).graph ?? graph;
 }
 
 export async function scanProject(projectPath: string) {

@@ -308,6 +308,7 @@ class _RelationVisitor(ast.NodeVisitor):
         self.local_aliases: dict[str, str] = dict(import_aliases)
         self.edges: list[dict] = []
         self._scope_stack: list[str] = [mod_id]
+        self._open_handle_stack: list[dict[str, str]] = [{}]
 
     @property
     def _current_scope(self) -> str:
@@ -332,8 +333,29 @@ class _RelationVisitor(ast.NodeVisitor):
         else:
             func_id = f"{self.mod_id}:{node.name}"
         self._scope_stack.append(func_id)
+        self._open_handle_stack.append(dict(self._open_handle_stack[-1]))
         self.generic_visit(node)
+        self._open_handle_stack.pop()
         self._scope_stack.pop()
+
+    def visit_With(self, node: ast.With) -> None:
+        self._visit_with(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._visit_with(node)
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
+        self._open_handle_stack.append(dict(self._open_handle_stack[-1]))
+        frame = self._open_handle_stack[-1]
+        for item in node.items:
+            path = _extract_open_path(item.context_expr, frame)
+            if not path or item.optional_vars is None:
+                continue
+            if isinstance(item.optional_vars, ast.Name):
+                frame[item.optional_vars.id] = path
+        for stmt in node.body:
+            self.visit(stmt)
+        self._open_handle_stack.pop()
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -392,7 +414,7 @@ class _RelationVisitor(ast.NodeVisitor):
         # Detect reads/writes
         rw = _detect_read_write(callee_str)
         if rw:
-            artifact_name = _extract_artifact_name(node, callee_str)
+            artifact_name = _extract_artifact_name(node, callee_str, self._open_handle_stack[-1])
             artifact_id = f"ext:{artifact_name}" if artifact_name else f"ext:{callee_str}"
             self.edges.append({
                 "source": source_id, "target": artifact_id, "type": rw,
@@ -515,11 +537,73 @@ def _detect_read_write(callee: str) -> Optional[str]:
     return None
 
 
-def _extract_artifact_name(node: ast.Call, callee: str) -> Optional[str]:
+def _extract_artifact_name(
+    node: ast.Call,
+    callee: str,
+    open_handles: dict[str, str],
+) -> Optional[str]:
+    candidates = [*node.args, *(kw.value for kw in node.keywords if kw.value is not None)]
+
+    # Most read/write calls pass the path directly as their first argument.
     if node.args:
-        first_arg = node.args[0]
-        if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
-            return first_arg.value
+        direct = _extract_string_literal(node.args[0], open_handles)
+        if direct:
+            return direct
+
+    # dump()/write() style calls often carry the file handle in a later argument.
+    for candidate in candidates:
+        resolved = _extract_string_literal(candidate, open_handles)
+        if resolved:
+            return resolved
+
+    # json.dump(..., open("file.json", "w")) and similar nested open(...) calls.
+    for candidate in candidates:
+        resolved = _extract_open_path(candidate, open_handles)
+        if resolved:
+            return resolved
+
+    return None
+
+
+def _extract_open_path(node: ast.AST, open_handles: dict[str, str]) -> Optional[str]:
+    if isinstance(node, ast.Call):
+        callee = _resolve_call_name(node)
+        if callee == "open" and node.args:
+            return _extract_string_literal(node.args[0], open_handles)
+    return None
+
+
+def _extract_string_literal(node: ast.AST, open_handles: dict[str, str]) -> Optional[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+
+    if isinstance(node, ast.Name):
+        return open_handles.get(node.id)
+
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                expr = _node_to_str(value.value)
+                parts.append("{" + (expr or "expr") + "}")
+        return "".join(parts) if parts else None
+
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _extract_string_literal(node.left, open_handles)
+        right = _extract_string_literal(node.right, open_handles)
+        if left and right:
+            return left + right
+        if left:
+            return left + "{" + (_node_to_str(node.right) or "expr") + "}"
+        if right:
+            return "{" + (_node_to_str(node.left) or "expr") + "}" + right
+        return None
+
+    if isinstance(node, ast.Call):
+        return _extract_open_path(node, open_handles)
+
     return None
 
 

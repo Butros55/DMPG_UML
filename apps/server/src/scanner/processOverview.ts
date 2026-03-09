@@ -117,7 +117,8 @@ export { buildProcessDiagramConfigFromGraph } from "./processOverview.auto.js";
 export function augmentGraphWithUmlOverlays(graph: ProjectGraph): ProjectGraph {
   const withBaseUmlTypes = applyDefaultUmlTypes(graph);
   const withProcess = createProcessOverviewView(withBaseUmlTypes);
-  return addExternalContextStubs(withProcess);
+  const withStubs = addExternalContextStubs(withProcess);
+  return pruneManagedArchitectureViews(withStubs);
 }
 
 function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
@@ -377,6 +378,59 @@ function addExternalContextStubs(graph: ProjectGraph): ProjectGraph {
   }
 
   return graph;
+}
+
+function pruneManagedArchitectureViews(graph: ProjectGraph): ProjectGraph {
+  const viewsById = new Map(graph.views.map((view) => [view.id, view]));
+  const symbolsById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
+  const relationsById = new Map(graph.relations.map((relation) => [relation.id, relation]));
+
+  for (const view of graph.views) {
+    if (!belongsToStageSubtree(view.id, viewsById)) continue;
+
+    const keptNodeRefs = view.nodeRefs.filter((nodeId) => {
+      const symbol = symbolsById.get(nodeId);
+      return symbol ? keepNodeInManagedView(symbol) : false;
+    });
+    const keptNodeSet = new Set(keptNodeRefs);
+
+    view.nodeRefs = keptNodeRefs;
+    view.edgeRefs = view.edgeRefs.filter((edgeId) => {
+      if (edgeId.startsWith(STUB_REL_PREFIX)) return false;
+      const relation = relationsById.get(edgeId);
+      if (!relation) return false;
+      return keptNodeSet.has(relation.source) && keptNodeSet.has(relation.target);
+    });
+
+    // Force ELK to recompute a clean layout for the new stage-aligned views.
+    view.nodePositions = undefined;
+  }
+
+  return graph;
+}
+
+function belongsToStageSubtree(
+  viewId: string,
+  viewsById: Map<string, DiagramView>,
+): boolean {
+  let cursor: string | null | undefined = viewId;
+  let depth = 0;
+  while (cursor && depth < 40) {
+    if (cursor.startsWith(LEGACY_PROCESS_STAGE_VIEW_PREFIX)) return true;
+    const view = viewsById.get(cursor);
+    if (!view) break;
+    cursor = view.parentViewId ?? null;
+    depth += 1;
+  }
+  return false;
+}
+
+function keepNodeInManagedView(symbol: Symbol): boolean {
+  if (symbol.id.startsWith("stub:") || symbol.id.startsWith("proc:")) return false;
+  if (symbol.tags?.includes(STUB_TAG)) return false;
+  if (symbol.kind === "external") return false;
+  if (symbol.id.startsWith("grp:art-cat:") || symbol.id.startsWith("grp:artifacts:")) return false;
+  return true;
 }
 
 /**

@@ -4,6 +4,7 @@ import { buildDemoGraph } from "../demo-graph.js";
 import { ProjectGraphSchema } from "@dmpg/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { augmentGraphWithUmlOverlays } from "../scanner/processOverview.js";
 
 export const graphRouter: RouterType = Router();
 
@@ -24,8 +25,9 @@ graphRouter.put("/", (req, res) => {
     res.status(400).json({ error: parsed.error.flatten() });
     return;
   }
-  setGraph(parsed.data);
-  res.json({ ok: true });
+  const normalized = augmentGraphWithUmlOverlays(parsed.data);
+  setGraph(normalized);
+  res.json({ ok: true, graph: normalized });
 });
 
 /** PATCH /api/graph/symbol/:id/doc — update doc of a single symbol */

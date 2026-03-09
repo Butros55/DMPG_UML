@@ -1115,9 +1115,11 @@ function renderSidebar() {
 
   // Build tree
   const tree = document.getElementById("viewTree");
+  const visibleViews = G.views.filter(v => !v.hiddenInSidebar);
+  const visibleViewIds = new Set(visibleViews.map(v => v.id));
   const childMap = new Map();
   const roots = [];
-  G.views.forEach(v => {
+  visibleViews.forEach(v => {
     if (!v.parentViewId) roots.push(v);
     else {
       if (!childMap.has(v.parentViewId)) childMap.set(v.parentViewId, []);
@@ -1126,13 +1128,14 @@ function renderSidebar() {
   });
 
   // Build symbol-per-view map (excluding symbols that own child views)
-  const viewOwnerIds = new Set();
-  G.views.forEach(v => {
-    G.symbols.forEach(s => { if (s.childViewId === v.id) viewOwnerIds.add(s.id); });
-  });
+  const viewOwnerIds = new Set(
+    G.symbols
+      .filter(s => !!s.childViewId)
+      .map(s => s.id)
+  );
 
   const symbolsByView = new Map();
-  G.views.forEach(v => {
+  visibleViews.forEach(v => {
     const syms = [];
     v.nodeRefs.forEach(nid => {
       if (viewOwnerIds.has(nid)) return;
@@ -1339,7 +1342,8 @@ function navigateToView(viewId) {
 
 function navigateToSymbol(symId) {
   let bestView = null;
-  G.views.forEach(v => {
+  const candidates = G.views.filter(v => !v.hiddenInSidebar);
+  candidates.forEach(v => {
     if (v.nodeRefs.includes(symId)) {
       if (!bestView || (v.parentViewId && v.parentViewId !== G.rootViewId)) bestView = v.id;
     }

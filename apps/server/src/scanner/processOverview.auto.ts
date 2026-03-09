@@ -126,6 +126,28 @@ interface Context {
   classifications: Map<string, Classification | null>;
 }
 
+interface ArtifactFlowGroup {
+  key: string;
+  label: string;
+  paths: string[];
+  producerStageIds: StageId[];
+  consumerStageIds: StageId[];
+  producerLabels: string[];
+  consumerLabels: string[];
+  relationCount: number;
+  readCount: number;
+  writeCount: number;
+  category: "tabular" | "json" | "binary" | "arrival" | "source" | "artifact";
+  kind: "input" | "handoff" | "output";
+  score: number;
+}
+
+interface LayerOneContent {
+  packages: ProcessPackageConfig[];
+  nodes: ProcessNodeConfig[];
+  edges: ProcessEdgeConfig[];
+}
+
 const VIEW_ID = "view:process-overview";
 const STAGE_VIEW_PREFIX = "view:process-stage:";
 const VIEW_TITLE = "Layer 1 - Architecture & Dataflow Overview";
@@ -136,9 +158,9 @@ const STAGES: readonly StageDef[] = [
     packageId: "proc:pkg:inputs",
     viewId: `${STAGE_VIEW_PREFIX}inputs`,
     label: "Input Sources",
-    x: 320,
-    y: 220,
-    width: 240,
+    x: 760,
+    y: 180,
+    width: 320,
     height: 112,
   },
   {
@@ -146,9 +168,9 @@ const STAGES: readonly StageDef[] = [
     packageId: "proc:pkg:extract",
     viewId: `${STAGE_VIEW_PREFIX}extract`,
     label: "Extraction & Preprocessing",
-    x: 620,
-    y: 220,
-    width: 268,
+    x: 750,
+    y: 350,
+    width: 340,
     height: 112,
   },
   {
@@ -156,9 +178,9 @@ const STAGES: readonly StageDef[] = [
     packageId: "proc:pkg:transform",
     viewId: `${STAGE_VIEW_PREFIX}transform`,
     label: "Transformation",
-    x: 950,
-    y: 220,
-    width: 220,
+    x: 770,
+    y: 520,
+    width: 300,
     height: 112,
   },
   {
@@ -166,9 +188,9 @@ const STAGES: readonly StageDef[] = [
     packageId: "proc:pkg:match",
     viewId: `${STAGE_VIEW_PREFIX}match`,
     label: "Matching & Filtering",
-    x: 1240,
-    y: 220,
-    width: 250,
+    x: 760,
+    y: 690,
+    width: 320,
     height: 112,
   },
   {
@@ -176,9 +198,9 @@ const STAGES: readonly StageDef[] = [
     packageId: "proc:pkg:distribution",
     viewId: `${STAGE_VIEW_PREFIX}distribution`,
     label: "Distribution / KDE / Persistence",
-    x: 1550,
-    y: 220,
-    width: 300,
+    x: 740,
+    y: 870,
+    width: 360,
     height: 112,
   },
   {
@@ -186,9 +208,9 @@ const STAGES: readonly StageDef[] = [
     packageId: "proc:pkg:simulation",
     viewId: `${STAGE_VIEW_PREFIX}simulation`,
     label: "Simulation",
-    x: 1910,
-    y: 220,
-    width: 220,
+    x: 790,
+    y: 1060,
+    width: 260,
     height: 112,
   },
   {
@@ -196,9 +218,9 @@ const STAGES: readonly StageDef[] = [
     packageId: "proc:pkg:outputs",
     viewId: `${STAGE_VIEW_PREFIX}outputs`,
     label: "Artefacts / Outputs",
-    x: 2200,
-    y: 220,
-    width: 244,
+    x: 760,
+    y: 1240,
+    width: 320,
     height: 112,
   },
 ] as const;
@@ -241,95 +263,16 @@ const RULES: Record<StageId, readonly StageRule[]> = {
   ],
 };
 
-const ROOT_ATTACHMENTS: readonly ProcessNodeConfig[] = [
-  {
-    id: "proc:src:db-imports",
-    label: "DB Imports",
-    umlType: "database",
-    stereotype: "<<database>>",
-    position: { x: 40, y: 60, width: 190, height: 84 },
-  },
-  {
-    id: "proc:src:file-inputs",
-    label: "CSV / Excel Inputs",
-    umlType: "artifact",
-    stereotype: "<<artifact>>",
-    position: { x: 40, y: 190, width: 190, height: 84 },
-  },
-  {
-    id: "proc:src:mes-api",
-    label: "MES / API Inputs",
-    umlType: "component",
-    stereotype: "<<component>>",
-    position: { x: 40, y: 320, width: 190, height: 84 },
-  },
-  {
-    id: "proc:out:tables",
-    label: "Generated Tables",
-    umlType: "artifact",
-    stereotype: "<<artifact>>",
-    position: { x: 2520, y: 60, width: 196, height: 84 },
-  },
-  {
-    id: "proc:out:json-models",
-    label: "JSON / KDE Models",
-    umlType: "artifact",
-    stereotype: "<<artifact>>",
-    position: { x: 2520, y: 190, width: 196, height: 84 },
-  },
-  {
-    id: "proc:out:sim-results",
-    label: "Simulation Results",
-    umlType: "artifact",
-    stereotype: "<<artifact>>",
-    position: { x: 2520, y: 320, width: 196, height: 84 },
-  },
-] as const;
-
-const ROOT_ATTACHMENT_EDGES: readonly ProcessEdgeConfig[] = [
-  {
-    id: "attachment:db-imports",
-    source: "proc:src:db-imports",
-    target: "proc:pkg:inputs",
-    type: "reads",
-    label: "database imports",
-  },
-  {
-    id: "attachment:file-inputs",
-    source: "proc:src:file-inputs",
-    target: "proc:pkg:inputs",
-    type: "reads",
-    label: "file inputs",
-  },
-  {
-    id: "attachment:mes-api",
-    source: "proc:src:mes-api",
-    target: "proc:pkg:inputs",
-    type: "reads",
-    label: "connector feeds",
-  },
-  {
-    id: "attachment:tables",
-    source: "proc:pkg:outputs",
-    target: "proc:out:tables",
-    type: "writes",
-    label: "tables",
-  },
-  {
-    id: "attachment:json-models",
-    source: "proc:pkg:outputs",
-    target: "proc:out:json-models",
-    type: "writes",
-    label: "json / kde",
-  },
-  {
-    id: "attachment:sim-results",
-    source: "proc:pkg:outputs",
-    target: "proc:out:sim-results",
-    type: "writes",
-    label: "simulation results",
-  },
-] as const;
+const FLOW_NODE_WIDTH = 322;
+const FLOW_NODE_HEIGHT = 96;
+const FLOW_SIDE_GAP = 430;
+const FLOW_VERTICAL_GAP = 122;
+const INPUT_GRID_COLUMNS = 3;
+const INPUT_GRID_GAP_X = 340;
+const INPUT_GRID_GAP_Y = 112;
+const OUTPUT_GRID_COLUMNS = 3;
+const OUTPUT_GRID_GAP_X = 350;
+const OUTPUT_GRID_GAP_Y = 116;
 
 const PIPELINE_EDGES: readonly ProcessEdgeConfig[] = [
   {
@@ -337,14 +280,14 @@ const PIPELINE_EDGES: readonly ProcessEdgeConfig[] = [
     source: "proc:pkg:inputs",
     target: "proc:pkg:extract",
     type: "reads",
-    label: "load inputs",
+    label: "load source data",
   },
   {
     id: "pipeline:extract->transform",
     source: "proc:pkg:extract",
     target: "proc:pkg:transform",
     type: "calls",
-    label: "prepare data",
+    label: "pre-clean / normalize",
   },
   {
     id: "pipeline:transform->match",
@@ -358,14 +301,14 @@ const PIPELINE_EDGES: readonly ProcessEdgeConfig[] = [
     source: "proc:pkg:match",
     target: "proc:pkg:distribution",
     type: "calls",
-    label: "fit / persist inputs",
+    label: "filtered fit inputs",
   },
   {
     id: "pipeline:distribution->simulation",
     source: "proc:pkg:distribution",
     target: "proc:pkg:simulation",
     type: "reads",
-    label: "consume persisted models",
+    label: "load persisted models",
   },
   {
     id: "pipeline:simulation->outputs",
@@ -382,26 +325,634 @@ export function buildProcessDiagramConfigFromGraph(graph: ProjectGraph): Process
     ctx.classifications.set(symbol.id, classifySymbol(symbol, ctx));
   }
 
+  const stageViews = STAGES.map((stage) => buildStageViewConfig(graph, ctx, stage));
+  const layerOne = buildLayerOneContent(graph, ctx, stageViews);
+
   return {
     viewId: VIEW_ID,
     title: VIEW_TITLE,
-    packages: STAGES.map((stage) => ({
-      id: stage.packageId,
-      label: stage.label,
-      stereotype: "<<package>>",
-      childViewId: stage.viewId,
-      position: {
-        x: stage.x,
-        y: stage.y,
-        width: stage.width,
-        height: stage.height,
-      },
-    })),
-    nodes: [...ROOT_ATTACHMENTS],
-    edges: [...ROOT_ATTACHMENT_EDGES, ...PIPELINE_EDGES],
-    stageViews: STAGES.map((stage) => buildStageViewConfig(graph, ctx, stage)),
+    packages: layerOne.packages,
+    nodes: layerOne.nodes,
+    edges: [...layerOne.edges, ...PIPELINE_EDGES],
+    stageViews,
     viewAdjustments: buildViewAdjustments(graph, ctx),
   };
+}
+
+function buildLayerOneContent(
+  graph: ProjectGraph,
+  ctx: Context,
+  stageViews: ProcessStageViewConfig[],
+): LayerOneContent {
+  const flowGroups = collectArtifactFlowGroups(graph, ctx);
+  const selectedGroups = selectArtifactFlowGroupsForLayer(flowGroups);
+  const stageViewById = new Map(stageViews.map((view) => [view.id, view]));
+  const inputConnectorNode = buildInputConnectorNode(
+    ctx,
+    stageViewById.get(stageDef("inputs").viewId)?.nodeRefs ?? [],
+  );
+
+  const packages = STAGES.map((stage) =>
+    buildStagePackageConfig(
+      stage,
+      ctx,
+      stageViewById.get(stage.viewId)?.nodeRefs ?? [],
+      flowGroups,
+    ),
+  );
+
+  const nodes: ProcessNodeConfig[] = [];
+  const edges: ProcessEdgeConfig[] = [];
+
+  const inputNodes = [
+    ...(inputConnectorNode ? [inputConnectorNode] : []),
+    ...selectedGroups.filter((group) => group.kind === "input").map((group) => flowGroupToNode(group)),
+  ];
+  nodes.push(...positionInputNodes(inputNodes));
+  if (inputConnectorNode) {
+    edges.push({
+      id: "attachment:connector-access",
+      source: inputConnectorNode.id,
+      target: "proc:pkg:inputs",
+      type: "reads",
+      label: "query / API access",
+    });
+  }
+  for (const group of selectedGroups.filter((candidate) => candidate.kind === "input")) {
+    edges.push({
+      id: `flow:${slugify(group.key)}:to-inputs`,
+      source: flowNodeId(group),
+      target: "proc:pkg:inputs",
+      type: "reads",
+      label: "imported",
+    });
+  }
+
+  const handoffByStage = new Map<StageId, ArtifactFlowGroup[]>();
+  for (const group of selectedGroups.filter((candidate) => candidate.kind === "handoff")) {
+    const producerStage = dominantStage(group.producerStageIds);
+    if (!producerStage) continue;
+    const bucket = handoffByStage.get(producerStage) ?? [];
+    bucket.push(group);
+    handoffByStage.set(producerStage, bucket);
+  }
+
+  for (const stage of STAGES) {
+    const groups = handoffByStage.get(stage.id) ?? [];
+    if (groups.length === 0) continue;
+    nodes.push(...positionStageSideNodes(stage, groups));
+
+    for (const group of groups) {
+      const nodeId = flowNodeId(group);
+      edges.push({
+        id: `flow:${slugify(group.key)}:${stage.id}:write`,
+        source: stage.packageId,
+        target: nodeId,
+        type: "writes",
+        label: flowWriteLabel(group),
+      });
+
+      for (const consumerStage of crossStageConsumers(group)) {
+        edges.push({
+          id: `flow:${slugify(group.key)}:${consumerStage}:read`,
+          source: nodeId,
+          target: stageDef(consumerStage).packageId,
+          type: "reads",
+          label: flowReadLabel(group, consumerStage),
+        });
+      }
+    }
+  }
+
+  const outputGroups = selectedGroups.filter((group) => group.kind === "output");
+  nodes.push(...positionOutputNodes(outputGroups.map((group) => flowGroupToNode(group))));
+  for (const group of outputGroups) {
+    const producerStage = dominantStage(group.producerStageIds);
+    if (!producerStage) continue;
+    const nodeId = flowNodeId(group);
+    edges.push({
+      id: `flow:${slugify(group.key)}:${producerStage}:produce`,
+      source: stageDef(producerStage).packageId,
+      target: nodeId,
+      type: "writes",
+      label: flowWriteLabel(group),
+    });
+    edges.push({
+      id: `flow:${slugify(group.key)}:to-outputs`,
+      source: nodeId,
+      target: "proc:pkg:outputs",
+      type: "writes",
+      label: "final artefact",
+    });
+  }
+
+  return { packages, nodes, edges };
+}
+
+function buildStagePackageConfig(
+  stage: StageDef,
+  ctx: Context,
+  stageNodeRefs: string[],
+  flowGroups: ArtifactFlowGroup[],
+): ProcessPackageConfig {
+  return {
+    id: stage.packageId,
+    label: stage.label,
+    stereotype: "<<package>>",
+    childViewId: stage.viewId,
+    preview: buildStagePackagePreview(stage.id, ctx, stageNodeRefs, flowGroups),
+    position: {
+      x: stage.x,
+      y: stage.y,
+      width: stage.width,
+      height: stage.height,
+    },
+  };
+}
+
+function buildStagePackagePreview(
+  stage: StageId,
+  ctx: Context,
+  stageNodeRefs: string[],
+  flowGroups: ArtifactFlowGroup[],
+): string[] | undefined {
+  const focus = summarizeList(
+    unique(stageNodeRefs
+      .map((nodeRef) => ctx.symbolById.get(nodeRef)?.label)
+      .filter((label): label is string => Boolean(label))),
+    2,
+  );
+  const consumed = summarizeList(
+    unique(flowGroups
+      .filter((group) => group.consumerStageIds.includes(stage) && !group.producerStageIds.includes(stage))
+      .map((group) => group.label)),
+    3,
+  );
+  const produced = summarizeList(
+    unique(flowGroups
+      .filter((group) => group.producerStageIds.includes(stage))
+      .map((group) => group.label)),
+    3,
+  );
+
+  const lines = [
+    focus ? `Focus: ${focus}` : null,
+    consumed ? `Consumes: ${consumed}` : null,
+    produced ? `Produces: ${produced}` : null,
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.length > 0 ? lines : undefined;
+}
+
+function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactFlowGroup[] {
+  const byKey = new Map<string, {
+    originalLabel: string;
+    paths: Set<string>;
+    producerStageCounts: Map<StageId, number>;
+    consumerStageCounts: Map<StageId, number>;
+    producerLabels: Set<string>;
+    consumerLabels: Set<string>;
+    readCount: number;
+    writeCount: number;
+  }>();
+
+  for (const relation of graph.relations) {
+    if (relation.type !== "reads" && relation.type !== "writes") continue;
+    if (relation.id.startsWith("process-edge:") || relation.id.startsWith("stub-edge:")) continue;
+
+    const target = ctx.symbolById.get(relation.target);
+    if (!target || !isLayerOneArtifactCandidate(target)) continue;
+
+    const stage = resolveStageForSymbolId(relation.source, ctx);
+    if (!stage) continue;
+
+    const key = artifactFamilyKey(target.label);
+    const bucket = byKey.get(key) ?? {
+      originalLabel: target.label,
+      paths: new Set<string>(),
+      producerStageCounts: new Map<StageId, number>(),
+      consumerStageCounts: new Map<StageId, number>(),
+      producerLabels: new Set<string>(),
+      consumerLabels: new Set<string>(),
+      readCount: 0,
+      writeCount: 0,
+    };
+    bucket.paths.add(target.label);
+
+    const sourceLabel = ctx.symbolById.get(relation.source)?.label ?? relation.source;
+    if (relation.type === "writes") {
+      bucket.writeCount += 1;
+      bucket.producerStageCounts.set(stage, (bucket.producerStageCounts.get(stage) ?? 0) + 1);
+      bucket.producerLabels.add(sourceLabel);
+    } else {
+      bucket.readCount += 1;
+      bucket.consumerStageCounts.set(stage, (bucket.consumerStageCounts.get(stage) ?? 0) + 1);
+      bucket.consumerLabels.add(sourceLabel);
+    }
+
+    byKey.set(key, bucket);
+  }
+
+  return [...byKey.entries()]
+    .map(([key, bucket]) => {
+      const producerStageIds = sortStagesByWeight(bucket.producerStageCounts);
+      const consumerStageIds = sortStagesByWeight(bucket.consumerStageCounts);
+      if (producerStageIds.length === 0 && consumerStageIds.length === 0) return null;
+
+      const category = detectArtifactCategory(bucket.originalLabel, [...bucket.paths]);
+      const differentConsumers = consumerStageIds.filter((stageId) => !producerStageIds.includes(stageId));
+      const kind: ArtifactFlowGroup["kind"] =
+        producerStageIds.length === 0
+          ? "input"
+          : differentConsumers.length > 0
+            ? "handoff"
+            : "output";
+
+      const score =
+        bucket.readCount +
+        bucket.writeCount * 2 +
+        differentConsumers.length * 5 +
+        bucket.paths.size +
+        (kind === "input" ? 4 : 0) +
+        (category === "arrival" ? 4 : 0) +
+        (category === "json" || category === "binary" ? 3 : 0);
+
+      return {
+        key,
+        label: artifactDisplayLabel(bucket.originalLabel, [...bucket.paths]),
+        paths: [...bucket.paths].sort((a, b) => a.localeCompare(b)),
+        producerStageIds,
+        consumerStageIds,
+        producerLabels: [...bucket.producerLabels].sort((a, b) => a.localeCompare(b)),
+        consumerLabels: [...bucket.consumerLabels].sort((a, b) => a.localeCompare(b)),
+        relationCount: bucket.readCount + bucket.writeCount,
+        readCount: bucket.readCount,
+        writeCount: bucket.writeCount,
+        category,
+        kind,
+        score,
+      } satisfies ArtifactFlowGroup;
+    })
+    .filter((group): group is ArtifactFlowGroup => Boolean(group))
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+}
+
+function selectArtifactFlowGroupsForLayer(flowGroups: ArtifactFlowGroup[]): ArtifactFlowGroup[] {
+  const selected: ArtifactFlowGroup[] = [];
+  const selectedKeys = new Set<string>();
+
+  const take = (groups: ArtifactFlowGroup[], limit: number) => {
+    for (const group of groups) {
+      if (selected.length >= 18) break;
+      if (selectedKeys.has(group.key)) continue;
+      selected.push(group);
+      selectedKeys.add(group.key);
+      if (selected.filter((candidate) => groups.includes(candidate)).length >= limit) break;
+    }
+  };
+
+  take(
+    flowGroups
+      .filter((group) => group.kind === "input")
+      .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)),
+    4,
+  );
+
+  for (const stage of STAGES) {
+    if (stage.id === "inputs" || stage.id === "outputs") continue;
+    const limit =
+      stage.id === "extract" ? 4 :
+      stage.id === "distribution" ? 4 :
+      stage.id === "simulation" ? 3 :
+      2;
+
+    take(
+      flowGroups
+        .filter((group) =>
+          dominantStage(group.producerStageIds) === stage.id &&
+          (group.kind === "handoff" || stage.id === "distribution" || stage.id === "simulation"),
+        )
+        .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)),
+      limit,
+    );
+  }
+
+  take(
+    flowGroups
+      .filter((group) => group.kind === "output")
+      .sort((a, b) =>
+        outputSelectionPriority(b) - outputSelectionPriority(a) ||
+        b.score - a.score ||
+        a.label.localeCompare(b.label),
+      ),
+    4,
+  );
+
+  return selected.sort((a, b) => compareFlowLayoutOrder(a, b) || a.label.localeCompare(b.label));
+}
+
+function buildInputConnectorNode(ctx: Context, stageNodeRefs: string[]): ProcessNodeConfig | null {
+  const connectorSymbols = stageNodeRefs
+    .map((nodeRef) => ctx.symbolById.get(nodeRef))
+    .filter((symbol): symbol is Symbol => Boolean(symbol))
+    .filter((symbol) => /\bconnector\b|\bmes\b|\bdruid\b|\bapi\b|\bsql\b/.test(normalize(symbol.label)));
+
+  const preferred = connectorSymbols.filter((symbol) => symbol.kind === "class");
+  const labels = unique((preferred.length > 0 ? preferred : connectorSymbols).map((symbol) => symbol.label));
+
+  if (labels.length === 0) return null;
+
+  return {
+    id: "proc:src:connector-access",
+    label: summarizeTitle(labels, "Connector Access"),
+    umlType: "component",
+    stereotype: "<<component>>",
+    preview: [`Modules: ${summarizeList(labels, 3)}`],
+    position: { x: 0, y: 0, width: FLOW_NODE_WIDTH, height: FLOW_NODE_HEIGHT },
+  };
+}
+
+function flowGroupToNode(group: ArtifactFlowGroup): ProcessNodeConfig {
+  return {
+    id: flowNodeId(group),
+    label: group.label,
+    umlType: "artifact",
+    stereotype: "<<artifact>>",
+    preview: buildFlowPreview(group),
+    position: { x: 0, y: 0, width: FLOW_NODE_WIDTH, height: FLOW_NODE_HEIGHT },
+  };
+}
+
+function buildFlowPreview(group: ArtifactFlowGroup): string[] {
+  const lines = [
+    buildFlowLine(group),
+    group.paths.length > 0 ? `Paths: ${summarizeList(group.paths.map(shortArtifactPath), 2)}` : null,
+    group.producerLabels.length > 0 ? `Written by: ${summarizeList(group.producerLabels, 2)}` : null,
+    group.consumerLabels.length > 0 ? `Read by: ${summarizeList(group.consumerLabels, 2)}` : null,
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.slice(0, 3);
+}
+
+function buildFlowLine(group: ArtifactFlowGroup): string {
+  const producer = dominantStage(group.producerStageIds);
+  const consumer = dominantStage(crossStageConsumers(group)) ?? dominantStage(group.consumerStageIds);
+  if (!producer && consumer) {
+    return `Feeds: ${stageTitle("inputs")}`;
+  }
+  if (producer && consumer && producer === consumer) {
+    return `Created in: ${stageTitle(producer)}`;
+  }
+  if (producer && consumer) {
+    return `Flow: ${stageTitle(producer)} -> ${stageTitle(consumer)}`;
+  }
+  if (producer) {
+    return `Created in: ${stageTitle(producer)}`;
+  }
+  return `Linked artefact`;
+}
+
+function positionInputNodes(nodes: ProcessNodeConfig[]): ProcessNodeConfig[] {
+  if (nodes.length === 0) return [];
+  const inputStage = stageDef("inputs");
+  const centerX = inputStage.x + Math.round(inputStage.width / 2);
+  const startX = centerX - Math.floor((INPUT_GRID_COLUMNS - 1) / 2) * INPUT_GRID_GAP_X - 160;
+  const startY = 18;
+
+  return nodes.map((node, index) => {
+    const column = index % INPUT_GRID_COLUMNS;
+    const row = Math.floor(index / INPUT_GRID_COLUMNS);
+    return {
+      ...node,
+      position: {
+        x: startX + column * INPUT_GRID_GAP_X,
+        y: startY + row * INPUT_GRID_GAP_Y,
+        width: node.position.width ?? FLOW_NODE_WIDTH,
+        height: node.position.height ?? FLOW_NODE_HEIGHT,
+      },
+    };
+  });
+}
+
+function positionStageSideNodes(stage: StageDef, groups: ArtifactFlowGroup[]): ProcessNodeConfig[] {
+  const side = stageSide(stage.id);
+  const x = side === "left"
+    ? stage.x - FLOW_SIDE_GAP
+    : stage.x + stage.width + 110;
+  const baseY = stage.y - Math.floor((groups.length - 1) * FLOW_VERTICAL_GAP / 2);
+
+  return groups.map((group, index) => ({
+    ...flowGroupToNode(group),
+    position: {
+      x,
+      y: baseY + index * FLOW_VERTICAL_GAP,
+      width: FLOW_NODE_WIDTH,
+      height: FLOW_NODE_HEIGHT,
+    },
+  }));
+}
+
+function positionOutputNodes(nodes: ProcessNodeConfig[]): ProcessNodeConfig[] {
+  if (nodes.length === 0) return [];
+  const outputsStage = stageDef("outputs");
+  const centerX = outputsStage.x + Math.round(outputsStage.width / 2);
+  const startX = centerX - OUTPUT_GRID_GAP_X;
+  const startY = outputsStage.y + outputsStage.height + 82;
+
+  return nodes.map((node, index) => {
+    const column = index % OUTPUT_GRID_COLUMNS;
+    const row = Math.floor(index / OUTPUT_GRID_COLUMNS);
+    return {
+      ...node,
+      position: {
+        x: startX + column * OUTPUT_GRID_GAP_X,
+        y: startY + row * OUTPUT_GRID_GAP_Y,
+        width: node.position.width ?? FLOW_NODE_WIDTH,
+        height: node.position.height ?? FLOW_NODE_HEIGHT,
+      },
+    };
+  });
+}
+
+function resolveStageForSymbolId(symbolId: string, ctx: Context): StageId | null {
+  const chain = ctx.ancestorsById.get(symbolId) ?? [symbolId];
+  for (const candidateId of chain) {
+    const classification = ctx.classifications.get(candidateId);
+    if (classification?.primaryStage) return classification.primaryStage;
+  }
+
+  const symbol = ctx.symbolById.get(symbolId);
+  if (!symbol) return null;
+  return chooseBestStageFromText(
+    normalize(`${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`),
+  ) ?? null;
+}
+
+function isLayerOneArtifactCandidate(symbol: Symbol): boolean {
+  if (symbol.kind !== "external") return false;
+  if (symbol.id.startsWith("proc:") || symbol.id.startsWith("stub:")) return false;
+  return looksLikeConcreteArtifact(symbol.label);
+}
+
+function looksLikeConcreteArtifact(label: string): boolean {
+  const basename = basenameOf(label.trim());
+  if (/^\{[^}]+\}$/.test(basename)) return false;
+  return /[\\/]/.test(label) || /\.(csv|xlsx|xls|json|pkl|pickle|parquet)$/i.test(label);
+}
+
+function artifactFamilyKey(label: string): string {
+  const basename = basenameOf(label).toLowerCase();
+  if (basename.startsWith("arrival_")) return "arrival_csvs";
+  if (/^filter_stats(_fallback)?\.xlsx$/.test(basename)) return "filter_stats_exports";
+  return basename;
+}
+
+function artifactDisplayLabel(primaryLabel: string, paths: string[]): string {
+  const basenames = unique(paths.map((path) => basenameOf(path)));
+  if (basenames.length > 0 && basenames.every((name) => /^Arrival_/i.test(name))) {
+    return "Arrival CSVs";
+  }
+  if (basenames.length > 0 && basenames.every((name) => /^filter_stats/i.test(name))) {
+    return "filter_stats.xlsx";
+  }
+  if (basenames.length === 1) return basenames[0];
+  return basenameOf(primaryLabel);
+}
+
+function detectArtifactCategory(
+  originalLabel: string,
+  paths: string[],
+): ArtifactFlowGroup["category"] {
+  const text = normalize(`${originalLabel} ${paths.join(" ")}`);
+  if (/\barrival\b|\bsimulation\b/.test(text)) return "arrival";
+  if (/\bjson\b/.test(text)) return "json";
+  if (/\bpkl\b|\bpickle\b|\bkde\b/.test(text)) return "binary";
+  if (/\bcsv\b|\bxlsx\b|\bxls\b|\btable\b|\bdf\b/.test(text)) return "tabular";
+  if (/\binput\b|\barchive\b|\broute\b|\bcluster\b|\bmaterial\b/.test(text)) return "source";
+  return "artifact";
+}
+
+function sortStagesByWeight(weights: Map<StageId, number>): StageId[] {
+  return [...weights.entries()]
+    .sort((a, b) => b[1] - a[1] || compareStageOrder(a[0], b[0]))
+    .map(([stage]) => stage);
+}
+
+function stageSide(stage: StageId): "left" | "right" {
+  switch (stage) {
+    case "extract":
+    case "match":
+    case "simulation":
+      return "left";
+    case "transform":
+    case "distribution":
+    case "outputs":
+    case "inputs":
+      return "right";
+  }
+}
+
+function compareFlowLayoutOrder(a: ArtifactFlowGroup, b: ArtifactFlowGroup): number {
+  const kindPriority = (group: ArtifactFlowGroup) => {
+    switch (group.kind) {
+      case "input":
+        return 1;
+      case "handoff":
+        return 2;
+      case "output":
+        return 3;
+    }
+  };
+
+  const aStage = dominantStage(a.producerStageIds) ?? dominantStage(a.consumerStageIds) ?? "inputs";
+  const bStage = dominantStage(b.producerStageIds) ?? dominantStage(b.consumerStageIds) ?? "inputs";
+  return kindPriority(a) - kindPriority(b) || compareStageOrder(aStage, bStage) || b.score - a.score;
+}
+
+function compareStageOrder(a: StageId, b: StageId): number {
+  return tieBreak(a, b);
+}
+
+function dominantStage(stageIds: StageId[]): StageId | null {
+  return stageIds[0] ?? null;
+}
+
+function crossStageConsumers(group: ArtifactFlowGroup): StageId[] {
+  return group.consumerStageIds.filter((stageId) => !group.producerStageIds.includes(stageId));
+}
+
+function flowNodeId(group: ArtifactFlowGroup): string {
+  return `proc:artifact:${slugify(group.key)}`;
+}
+
+function slugify(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[^\x00-\x7F]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function basenameOf(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  const segments = normalized.split("/");
+  return segments[segments.length - 1] ?? value;
+}
+
+function shortArtifactPath(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.slice(-2).join("/");
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function summarizeList(values: string[], maxItems: number): string {
+  if (values.length === 0) return "";
+  if (values.length <= maxItems) return values.join(", ");
+  return `${values.slice(0, maxItems).join(", ")}, +${values.length - maxItems} more`;
+}
+
+function summarizeTitle(values: string[], fallback: string): string {
+  if (values.length === 0) return fallback;
+  if (values.length === 1) return values[0];
+  if (values.length === 2) return `${values[0]} / ${values[1]}`;
+  return `${values[0]} / ${values[1]} +${values.length - 2}`;
+}
+
+function stageTitle(stage: StageId): string {
+  return stageDef(stage).label;
+}
+
+function flowWriteLabel(group: ArtifactFlowGroup): string {
+  switch (group.category) {
+    case "json":
+    case "binary":
+      return "persists";
+    case "arrival":
+      return "creates";
+    default:
+      return "writes";
+  }
+}
+
+function flowReadLabel(group: ArtifactFlowGroup, stage: StageId): string {
+  if (group.category === "json" || group.category === "binary") return "loads";
+  if (stage === "simulation") return "consumes";
+  return "reads";
+}
+
+function outputSelectionPriority(group: ArtifactFlowGroup): number {
+  const text = normalize(group.label);
+  if (group.category === "arrival") return 100;
+  if (group.category === "json" || group.category === "binary") return 90;
+  if (text.includes("df_data")) return 60;
+  if (text.includes("filter_stats") || text.includes("outliners")) return 10;
+  if (text.includes("validation") || text.includes("mat_export") || text.includes("distribution")) return 8;
+  return 40;
 }
 
 function buildContext(graph: ProjectGraph): Context {

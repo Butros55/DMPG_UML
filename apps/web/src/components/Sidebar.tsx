@@ -503,9 +503,9 @@ export function Sidebar() {
       exitValidateMode();
       resetPlaybackQueue();
       const importedGraph = await importProjectPackageFile(file);
-      await replaceGraph(importedGraph);
-      setGraph(importedGraph);
-      setScanPath(importedGraph.sourceProjectPath ?? "");
+      const normalizedGraph = await replaceGraph(importedGraph);
+      setGraph(normalizedGraph);
+      setScanPath(normalizedGraph.sourceProjectPath ?? "");
       await refreshProjects();
     } catch (err: any) {
       setScanError(err.message ?? "Import failed");
@@ -758,14 +758,12 @@ export function Sidebar() {
   // Build symbol list per view: only symbols that are direct children (not sub-view owners)
   const symbolsByView = useMemo(() => {
     const map = new Map<string, Sym[]>();
-    // Collect set of symbol IDs that own a child view (these are shown as sub-trees, not leaf nodes)
-    const viewOwnerIds = new Set<string>();
-    for (const v of sidebarViews) {
-      // Find the symbol that has childViewId === v.id
-      for (const sym of allSymbols) {
-        if (sym.childViewId === v.id) viewOwnerIds.add(sym.id);
-      }
-    }
+    // A symbol that owns any child view should not be rendered as a leaf item.
+    const viewOwnerIds = new Set(
+      allSymbols
+        .filter((sym) => Boolean(sym.childViewId))
+        .map((sym) => sym.id),
+    );
     for (const v of sidebarViews) {
       const syms: Sym[] = [];
       for (const nid of v.nodeRefs) {
