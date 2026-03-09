@@ -79,6 +79,7 @@ export function DiagramSettingsPanel() {
     settings.layout.edgeEdgeSpacing,
     settings.layout.componentComponentSpacing,
     settings.layout.thoroughness,
+    settings.showArtifacts,
     settings.nodeCompactMode,
     applyDiagramLayout,
   ]);
@@ -259,6 +260,15 @@ export function DiagramSettingsPanel() {
       </label>
 
       <div className="field-label">Visibility</div>
+      <label className="diagram-settings-check">
+        <input
+          type="checkbox"
+          checked={settings.showArtifacts}
+          onChange={(event) => updateDiagramSettings({ showArtifacts: event.target.checked })}
+        />
+        <span>Show artifacts</span>
+      </label>
+
       <label className="diagram-settings-check">
         <input
           type="checkbox"

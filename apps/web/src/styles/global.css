@@ -2600,11 +2600,85 @@ body,
   margin-top: 8px;
 }
 
+.ai-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ai-workspace .ai-log-panel {
+  max-height: none;
+  overflow: hidden;
+}
+
+.ai-workspace__title {
+  margin-bottom: 10px;
+}
+
+.ai-workspace__config-card,
+.ai-workspace-result-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(12, 16, 30, 0.72);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-workspace__config-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-workspace__config-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ai-workspace__config-subtitle,
+.ai-workspace__run-kind {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ai-workspace__step-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-workspace__run-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-workspace__run-message {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ai-workspace-result-card__header {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 /* ─── Review Hints Panel ─────────────────────── */
 .review-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.review-panel--embedded {
+  margin-bottom: 0;
 }
 
 .review-panel__header {

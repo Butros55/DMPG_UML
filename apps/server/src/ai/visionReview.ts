@@ -16,6 +16,13 @@ import {
 import type { ResolvedAiTaskModel } from "./modelRouting.js";
 import { callAiVisionJson } from "./client.js";
 import { buildViewHeuristics } from "./umlReview.js";
+import {
+  normalizeDiagramImageComparePayload,
+  normalizeDiagramImageReviewPayload,
+  normalizeDiagramImageSuggestionsPayload,
+  normalizeUmlReferenceComparePayload,
+  parseStructuredResponse,
+} from "./responseNormalization.js";
 import { AI_USE_CASES, getTaskTypeForUseCase } from "./useCases.js";
 
 export interface VisionCallContext {
@@ -244,18 +251,6 @@ ${JSON.stringify({
   return `\n${blocks.join("\n\n")}`;
 }
 
-function parseVisionResponse<T>(
-  raw: unknown,
-  parser: { safeParse: (value: unknown) => { success: true; data: T } | { success: false; error: { message: string } } },
-  label: string,
-): T {
-  const parsed = parser.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`${label} failed validation: ${parsed.error.message}`);
-  }
-  return parsed.data;
-}
-
 function slugifyReviewPart(value: string): string {
   return value
     .toLowerCase()
@@ -400,7 +395,7 @@ function deriveGraphSuggestions(
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function normalizeUmlReferenceCompareResponse(
+function finalizeUmlReferenceCompareResponse(
   response: UmlReferenceCompareResponse,
   context: VisionCallContext,
 ): UmlReferenceCompareResponse {
@@ -575,7 +570,12 @@ Instruction: ${context.instruction ?? "Review the diagram image for UML quality,
   });
 
   return {
-    result: parseVisionResponse(data, DiagramImageReviewResponseSchema, "diagram_image_review"),
+    result: parseStructuredResponse(
+      data,
+      DiagramImageReviewResponseSchema,
+      "diagram_image_review",
+      normalizeDiagramImageReviewPayload,
+    ),
     model,
   };
 }
@@ -603,7 +603,12 @@ Instruction: ${context.instruction ?? "Compare the current diagram to the refere
   });
 
   return {
-    result: parseVisionResponse(data, DiagramImageCompareResponseSchema, "diagram_image_compare"),
+    result: parseStructuredResponse(
+      data,
+      DiagramImageCompareResponseSchema,
+      "diagram_image_compare",
+      normalizeDiagramImageComparePayload,
+    ),
     model,
   };
 }
@@ -647,10 +652,15 @@ Return:
 - isCurrentDiagramTooUiLike when the current diagram reads more like UI cards than UML${buildGraphContextBlock(context)}`,
   });
 
-  const parsed = parseVisionResponse(data, UmlReferenceCompareResponseSchema, "uml_reference_compare");
+  const parsed = parseStructuredResponse(
+    data,
+    UmlReferenceCompareResponseSchema,
+    "uml_reference_compare",
+    normalizeUmlReferenceComparePayload,
+  );
 
   return {
-    result: normalizeUmlReferenceCompareResponse(parsed, context),
+    result: finalizeUmlReferenceCompareResponse(parsed, context),
     model,
   };
 }
@@ -674,7 +684,12 @@ Instruction: ${context.instruction ?? "Suggest better grouping, context stubs, U
   });
 
   return {
-    result: parseVisionResponse(data, DiagramImageSuggestionsResponseSchema, "diagram_image_to_suggestions"),
+    result: parseStructuredResponse(
+      data,
+      DiagramImageSuggestionsResponseSchema,
+      "diagram_image_to_suggestions",
+      normalizeDiagramImageSuggestionsPayload,
+    ),
     model,
   };
 }

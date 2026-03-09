@@ -41,6 +41,31 @@ test("resolveModelForTask uses specialized, default-task and fallback models whe
   assert.equal(diagramModel.source, "fallback");
 });
 
+test("resolveModelForTask uses the local provider model for every task when AI_PROVIDER=local", () => {
+  const aiConfig = resolveAiConfig({
+    AI_PROVIDER: "local",
+    AI_MODEL_ROUTING_ENABLED: "true",
+    OLLAMA_MODEL: "shared-model",
+    OLLAMA_LOCAL_MODEL: "local-model",
+    UML_FALLBACK_MODEL: "fallback-model",
+    AI_DEFAULT_TASK_MODEL: "general-model",
+    UML_CODE_ANALYSIS_MODEL: "code-model",
+    UML_LABELING_MODEL: "label-model",
+  });
+
+  const codeModel = resolveModelForTask(AI_TASK_TYPES.CODE_ANALYSIS, aiConfig);
+  const generalModel = resolveModelForTask(AI_TASK_TYPES.GENERAL, aiConfig);
+  const labelingModel = resolveModelForTask(AI_TASK_TYPES.LABELING, aiConfig);
+
+  assert.equal(codeModel.model, "local-model");
+  assert.equal(codeModel.source, "global");
+  assert.equal(codeModel.routingEnabled, true);
+  assert.equal(generalModel.model, "local-model");
+  assert.equal(generalModel.source, "global");
+  assert.equal(labelingModel.model, "local-model");
+  assert.equal(labelingModel.source, "global");
+});
+
 test("resolveModelForTask keeps legacy single-model behavior when routing is disabled", () => {
   const aiConfig = resolveAiConfig({
     AI_MODEL_ROUTING_ENABLED: "false",
@@ -85,4 +110,21 @@ test("getActiveAiModelConfig summarizes the resolved task configuration", () => 
   assert.equal(labelingEntry?.source, "task_specific");
   assert.equal(visionEntry?.resolvedModel, "fallback-model");
   assert.equal(visionEntry?.source, "fallback");
+});
+
+test("getActiveAiModelConfig resolves every task to the local model when AI_PROVIDER=local", () => {
+  const aiConfig = resolveAiConfig({
+    AI_PROVIDER: "local",
+    AI_MODEL_ROUTING_ENABLED: "true",
+    OLLAMA_LOCAL_MODEL: "local-model",
+    UML_FALLBACK_MODEL: "fallback-model",
+    UML_LABELING_MODEL: "label-model",
+  });
+
+  const summary = getActiveAiModelConfig(aiConfig);
+
+  assert.equal(summary.globalModel, "local-model");
+  assert.equal(summary.routingEnabled, true);
+  assert.ok(summary.tasks.every((task) => task.resolvedModel === "local-model"));
+  assert.ok(summary.tasks.every((task) => task.source === "global"));
 });

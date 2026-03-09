@@ -296,9 +296,7 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
   const updateRelation = useAppStore((s) => s.updateRelation);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const selectEdge = useAppStore((s) => s.selectEdge);
-  const selectSymbol = useAppStore((s) => s.selectSymbol);
-  const navigateToView = useAppStore((s) => s.navigateToView);
-  const setFocusNode = useAppStore((s) => s.setFocusNode);
+  const focusSymbolInContext = useAppStore((s) => s.focusSymbolInContext);
 
   // Try direct relation lookup first
   const rel = graph?.relations.find((r) => r.id === selectedEdgeId);
@@ -340,12 +338,8 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
   };
 
   const handleSymbolClick = (symId: string) => {
-    selectSymbol(symId);
-    const view = graph?.views.find((v) => v.nodeRefs.includes(symId));
-    if (view) {
-      navigateToView(view.id);
-      setFocusNode(symId);
-    }
+    if (!graph?.symbols.some((symbol) => symbol.id === symId)) return;
+    focusSymbolInContext(symId);
   };
 
   return (
@@ -518,8 +512,7 @@ export function Inspector() {
   const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const selectSymbol = useAppStore((s) => s.selectSymbol);
-  const navigateToView = useAppStore((s) => s.navigateToView);
-  const setFocusNode = useAppStore((s) => s.setFocusNode);
+  const focusSymbolInContext = useAppStore((s) => s.focusSymbolInContext);
   const updateGraph = useAppStore((s) => s.updateGraph);
   const updateSymbol = useAppStore((s) => s.updateSymbol);
   const removeSymbol = useAppStore((s) => s.removeSymbol);
@@ -780,19 +773,13 @@ export function Inspector() {
           (s) => s.label.toLowerCase() === targetId.toLowerCase(),
         );
         if (byLabel) {
-          selectSymbol(byLabel.id);
-          const view = graph?.views.find((v) => v.nodeRefs.includes(byLabel.id));
-          if (view) navigateToView(view.id);
-          setFocusNode(byLabel.id);
+          focusSymbolInContext(byLabel.id);
         }
         return;
       }
-      selectSymbol(targetSym.id);
-      const view = graph?.views.find((v) => v.nodeRefs.includes(targetSym.id));
-      if (view) navigateToView(view.id);
-      setFocusNode(targetSym.id);
+      focusSymbolInContext(targetSym.id);
     },
-    [graph, selectSymbol, navigateToView, setFocusNode],
+    [graph, focusSymbolInContext],
   );
 
   // If an edge is selected, show edge inspector (AFTER all hooks!)

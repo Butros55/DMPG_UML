@@ -27,6 +27,23 @@ function buildGraph(): ProjectGraph {
         nodeRefs: ["sym:group:data", "sym:module:pipeline"],
         edgeRefs: [],
       },
+      {
+        id: "view:hidden-overview",
+        title: "Data Pipeline Overview",
+        parentViewId: "view:root",
+        hiddenInSidebar: true,
+        scope: "root",
+        nodeRefs: ["sym:group:data", "sym:module:pipeline"],
+        edgeRefs: [],
+      },
+      {
+        id: "view:group:data",
+        title: "Input Sources",
+        parentViewId: "view:root",
+        scope: "group",
+        nodeRefs: ["sym:group:data", "sym:module:pipeline"],
+        edgeRefs: [],
+      },
     ],
     rootViewId: "view:root",
     projectPath: "C:/tmp/dmpg-test-project",
@@ -247,4 +264,55 @@ test("applyReferenceRefactorPlan keeps unsupported structural changes as review-
   assert.equal(response.reviewOnlyActions.length, 1);
   assert.equal(response.autoApplied, false);
   assert.equal(response.graph?.views[0]?.reviewHints?.[0]?.source, "uml_reference_compare");
+});
+
+test("applyReferenceRefactorPlan prefers a visible focus view over hidden legacy overviews", () => {
+  const graph = buildGraph();
+  const compare = buildCompare();
+  const plan: UmlReferenceRefactorPlan = {
+    summary: "Rename the visible data source group.",
+    actions: [
+      {
+        id: "rename-visible-group",
+        type: "rename_symbol",
+        targetIds: ["sym:group:data"],
+        viewId: "view:group:data",
+        payload: { newLabel: "SQL-Datenquellen" },
+        confidence: 0.9,
+        severity: "medium",
+        autoApplicable: true,
+      },
+    ],
+    primaryFocusTargetIds: ["sym:group:data"],
+    changedViewIds: ["view:hidden-overview", "view:group:data"],
+    remainingReviewOnlyItems: [],
+  };
+  const validation: UmlReferenceRefactorValidation = {
+    summary: "The rename is safe.",
+    decisions: [
+      {
+        actionId: "rename-visible-group",
+        decision: "apply",
+        reason: "Deterministic rename.",
+      },
+    ],
+  };
+
+  const response = applyReferenceRefactorPlan({
+    graph,
+    viewId: "view:group:data",
+    compare,
+    plan,
+    validation,
+    options: {
+      autoApply: true,
+      allowStructuralChanges: true,
+      allowLabelChanges: true,
+      allowRelationChanges: true,
+      persistSuggestions: true,
+      dryRun: false,
+    },
+  });
+
+  assert.equal(response.focusViewId, "view:group:data");
 });

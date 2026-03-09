@@ -265,6 +265,7 @@ function resolveTargetIds(graph: ProjectGraph, viewId: string, hint?: string, pr
 function pickBestFocusView(graph: ProjectGraph, currentViewId: string, targetIds: string[], changedViewIds: string[]): string | undefined {
   const targetSet = new Set(targetIds);
   const scored = graph.views
+    .filter((view) => !isTechnicalNavigationView(graph, view))
     .map((view) => ({
       id: view.id,
       matchCount: view.nodeRefs.filter((nodeId) => targetSet.has(nodeId)).length,
@@ -278,7 +279,18 @@ function pickBestFocusView(graph: ProjectGraph, currentViewId: string, targetIds
       || Number(right.current) - Number(left.current)
       || right.depth - left.depth,
     );
-  return scored[0]?.id;
+  return scored[0]?.id ?? graph.views.find((view) => view.id === currentViewId && !isTechnicalNavigationView(graph, view))?.id;
+}
+
+function isTechnicalNavigationView(graph: ProjectGraph, view: DiagramView): boolean {
+  if (view.hiddenInSidebar) return true;
+  if (view.id.startsWith("view:artifacts:") || view.id.startsWith("view:art-cat:")) return true;
+  if (graph.rootViewId !== "view:process-overview") return false;
+  return (
+    view.id === "view:root" ||
+    view.id.startsWith("view:grp:domain:") ||
+    view.id === "view:grp:dir:__root__"
+  );
 }
 
 function humanizeActionType(type: UmlReferenceRefactorAction["type"]): string {

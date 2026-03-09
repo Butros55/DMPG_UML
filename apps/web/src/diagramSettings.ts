@@ -48,11 +48,11 @@ export const EDGE_CLASS_BY_RELATION: Record<RelationType, string> = {
 export const EDGE_ANIMATED_BY_RELATION: Record<RelationType, boolean> = {
   calls: true,
   imports: false,
-  reads: false,
-  writes: false,
+  reads: true,
+  writes: true,
   inherits: false,
   instantiates: true,
-  uses_config: false,
+  uses_config: true,
   contains: false,
 };
 
@@ -73,6 +73,7 @@ export interface DiagramSettings {
   edgeType: DiagramEdgeType;
   edgeStrokeWidth: number;
   labels: DiagramLabelMode;
+  showArtifacts: boolean;
   nodeCompactMode: boolean;
   edgeAggregation: boolean;
   autoLayout: boolean;
@@ -126,6 +127,7 @@ export const DEFAULT_DIAGRAM_SETTINGS: DiagramSettings = {
   edgeType: "step",
   edgeStrokeWidth: 1.8,
   labels: "detailed",
+  showArtifacts: true,
   nodeCompactMode: false,
   edgeAggregation: true,
   autoLayout: true,
@@ -275,6 +277,7 @@ export function sanitizeDiagramSettings(raw: unknown): DiagramSettings {
     edgeType,
     edgeStrokeWidth: asNumber(merged.edgeStrokeWidth, DEFAULT_DIAGRAM_SETTINGS.edgeStrokeWidth, 0.8, 4),
     labels,
+    showArtifacts: asBoolean(merged.showArtifacts, DEFAULT_DIAGRAM_SETTINGS.showArtifacts),
     nodeCompactMode: asBoolean(merged.nodeCompactMode, DEFAULT_DIAGRAM_SETTINGS.nodeCompactMode),
     edgeAggregation: asBoolean(merged.edgeAggregation, DEFAULT_DIAGRAM_SETTINGS.edgeAggregation),
     autoLayout: asBoolean(merged.autoLayout, DEFAULT_DIAGRAM_SETTINGS.autoLayout),

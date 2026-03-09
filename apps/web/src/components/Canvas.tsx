@@ -240,6 +240,17 @@ function neighborhoodNodeIds(rootId: string, edges: PreparedProjectedEdge[], dep
   return seen;
 }
 
+function isArtifactLikeSymbol(symbol: Pick<Sym, "kind" | "umlType">): boolean {
+  return (
+    symbol.kind === "external" ||
+    symbol.umlType === "artifact" ||
+    symbol.umlType === "database" ||
+    symbol.umlType === "component" ||
+    symbol.umlType === "note" ||
+    symbol.umlType === "external"
+  );
+}
+
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
@@ -310,11 +321,19 @@ export function Canvas() {
     if (!view) return { viewNodes: [] as Node[], viewEdges: [] as Edge[] };
 
     const scope = (view as any).scope as string | undefined;
+    const hiddenSymbolIds = diagramSettings.showArtifacts
+      ? new Set<string>()
+      : new Set(graph.symbols.filter((symbol) => isArtifactLikeSymbol(symbol)).map((symbol) => symbol.id));
+    const visibleViewNodeRefs = view.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    const visibleViewNodeRefSet = new Set(visibleViewNodeRefs);
+    const visibleRelations = graph.relations.filter(
+      (rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target),
+    );
     const relationMap = new Map(graph.relations.map((rel) => [rel.id, rel]));
     const persistentReviewNodeIds = reviewHighlight.viewId === view.id
-      ? reviewHighlight.nodeIds.filter((id) => view.nodeRefs.includes(id))
+      ? reviewHighlight.nodeIds.filter((id) => visibleViewNodeRefSet.has(id))
       : [];
-    const previewReviewNodeIds = reviewHighlight.previewNodeIds.filter((id) => view.nodeRefs.includes(id));
+    const previewReviewNodeIds = reviewHighlight.previewNodeIds.filter((id) => visibleViewNodeRefSet.has(id));
     const effectiveReviewNodeIds = previewReviewNodeIds.length > 0
       ? previewReviewNodeIds
       : persistentReviewNodeIds;
@@ -325,7 +344,7 @@ export function Canvas() {
     // Pre-compute relation badges per symbol: which relation types touch each symbol?
     // Badges are directional: "out:<type>" for source, "in:<type>" for target
     const relBadgeMap = new Map<string, Set<string>>();
-    for (const rel of graph.relations) {
+    for (const rel of visibleRelations) {
       if (rel.type === "contains") continue;
       if (!diagramSettings.relationFilters[rel.type]) continue;
       const srcSet = relBadgeMap.get(rel.source) ?? new Set();
@@ -336,7 +355,7 @@ export function Canvas() {
       relBadgeMap.set(rel.target, tgtSet);
     }
 
-    const allNodes: Node[] = view.nodeRefs.map((symId, i) => {
+    const allNodes: Node[] = visibleViewNodeRefs.map((symId, i) => {
       const sym = graph.symbols.find((s) => s.id === symId);
       if (!sym) return null;
 
@@ -356,7 +375,7 @@ export function Canvas() {
 
       // Gather children for class nodes (show members inline)
       const children = (sym.kind === "class" || sym.kind === "module")
-        ? graph.symbols.filter((s) => s.parentId === sym.id)
+        ? graph.symbols.filter((s) => s.parentId === sym.id && !hiddenSymbolIds.has(s.id))
         : [];
 
       // Extra CSS classes
@@ -415,7 +434,11 @@ export function Canvas() {
     }).filter(Boolean) as Node[];
 
     // Use edge projection instead of strict endpoint filtering
-    const projected = projectEdgesForView(view, graph.symbols, graph.relations);
+    const projected = projectEdgesForView(
+      { ...view, nodeRefs: visibleViewNodeRefs },
+      graph.symbols,
+      visibleRelations,
+    );
     const preparedEdges = toPreparedEdges(
       projected,
       relationMap,
@@ -729,11 +752,14 @@ export function Canvas() {
   const focusNodeId = useAppStore((s) => s.focusNodeId);
   const focusSeq = useAppStore((s) => s.focusSeq ?? 0);
   const setFocusNode = useAppStore((s) => s.setFocusNode);
+  const viewFitViewId = useAppStore((s) => s.viewFitViewId);
+  const viewFitSeq = useAppStore((s) => s.viewFitSeq ?? 0);
   const focusAppliedRef = useRef<string | null>(null);
   const lastFocusSeqRef = useRef(0);
   const pendingFocusRef = useRef<string | null>(null);
   const focusRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedReviewSeqRef = useRef(0);
+  const appliedViewFitSeqRef = useRef(0);
 
   // Core function to apply focus zoom + highlight
   const applyFocusZoom = useCallback((nodeId: string) => {
@@ -902,6 +928,25 @@ export function Canvas() {
     reviewHighlight.nodeIds,
     reviewHighlight.seq,
     reviewHighlight.viewId,
+  ]);
+
+  useEffect(() => {
+    if (viewFitSeq <= appliedViewFitSeqRef.current) return;
+    if (!viewFitViewId || viewFitViewId !== currentViewId) return;
+    if (!layoutDone || !nodesInitialized || nodes.length === 0) return;
+
+    appliedViewFitSeqRef.current = viewFitSeq;
+    requestAnimationFrame(() => {
+      reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
+    });
+  }, [
+    currentViewId,
+    layoutDone,
+    nodes.length,
+    nodesInitialized,
+    reactFlowInstance,
+    viewFitSeq,
+    viewFitViewId,
   ]);
 
   // Clear focus highlight when user hovers over the focused node + edge hover highlighting

@@ -32,7 +32,7 @@ READ_CALL_PATTERNS = {
 WRITE_CALL_PATTERNS = {
     "to_csv", "to_excel", "to_json", "to_parquet", "to_pickle",
     "dump", "dumps", "safe_dump",
-    "save", "savetxt", "savez", "write_text", "write_bytes",
+    "save", "save_to_file", "savetxt", "savez", "write_text", "write_bytes",
 }
 
 
@@ -308,11 +308,15 @@ class _RelationVisitor(ast.NodeVisitor):
         self.local_aliases: dict[str, str] = dict(import_aliases)
         self.edges: list[dict] = []
         self._scope_stack: list[str] = [mod_id]
-        self._open_handle_stack: list[dict[str, str]] = [{}]
+        self._literal_bindings_stack: list[dict[str, str]] = [{}]
 
     @property
     def _current_scope(self) -> str:
         return self._scope_stack[-1]
+
+    @property
+    def _current_bindings(self) -> dict[str, str]:
+        return self._literal_bindings_stack[-1]
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         cls_id = f"{self.mod_id}:{node.name}"
@@ -333,9 +337,10 @@ class _RelationVisitor(ast.NodeVisitor):
         else:
             func_id = f"{self.mod_id}:{node.name}"
         self._scope_stack.append(func_id)
-        self._open_handle_stack.append(dict(self._open_handle_stack[-1]))
+        self._literal_bindings_stack.append(dict(self._literal_bindings_stack[-1]))
+        _bind_function_defaults(node, self._current_bindings)
         self.generic_visit(node)
-        self._open_handle_stack.pop()
+        self._literal_bindings_stack.pop()
         self._scope_stack.pop()
 
     def visit_With(self, node: ast.With) -> None:
@@ -345,17 +350,34 @@ class _RelationVisitor(ast.NodeVisitor):
         self._visit_with(node)
 
     def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
-        self._open_handle_stack.append(dict(self._open_handle_stack[-1]))
-        frame = self._open_handle_stack[-1]
+        self._literal_bindings_stack.append(dict(self._literal_bindings_stack[-1]))
+        frame = self._current_bindings
         for item in node.items:
+            if isinstance(item.context_expr, ast.Call):
+                callee_str = _resolve_call_name(item.context_expr)
+                if callee_str:
+                    self._process_call(item.context_expr, callee_str)
             path = _extract_open_path(item.context_expr, frame)
             if not path or item.optional_vars is None:
                 continue
-            if isinstance(item.optional_vars, ast.Name):
-                frame[item.optional_vars.id] = path
+            _bind_literal_target(item.optional_vars, path, frame)
         for stmt in node.body:
             self.visit(stmt)
-        self._open_handle_stack.pop()
+        self._literal_bindings_stack.pop()
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        resolved = _extract_string_literal(node.value, self._current_bindings)
+        if resolved:
+            for target in node.targets:
+                _bind_literal_target(target, resolved, self._current_bindings)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            resolved = _extract_string_literal(node.value, self._current_bindings)
+            if resolved:
+                _bind_literal_target(node.target, resolved, self._current_bindings)
+        self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -412,15 +434,16 @@ class _RelationVisitor(ast.NodeVisitor):
         source_id = self._current_scope
 
         # Detect reads/writes
-        rw = _detect_read_write(callee_str)
+        rw = _detect_read_write(node, callee_str, self._current_bindings)
         if rw:
-            artifact_name = _extract_artifact_name(node, callee_str, self._open_handle_stack[-1])
-            artifact_id = f"ext:{artifact_name}" if artifact_name else f"ext:{callee_str}"
-            self.edges.append({
-                "source": source_id, "target": artifact_id, "type": rw,
-                "confidence": 0.7, "evidence": evidence,
-                "artifactLabel": artifact_name or callee_str,
-            })
+            artifact_names = _extract_artifact_names(node, callee_str, self._current_bindings)
+            for artifact_name in artifact_names:
+                artifact_id = f"ext:{artifact_name}"
+                self.edges.append({
+                    "source": source_id, "target": artifact_id, "type": rw,
+                    "confidence": 0.7, "evidence": evidence,
+                    "artifactLabel": artifact_name,
+                })
 
         # Resolve the callee to a symbol ID
         target_id = _resolve_name(callee_str, self.symbol_table, self.local_aliases)
@@ -527,58 +550,81 @@ def _resolve_name(name: str, symbol_table: dict[str, str],
     return None
 
 
-def _detect_read_write(callee: str) -> Optional[str]:
+def _detect_read_write(
+    node: ast.Call,
+    callee: str,
+    literal_bindings: dict[str, str],
+) -> Optional[str]:
     """Check if a call is a file read or write operation."""
     last_part = callee.split(".")[-1]
     if last_part in READ_CALL_PATTERNS:
         return "reads"
     if last_part in WRITE_CALL_PATTERNS:
         return "writes"
+    if callee == "open":
+        mode = _extract_open_mode(node, literal_bindings)
+        if mode is None:
+            return "reads"
+        if any(flag in mode for flag in ("w", "a", "x", "+")):
+            return "writes"
+        return "reads"
     return None
 
 
-def _extract_artifact_name(
+def _extract_artifact_names(
     node: ast.Call,
     callee: str,
-    open_handles: dict[str, str],
-) -> Optional[str]:
+    literal_bindings: dict[str, str],
+) -> list[str]:
+    seen: set[str] = set()
+    names: list[str] = []
+
+    def add_candidate(value: Optional[str]) -> None:
+        if not value:
+            return
+        normalized = value.strip()
+        if not normalized or not _looks_like_artifact_name(normalized):
+            return
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        names.append(normalized)
+
     candidates = [*node.args, *(kw.value for kw in node.keywords if kw.value is not None)]
 
     # Most read/write calls pass the path directly as their first argument.
     if node.args:
-        direct = _extract_string_literal(node.args[0], open_handles)
-        if direct:
-            return direct
+        add_candidate(_extract_string_literal(node.args[0], literal_bindings))
 
     # dump()/write() style calls often carry the file handle in a later argument.
     for candidate in candidates:
-        resolved = _extract_string_literal(candidate, open_handles)
-        if resolved:
-            return resolved
+        add_candidate(_extract_string_literal(candidate, literal_bindings))
 
     # json.dump(..., open("file.json", "w")) and similar nested open(...) calls.
     for candidate in candidates:
-        resolved = _extract_open_path(candidate, open_handles)
-        if resolved:
-            return resolved
+        add_candidate(_extract_open_path(candidate, literal_bindings))
 
-    return None
+    return names
 
 
-def _extract_open_path(node: ast.AST, open_handles: dict[str, str]) -> Optional[str]:
+def _extract_open_path(node: ast.AST, literal_bindings: dict[str, str]) -> Optional[str]:
     if isinstance(node, ast.Call):
         callee = _resolve_call_name(node)
         if callee == "open" and node.args:
-            return _extract_string_literal(node.args[0], open_handles)
+            return _extract_string_literal(node.args[0], literal_bindings)
     return None
 
 
-def _extract_string_literal(node: ast.AST, open_handles: dict[str, str]) -> Optional[str]:
+def _extract_string_literal(node: ast.AST, literal_bindings: dict[str, str]) -> Optional[str]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
 
     if isinstance(node, ast.Name):
-        return open_handles.get(node.id)
+        return literal_bindings.get(node.id)
+
+    if isinstance(node, ast.Attribute):
+        key = _node_to_str(node)
+        return literal_bindings.get(key) if key else None
 
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
@@ -591,8 +637,8 @@ def _extract_string_literal(node: ast.AST, open_handles: dict[str, str]) -> Opti
         return "".join(parts) if parts else None
 
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _extract_string_literal(node.left, open_handles)
-        right = _extract_string_literal(node.right, open_handles)
+        left = _extract_string_literal(node.left, literal_bindings)
+        right = _extract_string_literal(node.right, literal_bindings)
         if left and right:
             return left + right
         if left:
@@ -601,10 +647,85 @@ def _extract_string_literal(node: ast.AST, open_handles: dict[str, str]) -> Opti
             return "{" + (_node_to_str(node.left) or "expr") + "}" + right
         return None
 
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _extract_string_literal(node.left, literal_bindings)
+        right = _extract_string_literal(node.right, literal_bindings)
+        if left and right:
+            return left.rstrip("/\\") + "/" + right.lstrip("/\\")
+        return None
+
     if isinstance(node, ast.Call):
-        return _extract_open_path(node, open_handles)
+        callee = _resolve_call_name(node)
+        if callee == "os.path.join":
+            parts = [_extract_string_literal(arg, literal_bindings) for arg in node.args]
+            joined = [part.strip("/\\") for part in parts if part]
+            if joined:
+                head = joined[0]
+                tail = joined[1:]
+                return "/".join([head.rstrip("/\\"), *tail]) if tail else head
+        if callee in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"} and node.args:
+            return _extract_string_literal(node.args[0], literal_bindings)
+        return _extract_open_path(node, literal_bindings)
 
     return None
+
+
+def _bind_function_defaults(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    literal_bindings: dict[str, str],
+) -> None:
+    positional = node.args.args
+    defaults = node.args.defaults
+    if defaults:
+        offset = len(positional) - len(defaults)
+        for arg, default in zip(positional[offset:], defaults):
+            resolved = _extract_string_literal(default, literal_bindings)
+            if resolved:
+                literal_bindings[arg.arg] = resolved
+
+    for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
+        if default is None:
+            continue
+        resolved = _extract_string_literal(default, literal_bindings)
+        if resolved:
+            literal_bindings[arg.arg] = resolved
+
+
+def _bind_literal_target(
+    node: ast.AST,
+    value: str,
+    literal_bindings: dict[str, str],
+) -> None:
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        key = _node_to_str(node)
+        if key:
+            literal_bindings[key] = value
+
+
+def _extract_open_mode(node: ast.Call, literal_bindings: dict[str, str]) -> Optional[str]:
+    if len(node.args) > 1:
+        mode = _extract_string_literal(node.args[1], literal_bindings)
+        if mode:
+            return mode
+
+    for keyword in node.keywords:
+        if keyword.arg != "mode" or keyword.value is None:
+            continue
+        mode = _extract_string_literal(keyword.value, literal_bindings)
+        if mode:
+            return mode
+
+    return None
+
+
+def _looks_like_artifact_name(value: str) -> bool:
+    lowered = value.lower()
+    if "/" in value or "\\" in value:
+        return True
+    return lowered.endswith((
+        ".csv", ".tsv", ".json", ".xlsx", ".xls", ".pkl", ".pickle",
+        ".parquet", ".joblib", ".txt", ".yaml", ".yml", ".xml",
+    ))
 
 
 def _make_evidence(rel_path: str, node: ast.AST) -> dict:

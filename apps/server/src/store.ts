@@ -2,6 +2,7 @@ import type { ProjectGraph } from "@dmpg/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { augmentGraphWithUmlOverlays } from "./scanner/processOverview.js";
 
 /**
  * Multi-project persistent graph store.
@@ -60,6 +61,31 @@ function graphDisplayName(graph: Pick<ProjectGraph, "projectName" | "projectPath
   const fromPath = graph.projectPath?.trim();
   if (fromPath) return path.basename(fromPath);
   return "Imported Project";
+}
+
+export function normalizePersistedGraph(graph: ProjectGraph): {
+  graph: ProjectGraph;
+  changed: boolean;
+} {
+  const before = JSON.stringify(graph);
+  const normalized = augmentGraphWithUmlOverlays(graph);
+  return {
+    graph: normalized,
+    changed: JSON.stringify(normalized) !== before,
+  };
+}
+
+function persistGraphForProject(graph: ProjectGraph, projectPath: string): void {
+  const hash = hashPath(projectPath);
+  const dir = projectDir(hash);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "graph.json"), JSON.stringify(graph), "utf-8");
+}
+
+function loadNormalizedGraphFile(gFile: string): { graph: ProjectGraph; changed: boolean } | null {
+  if (!fs.existsSync(gFile)) return null;
+  const parsed = JSON.parse(fs.readFileSync(gFile, "utf-8")) as ProjectGraph;
+  return normalizePersistedGraph(parsed);
 }
 
 function loadProjectsIndex(): ProjectsIndex {
@@ -142,9 +168,14 @@ export interface GraphSnapshotInfo {
     if (meta) {
       const gFile = path.join(projectDir(meta.hash), "graph.json");
       try {
-        if (fs.existsSync(gFile)) {
-          currentGraph = JSON.parse(fs.readFileSync(gFile, "utf-8")) as ProjectGraph;
+        const loaded = loadNormalizedGraphFile(gFile);
+        if (loaded) {
+          currentGraph = loaded.graph;
           currentProjectPath = meta.projectPath;
+          if (loaded.changed) {
+            persistGraphForProject(currentGraph, currentProjectPath);
+            console.log(`[store] Re-normalized persisted project "${meta.name}"`);
+          }
           console.log(`[store] Loaded project "${meta.name}" (${currentGraph.symbols.length} symbols)`);
         }
       } catch (err) {
@@ -167,11 +198,8 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function persistToDisk() {
   if (!currentGraph || !currentProjectPath) return;
-  const hash = hashPath(currentProjectPath);
-  const dir = projectDir(hash);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   try {
-    fs.writeFileSync(path.join(dir, "graph.json"), JSON.stringify(currentGraph), "utf-8");
+    persistGraphForProject(currentGraph, currentProjectPath);
   } catch (err) {
     console.error("[store] Failed to persist graph:", (err as Error).message);
   }
@@ -243,8 +271,9 @@ export function restoreGraphSnapshot(snapshotId: string): ProjectGraph | null {
 
   const raw = JSON.parse(fs.readFileSync(targetFile, "utf-8")) as { graph?: ProjectGraph };
   if (!raw.graph) return null;
-  setGraph(raw.graph);
-  return raw.graph;
+  const normalized = normalizePersistedGraph(raw.graph);
+  setGraph(normalized.graph);
+  return normalized.graph;
 }
 
 export function setGraph(g: ProjectGraph): void {
@@ -308,8 +337,14 @@ export function switchProject(projectPath: string): ProjectGraph | null {
 
   if (fs.existsSync(gFile)) {
     try {
-      currentGraph = JSON.parse(fs.readFileSync(gFile, "utf-8")) as ProjectGraph;
+      const loaded = loadNormalizedGraphFile(gFile);
+      if (!loaded) return null;
+      currentGraph = loaded.graph;
       currentProjectPath = projectPath;
+      if (loaded.changed) {
+        persistGraphForProject(currentGraph, currentProjectPath);
+        console.log(`[store] Re-normalized persisted project "${path.basename(projectPath)}" during switch`);
+      }
 
       // Update active in index
       const idx = loadProjectsIndex();

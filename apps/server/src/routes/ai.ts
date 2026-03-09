@@ -4,6 +4,7 @@ import type { Symbol as Sym, Relation, DiagramView, RelationType } from "@dmpg/s
 import { getGraph, setGraph, getCurrentProjectPath, loadAiProgress, saveAiProgress, clearAiProgress } from "../store.js";
 import { callAiJson } from "../ai/client.js";
 import { formatAiModelRoutingSummary } from "../ai/modelRouting.js";
+import { normalizeSymbolDocPayload, parseStructuredResponse } from "../ai/responseNormalization.js";
 import { AI_USE_CASES, getTaskTypeForUseCase } from "../ai/useCases.js";
 import { aiUmlRouter } from "./ai-uml.js";
 import { aiVisionRouter } from "./ai-vision.js";
@@ -209,20 +210,28 @@ ${context ? `Context:\n${context}` : ""}`;
       systemPrompt,
       userPrompt,
     });
-    const docParsed = SymbolDocSchema.safeParse(doc);
-    if (!docParsed.success) {
+    let docParsed;
+    try {
+      docParsed = parseStructuredResponse(
+        doc,
+        SymbolDocSchema,
+        "AI summarize",
+        normalizeSymbolDocPayload,
+        { alwaysNormalize: true },
+      );
+    } catch (error) {
       res
         .status(502)
-        .json({ error: "AI output failed validation", issues: docParsed.error.flatten(), raw: doc });
+        .json({ error: error instanceof Error ? error.message : "AI output failed validation", raw: doc });
       return;
     }
 
     if (g && sym) {
-      sym.doc = { ...sym.doc, ...docParsed.data };
+      sym.doc = { ...sym.doc, ...docParsed };
       setGraph(g);
     }
 
-    res.json({ doc: docParsed.data });
+    res.json({ doc: docParsed });
   } catch (err: any) {
     res.status(502).json({ error: err.message ?? "AI request failed" });
   }
@@ -261,11 +270,17 @@ aiRouter.post("/batch-summarize", async (req, res) => {
         systemPrompt,
         userPrompt,
       });
-      const docParsed = SymbolDocSchema.safeParse(doc);
-      if (docParsed.success) {
-        sym.doc = { ...sym.doc, ...docParsed.data };
-        results[id] = docParsed.data;
-      } else {
+      try {
+        const docParsed = parseStructuredResponse(
+          doc,
+          SymbolDocSchema,
+          `AI batch summarize (${sym.label})`,
+          normalizeSymbolDocPayload,
+          { alwaysNormalize: true },
+        );
+        sym.doc = { ...sym.doc, ...docParsed };
+        results[id] = docParsed;
+      } catch {
         errors[id] = "Validation failed";
       }
     } catch (err: any) {
@@ -653,35 +668,41 @@ Respond ONLY with valid JSON, no markdown.`,
           userPrompt: `Symbol: ${sym.label}\nKind: ${sym.kind}\nRelations: ${relContext || "none known"}\n${code ? `\nSource code:\n${code.slice(0, 3000)}` : "(no source code available)"}`,
         });
 
-        const docParsed = SymbolDocSchema.safeParse(result);
-        if (docParsed.success && docParsed.data.summary) {
+        const docParsed = parseStructuredResponse(
+          result,
+          SymbolDocSchema,
+          `AI documentation generation (${sym.label})`,
+          normalizeSymbolDocPayload,
+          { alwaysNormalize: true },
+        );
+        if (docParsed.summary) {
           // Track which fields are AI-generated
           const aiFields: Record<string, boolean> = { ...(sym.doc?.aiGenerated ?? {}) };
-          if (docParsed.data.summary) aiFields.summary = true;
-          if (docParsed.data.inputs?.length) aiFields.inputs = true;
-          if (docParsed.data.outputs?.length) aiFields.outputs = true;
-          if (docParsed.data.sideEffects?.length) aiFields.sideEffects = true;
-          if (docParsed.data.calls?.length) aiFields.calls = true;
+          if (docParsed.summary) aiFields.summary = true;
+          if (docParsed.inputs?.length) aiFields.inputs = true;
+          if (docParsed.outputs?.length) aiFields.outputs = true;
+          if (docParsed.sideEffects?.length) aiFields.sideEffects = true;
+          if (docParsed.calls?.length) aiFields.calls = true;
 
           sym.doc = {
-            ...docParsed.data,
+            ...docParsed,
             ...sym.doc,
-            summary: docParsed.data.summary,
-            inputs: docParsed.data.inputs?.length ? docParsed.data.inputs : sym.doc?.inputs,
-            outputs: docParsed.data.outputs?.length ? docParsed.data.outputs : sym.doc?.outputs,
-            sideEffects: docParsed.data.sideEffects?.length ? docParsed.data.sideEffects : sym.doc?.sideEffects,
+            summary: docParsed.summary,
+            inputs: docParsed.inputs?.length ? docParsed.inputs : sym.doc?.inputs,
+            outputs: docParsed.outputs?.length ? docParsed.outputs : sym.doc?.outputs,
+            sideEffects: docParsed.sideEffects?.length ? docParsed.sideEffects : sym.doc?.sideEffects,
             aiGenerated: aiFields,
           };
           stats.docsGenerated++;
-          console.log(`[AI-Analyze] Doc [${docsProcessed}/${docsLimit}]: "${sym.label}" → "${docParsed.data.summary?.slice(0, 60)}"`);
+          console.log(`[AI-Analyze] Doc [${docsProcessed}/${docsLimit}]: "${sym.label}" → "${docParsed.summary?.slice(0, 60)}"`);
           send({
             phase: "docs",
             action: "generated",
             symbolId: sym.id,
             symbolLabel: sym.label,
-            summary: docParsed.data.summary,
-            inputs: docParsed.data.inputs,
-            outputs: docParsed.data.outputs,
+            summary: docParsed.summary,
+            inputs: docParsed.inputs,
+            outputs: docParsed.outputs,
             current: docsProcessed,
             total: docsLimit,
           });

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { useAppStore } from "../store";
+import { collectNavigableSymbolIds, useAppStore } from "../store";
 import type { Symbol as Sym } from "@dmpg/shared";
 
 /** Short letter + color for each symbol kind */
@@ -19,21 +19,7 @@ const KIND_BADGE: Record<string, { letter: string; color: string }> = {
 
 /** Navigate to the deepest view containing a symbol and focus it */
 function goToSymbol(symbolId: string) {
-  const store = useAppStore.getState();
-  const g = store.graph;
-  if (!g) return;
-  let bestView: string | null = null;
-  for (const v of g.views) {
-    if (v.nodeRefs.includes(symbolId)) {
-      if (!bestView || (v.parentViewId && v.parentViewId !== g.rootViewId)) {
-        bestView = v.id;
-      }
-    }
-  }
-  if (bestView && bestView !== store.currentViewId) {
-    store.navigateToView(bestView);
-  }
-  store.setFocusNode(symbolId);
+  useAppStore.getState().focusSymbolInContext(symbolId);
 }
 
 export function CommandPalette() {
@@ -45,7 +31,11 @@ export function CommandPalette() {
   const backdropRef = useRef<HTMLDivElement>(null);
 
   const graph = useAppStore((s) => s.graph);
-  const symbols: Sym[] = graph?.symbols ?? [];
+  const symbols = useMemo(() => {
+    if (!graph) return [] as Sym[];
+    const navigableIds = collectNavigableSymbolIds(graph);
+    return graph.symbols.filter((symbol) => navigableIds.has(symbol.id));
+  }, [graph]);
 
   // Ctrl+P opens palette
   useEffect(() => {
@@ -106,7 +96,6 @@ export function CommandPalette() {
   const selectResult = useCallback(
     (sym: Sym) => {
       goToSymbol(sym.id);
-      useAppStore.getState().selectSymbol(sym.id);
       close();
     },
     [close],

@@ -1,6 +1,15 @@
 import { create } from "zustand";
 import type { ProjectGraph, DiagramView, Symbol as Sym, Relation, RelationType } from "@dmpg/shared";
 import type { AnalyzeEvent } from "./api";
+import { buildWorkspaceCompletionHighlight, isAiDataEvent, resolveEventRunKind } from "./aiWorkspaceEvents";
+import {
+  bestNavigableViewForSymbol,
+  bestNavigableViewForTargetIds,
+  buildBreadcrumbPath,
+  collectNavigableSymbolIds,
+  isTechnicalNavigationView,
+  resolveNavigableViewId,
+} from "./viewNavigation";
 import {
   DEFAULT_DIAGRAM_SETTINGS,
   cloneDiagramSettings,
@@ -45,6 +54,7 @@ export interface ValidateState {
 }
 
 export interface AiAnalysisState {
+  runKind: "project_analysis" | "view_workspace";
   running: boolean;
   phase: string;
   log: AnalyzeEvent[];
@@ -110,7 +120,7 @@ export interface AppState {
 
   // AI analysis
   aiAnalysis: AiAnalysisState | null;
-  startAiAnalysis: () => void;
+  startAiAnalysis: (runKind?: "project_analysis" | "view_workspace") => void;
   addAiEvent: (event: AnalyzeEvent) => void;
   acknowledgeAiNavigationSettled: (symbolId: string) => void;
   stopAiAnalysis: () => void;
@@ -156,6 +166,8 @@ export interface AppState {
   focusNodeId: string | null;
   focusSeq: number;
   setFocusNode: (id: string | null) => void;
+  viewFitViewId: string | null;
+  viewFitSeq: number;
 
   // Review hint graph focus
   reviewHighlight: ReviewHighlightState;
@@ -189,6 +201,7 @@ export interface AppState {
   redoGraphChange: () => void;
   navigateToView: (viewId: string) => void;
   goBack: () => void;
+  focusSymbolInContext: (symbolId: string, preferredViewId?: string | null) => void;
   selectSymbol: (id: string | null) => void;
   selectEdge: (id: string | null) => void;
   getCurrentView: () => DiagramView | null;
@@ -229,6 +242,12 @@ let _lastDataUpdateTime = 0;
 let _lastSseDataEventTime = 0;
 const DIAGRAM_SETTINGS_STORAGE_KEY = "dmpg.diagram-settings.v1";
 const MAX_GRAPH_HISTORY = 80;
+
+export {
+  bestNavigableViewForSymbol,
+  collectNavigableSymbolIds,
+  isTechnicalNavigationView,
+} from "./viewNavigation";
 
 function cloneProjectGraph(graph: ProjectGraph): ProjectGraph {
   if (typeof structuredClone === "function") {
@@ -298,46 +317,9 @@ function persistDiagramSettings(settings: DiagramSettings) {
   }
 }
 
-function findBestViewForSymbol(graph: ProjectGraph, symbolId: string, preferredViewId?: string | null): string | null {
-  if (preferredViewId && graph.views.some((v) => v.id === preferredViewId && v.nodeRefs.includes(symbolId))) {
-    return preferredViewId;
-  }
-  let bestView: string | null = null;
-  for (const view of graph.views) {
-    if (!view.nodeRefs.includes(symbolId)) continue;
-    if (!bestView) {
-      bestView = view.id;
-      continue;
-    }
-    if (view.parentViewId && view.parentViewId !== graph.rootViewId) {
-      bestView = view.id;
-    }
-  }
-  return bestView;
-}
-
-function navigateBreadcrumb(current: string[], viewId: string): string[] {
-  const idx = current.indexOf(viewId);
-  if (idx >= 0) return current.slice(0, idx + 1);
-  return [...current, viewId];
-}
-
 /** Build the full ancestor chain from root down to the given view */
 function buildViewPath(graph: { rootViewId: string; views: Array<{ id: string; parentViewId?: string | null }> }, viewId: string): string[] {
-  const viewMap = new Map(graph.views.map((v) => [v.id, v]));
-  const chain: string[] = [];
-  let cur: string | null | undefined = viewId;
-  while (cur) {
-    chain.unshift(cur);
-    const v = viewMap.get(cur);
-    if (!v || cur === graph.rootViewId) break;
-    cur = v.parentViewId ?? null;
-  }
-  // Ensure root is at the start
-  if (chain[0] !== graph.rootViewId) {
-    chain.unshift(graph.rootViewId);
-  }
-  return chain;
+  return buildBreadcrumbPath(graph as Pick<ProjectGraph, "rootViewId" | "views">, viewId);
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -429,6 +411,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   focusNodeId: null,
   focusSeq: 0,
+  viewFitViewId: null,
+  viewFitSeq: 0,
   setFocusNode: (id) =>
     set(id
       ? { focusNodeId: id, focusSeq: (get().focusSeq ?? 0) + 1, selectedSymbolId: id, selectedEdgeId: null, inspectorCollapsed: false }
@@ -445,7 +429,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   activateReviewHighlight: (payload) =>
     set((state) => {
-      const targetViewId = payload.viewId ?? state.currentViewId;
+      const targetViewId = state.graph
+        ? (
+          payload.nodeIds.length > 0
+            ? bestNavigableViewForTargetIds(state.graph, payload.viewId ?? state.currentViewId, payload.nodeIds)
+            : resolveNavigableViewId(state.graph, payload.viewId ?? state.currentViewId, state.currentViewId)
+        )
+        : (payload.viewId ?? state.currentViewId);
       const nextBreadcrumb = state.graph && targetViewId
         ? buildViewPath(state.graph, targetViewId)
         : state.breadcrumb;
@@ -504,9 +494,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }) as DebugTransportState), ...patch },
   })),
 
-  startAiAnalysis: () =>
+  startAiAnalysis: (runKind = "project_analysis") =>
     set({
       aiAnalysis: {
+        runKind,
         running: true,
         phase: "starting",
         log: [],
@@ -537,12 +528,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const isPollStatus = event._source === "poll" && event.action === "poll-progress";
     const isPollEvents = event._source === "poll-events";
     const isSse = event._source === "sse" || !event._source;
-
-    const isFocusEvent = event.action === "focus";
-    const isDataEvent = event.action === "generated"
-      || (event.phase === "labels" && !event.action && event.new_)
-      || (event.phase === "dead-code" && !event.action && event.reason)
-      || (event.phase === "relations" && event.action === "added");
+    const eventRunKind = resolveEventRunKind(event, aiAnalysis.runKind);
+    const isDataEvent = isAiDataEvent(event, eventRunKind);
 
     // For status-poll events, only update progress overlay — no log, no graph, no navigation
     if (isPollStatus) {
@@ -550,6 +537,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         aiAnalysis: {
           ...aiAnalysis,
+          runKind: eventRunKind,
           phase: event.phase ?? aiAnalysis.phase,
           current: event.current ?? aiAnalysis.current,
           total: event.total ?? aiAnalysis.total,
@@ -591,6 +579,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       _lastSseDataEventTime = 0;
       set({
         aiAnalysis: {
+          runKind: eventRunKind,
           running: false,
           phase: event.phase,
           log: newLog,
@@ -619,9 +608,36 @@ export const useAppStore = create<AppState>((set, get) => ({
         .then((r) => r.json())
         .then((g) => {
           get().updateGraph(g);
+          if (eventRunKind === "view_workspace") {
+            const completionHighlight = buildWorkspaceCompletionHighlight(event);
+            if (completionHighlight) {
+              const resolvedViewId = completionHighlight.nodeIds.length > 0
+                ? bestNavigableViewForTargetIds(g, completionHighlight.viewId ?? get().currentViewId, completionHighlight.nodeIds)
+                : resolveNavigableViewId(g, completionHighlight.viewId ?? get().currentViewId, get().currentViewId);
+              if (completionHighlight.nodeIds.length > 0) {
+                get().activateReviewHighlight({
+                  itemId: `workspace-run:${Date.now()}`,
+                  nodeIds: completionHighlight.nodeIds,
+                  primaryNodeId: completionHighlight.primaryNodeId,
+                  viewId: resolvedViewId ?? get().currentViewId,
+                  fitView: true,
+                  inspectPrimary: true,
+                });
+              } else if (resolvedViewId) {
+                get().navigateToView(resolvedViewId);
+              }
+            }
+          }
         })
         .catch(console.error);
       return;
+    }
+
+    if (eventRunKind === "view_workspace" && event.action === "saved") {
+      fetch("/api/graph")
+        .then((response) => response.json())
+        .then((g) => get().updateGraph(g))
+        .catch(() => {});
     }
 
     // ── Live graph updates from data events ──
@@ -750,7 +766,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     // ── Playback Queue: enqueue data events for sequential navigation ──
     let nextPlaybackQueue = [...aiAnalysis.playbackQueue];
     if (isDataEvent && event.symbolId && !aiAnalysis.navPaused) {
-      const targetViewId = graph ? findBestViewForSymbol(graph, event.symbolId, event.viewId ?? aiAnalysis.aiFocusViewId) : null;
+      const targetViewId = graph
+        ? bestNavigableViewForSymbol(graph, event.symbolId, {
+            preferredViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
+            currentViewId: get().currentViewId,
+          })
+        : null;
       nextPlaybackQueue.push({
         symbolId: event.symbolId,
         viewId: targetViewId,
@@ -766,6 +787,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const nextAiState: AiAnalysisState = {
       ...aiAnalysis,
+      runKind: eventRunKind,
       running: true,
       phase: newPhase,
       log: newLog,
@@ -834,7 +856,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   processPlaybackQueue: () => {
-    const { aiAnalysis, graph, breadcrumb } = get();
+    const { aiAnalysis, graph, currentViewId } = get();
     if (!aiAnalysis || !aiAnalysis.running) return;
     if (aiAnalysis.playbackQueue.length === 0) {
       if (aiAnalysis.playbackActive) {
@@ -877,10 +899,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const setPatch: Partial<AppState> = { aiAnalysis: nextAi };
 
     if (item.symbolId && graph) {
-      const targetViewId = item.viewId ?? findBestViewForSymbol(graph, item.symbolId, aiAnalysis.aiFocusViewId);
+      const targetViewId = item.viewId ?? bestNavigableViewForSymbol(graph, item.symbolId, {
+        preferredViewId: aiAnalysis.aiFocusViewId,
+        currentViewId,
+      });
       if (targetViewId) {
         setPatch.currentViewId = targetViewId;
-        setPatch.breadcrumb = navigateBreadcrumb(breadcrumb, targetViewId);
+        setPatch.breadcrumb = buildViewPath(graph, targetViewId);
+        setPatch.viewFitViewId = targetViewId;
+        setPatch.viewFitSeq = (get().viewFitSeq ?? 0) + 1;
       }
       setPatch.focusNodeId = item.symbolId;
       setPatch.focusSeq = (get().focusSeq ?? 0) + 1;
@@ -1078,12 +1105,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   validateNavigateTo: (index) => {
-    const { validateState, graph, breadcrumb } = get();
+    const { validateState, graph, currentViewId } = get();
     if (!validateState.active || !graph) return;
     const change = validateState.changes[index];
     if (!change) return;
 
-    const targetViewId = findBestViewForSymbol(graph, change.symbolId, null);
+    const targetViewId = bestNavigableViewForSymbol(graph, change.symbolId, { currentViewId });
     const setPatch: Partial<AppState> = {
       validateState: { ...validateState, currentIndex: index },
       selectedSymbolId: change.symbolId,
@@ -1094,7 +1121,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     if (targetViewId) {
       setPatch.currentViewId = targetViewId;
-      setPatch.breadcrumb = navigateBreadcrumb(breadcrumb, targetViewId);
+      setPatch.breadcrumb = buildViewPath(graph, targetViewId);
+      setPatch.viewFitViewId = targetViewId;
+      setPatch.viewFitSeq = (get().viewFitSeq ?? 0) + 1;
     }
     set(setPatch);
   },
@@ -1323,17 +1352,52 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   navigateToView: (viewId) => {
-    const { breadcrumb, graph } = get();
-    const idx = breadcrumb.indexOf(viewId);
+    const { breadcrumb, graph, currentViewId, viewFitSeq } = get();
+    const targetViewId = graph
+      ? resolveNavigableViewId(graph, viewId, currentViewId) ?? viewId
+      : viewId;
+    if (currentViewId === targetViewId) {
+      set({
+        currentViewId: targetViewId,
+        selectedSymbolId: null,
+        selectedEdgeId: null,
+        viewFitViewId: targetViewId,
+        viewFitSeq: viewFitSeq + 1,
+      });
+      return;
+    }
+
+    const idx = breadcrumb.indexOf(targetViewId);
     if (idx >= 0) {
       // View is already in current breadcrumb — go back to that point
-      set({ currentViewId: viewId, breadcrumb: breadcrumb.slice(0, idx + 1), selectedSymbolId: null, selectedEdgeId: null });
+      set({
+        currentViewId: targetViewId,
+        breadcrumb: breadcrumb.slice(0, idx + 1),
+        selectedSymbolId: null,
+        selectedEdgeId: null,
+        viewFitViewId: targetViewId,
+        viewFitSeq: viewFitSeq + 1,
+      });
     } else if (graph) {
       // Build correct ancestor path from root → target view
-      const path = buildViewPath(graph, viewId);
-      set({ currentViewId: viewId, breadcrumb: path, selectedSymbolId: null, selectedEdgeId: null });
+      const path = buildViewPath(graph, targetViewId);
+      set({
+        currentViewId: targetViewId,
+        breadcrumb: path,
+        selectedSymbolId: null,
+        selectedEdgeId: null,
+        viewFitViewId: targetViewId,
+        viewFitSeq: viewFitSeq + 1,
+      });
     } else {
-      set({ currentViewId: viewId, breadcrumb: [...breadcrumb, viewId], selectedSymbolId: null, selectedEdgeId: null });
+      set({
+        currentViewId: targetViewId,
+        breadcrumb: [...breadcrumb, targetViewId],
+        selectedSymbolId: null,
+        selectedEdgeId: null,
+        viewFitViewId: targetViewId,
+        viewFitSeq: viewFitSeq + 1,
+      });
     }
   },
 
@@ -1343,6 +1407,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       const newBc = breadcrumb.slice(0, -1);
       set({ currentViewId: newBc[newBc.length - 1], breadcrumb: newBc, selectedSymbolId: null, selectedEdgeId: null });
     }
+  },
+
+  focusSymbolInContext: (symbolId, preferredViewId) => {
+    const { graph, currentViewId, breadcrumb } = get();
+    if (!graph) return;
+
+    const targetViewId = bestNavigableViewForSymbol(graph, symbolId, {
+      preferredViewId,
+      currentViewId,
+    });
+
+    set({
+      currentViewId: targetViewId ?? currentViewId,
+      breadcrumb: targetViewId ? buildViewPath(graph, targetViewId) : breadcrumb,
+      selectedSymbolId: symbolId,
+      selectedEdgeId: null,
+      focusNodeId: symbolId,
+      focusSeq: (get().focusSeq ?? 0) + 1,
+      inspectorCollapsed: false,
+      viewFitViewId: targetViewId ?? get().viewFitViewId,
+      viewFitSeq: targetViewId ? (get().viewFitSeq ?? 0) + 1 : get().viewFitSeq,
+    });
   },
 
   selectSymbol: (id) => set({ selectedSymbolId: id, selectedEdgeId: null }),

@@ -1,6 +1,7 @@
 import type {
   AiExternalContextReviewResponse,
   AiLabelImprovementResponse,
+  AiViewWorkspaceRunRequest,
   AiStructureReviewResponse,
   AiVisionImageInput,
   DiagramImageCompareResponse,
@@ -348,12 +349,15 @@ export async function browseFolders(path?: string): Promise<{
 }
 
 export interface AnalyzeEvent {
+  runKind?: "project_analysis" | "view_workspace";
   phase: string;
   action?: string;
+  step?: "structure" | "context" | "labels" | "reference";
   seq?: number;
   symbolId?: string;
   symbolLabel?: string;
   viewId?: string;
+  focusViewId?: string;
   groupId?: string;
   moduleId?: string;
   moduleLabel?: string;
@@ -378,6 +382,12 @@ export interface AnalyzeEvent {
   outputs?: Array<{ name: string; type?: string; description?: string }>;
   current?: number;
   total?: number;
+  targetIds?: string[];
+  appliedCount?: number;
+  reviewOnlyCount?: number;
+  autoApplied?: boolean;
+  undoSnapshotId?: string;
+  applyRunId?: string;
   stats?: {
     labelsFixed: number;
     docsGenerated: number;
@@ -683,4 +693,65 @@ export function startAnalysis(
     eventsPollerController.abort();
     controller.abort();
   };
+}
+
+export function startViewWorkspaceRun(
+  onEvent: (event: AnalyzeEvent) => void,
+  onError: (err: Error) => void,
+  request: AiViewWorkspaceRunRequest,
+): () => void {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/ai/uml/workspace-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        onError(new Error((err as { error?: string }).error ?? `Workspace run failed (${res.status})`));
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        onError(new Error("No response body"));
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(trimmed.slice(6)) as AnalyzeEvent;
+            event._source = "sse";
+            onEvent(event);
+          } catch {
+            // Ignore malformed SSE chunks and continue reading the stream.
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        onError(err instanceof Error ? err : new Error("Workspace run failed"));
+      }
+    }
+  })();
+
+  return () => controller.abort();
 }

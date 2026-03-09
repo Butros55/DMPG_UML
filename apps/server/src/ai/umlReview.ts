@@ -24,6 +24,12 @@ import * as path from "node:path";
 import { resolveAiConfig, type AiConfig } from "../env.js";
 import { callAiJson } from "./client.js";
 import { resolveModelForTask } from "./modelRouting.js";
+import {
+  normalizeAiExternalContextReviewPayload,
+  normalizeAiLabelImprovementPayload,
+  normalizeAiSymbolEnrichmentPayload,
+  parseStructuredResponse,
+} from "./responseNormalization.js";
 import { AI_USE_CASES, getTaskTypeForUseCase, type AiUseCase } from "./useCases.js";
 
 const ENRICHABLE_SYMBOL_KINDS = new Set(["function", "method", "class", "module", "script", "package"]);
@@ -338,16 +344,16 @@ Code:
 ${code.slice(0, 3000)}`,
   });
 
-  const parsed = AiSymbolEnrichmentResponseSchema.safeParse({
-    ...(typeof data === "object" && data ? data : {}),
-    symbolId: sym.id,
-  });
-  if (!parsed.success) {
-    throw new Error(`AI symbol enrichment failed validation: ${parsed.error.message}`);
-  }
+  const parsed = parseStructuredResponse(
+    { ...(typeof data === "object" && data ? data : {}), symbolId: sym.id },
+    AiSymbolEnrichmentResponseSchema,
+    "AI symbol enrichment",
+    (raw) => normalizeAiSymbolEnrichmentPayload(raw, sym.id),
+    { alwaysNormalize: true },
+  );
 
-  const updatedFields = applySymbolEnrichment(sym, parsed.data);
-  return { enrichment: parsed.data, updatedFields };
+  const updatedFields = applySymbolEnrichment(sym, parsed);
+  return { enrichment: parsed, updatedFields };
 }
 
 export async function enrichViewSymbolsInGraph(
@@ -898,16 +904,19 @@ External dependency candidates:
 ${JSON.stringify(externalCandidates, null, 2)}`,
   });
 
-  const parsed = AiExternalContextReviewResponseSchema.safeParse({
-    ...(typeof data === "object" && data ? data : {}),
-    viewId,
-  });
-  if (!parsed.success) {
-    throw new Error(`AI external context review failed validation: ${parsed.error.message}`);
-  }
+  const parsed = parseStructuredResponse(
+    { ...(typeof data === "object" && data ? data : {}), viewId },
+    AiExternalContextReviewResponseSchema,
+    "AI external context review",
+    (raw) => normalizeAiExternalContextReviewPayload(
+      raw,
+      viewId,
+      externalCandidates.map((candidate) => ({ id: candidate.symbolId, label: candidate.label })),
+    ),
+  );
 
   const allowedIds = new Set(externalCandidates.map((candidate) => candidate.symbolId));
-  const filteredSuggestions: ExternalContextSuggestion[] = parsed.data.suggestedContextNodes
+  const filteredSuggestions: ExternalContextSuggestion[] = parsed.suggestedContextNodes
     .map((suggestion) => ({
       ...suggestion,
       relatedSymbolIds: suggestion.relatedSymbolIds.filter((symbolId) => allowedIds.has(symbolId)),
@@ -1062,16 +1071,19 @@ ${JSON.stringify({
     }, null, 2)}`,
   });
 
-  const parsed = AiLabelImprovementResponseSchema.safeParse({
-    ...(typeof data === "object" && data ? data : {}),
-    viewId,
-  });
-  if (!parsed.success) {
-    throw new Error(`AI label improvement failed validation: ${parsed.error.message}`);
-  }
+  const parsed = parseStructuredResponse(
+    { ...(typeof data === "object" && data ? data : {}), viewId },
+    AiLabelImprovementResponseSchema,
+    "AI label improvement",
+    (raw) => normalizeAiLabelImprovementPayload(
+      raw,
+      viewId,
+      targets.map((target) => ({ id: target.targetId, label: target.oldLabel })),
+    ),
+  );
 
   const knownTargets = new Set(targets.map((target) => target.targetId));
-  const improvements: LabelImprovement[] = parsed.data.improvements.filter((improvement) =>
+  const improvements: LabelImprovement[] = parsed.improvements.filter((improvement) =>
     knownTargets.has(improvement.targetId) &&
     improvement.newLabel.trim().length > 0 &&
     improvement.newLabel !== improvement.oldLabel

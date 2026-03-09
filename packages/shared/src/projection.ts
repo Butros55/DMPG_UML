@@ -86,10 +86,10 @@ const EDGE_STYLE: Record<string, { animated: boolean; cssClass: string }> = {
   calls: { animated: true, cssClass: "edge-calls" },
   imports: { animated: false, cssClass: "edge-imports" },
   inherits: { animated: false, cssClass: "edge-inherits" },
-  reads: { animated: false, cssClass: "edge-reads" },
-  writes: { animated: false, cssClass: "edge-writes" },
+  reads: { animated: true, cssClass: "edge-reads" },
+  writes: { animated: true, cssClass: "edge-writes" },
   instantiates: { animated: true, cssClass: "edge-instantiates" },
-  uses_config: { animated: false, cssClass: "edge-uses-config" },
+  uses_config: { animated: true, cssClass: "edge-uses-config" },
   contains: { animated: false, cssClass: "edge-contains" },
 };
 

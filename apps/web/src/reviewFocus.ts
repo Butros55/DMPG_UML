@@ -1,5 +1,6 @@
 import type { ProjectGraph } from "@dmpg/shared";
 import type { ReviewActionViewModel, ReviewHintViewModel, ViewReviewPanelModel } from "./reviewHints";
+import { bestNavigableViewForTargetIds, resolveNavigableViewId } from "./viewNavigation";
 
 export interface ReviewGraphTargetResolution {
   targetIds: string[];
@@ -31,23 +32,7 @@ function chooseBestViewForTargetIds(
   currentViewId: string | null,
   targetIds: readonly string[],
 ): string | null {
-  const uniqueTargetIds = uniqueIds(targetIds).filter((id) => graph.symbols.some((symbol) => symbol.id === id));
-  if (uniqueTargetIds.length === 0) return currentViewId ?? graph.rootViewId;
-
-  const scored = graph.views
-    .map((view) => {
-      const matchCount = uniqueTargetIds.filter((id) => view.nodeRefs.includes(id)).length;
-      const depth = view.scope === "class" ? 3 : view.scope === "module" ? 2 : view.scope === "group" ? 1 : 0;
-      return { view, matchCount, depth, isCurrent: view.id === currentViewId };
-    })
-    .filter((entry) => entry.matchCount > 0)
-    .sort((left, right) =>
-      right.matchCount - left.matchCount
-      || Number(right.isCurrent) - Number(left.isCurrent)
-      || right.depth - left.depth,
-    );
-
-  return scored[0]?.view.id ?? currentViewId ?? graph.rootViewId;
+  return bestNavigableViewForTargetIds(graph, currentViewId, targetIds);
 }
 
 function choosePrimaryTargetId(
@@ -169,7 +154,7 @@ export function resolveReviewEntryTargets(
   return {
     targetIds: [],
     primaryTargetId: null,
-    viewId: currentViewId ?? graph.rootViewId,
+    viewId: resolveNavigableViewId(graph, currentViewId, graph.rootViewId),
     matchedBy: currentViewId ? "view_only" : "none",
   };
 }

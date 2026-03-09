@@ -53,6 +53,7 @@ export function ActionPalette() {
   const inspectorCollapsed = useAppStore((s) => s.inspectorCollapsed);
   const toggleInspector = useAppStore((s) => s.toggleInspector);
   const aiRunning = useAppStore((s) => s.aiAnalysis?.running ?? false);
+  const aiRunKind = useAppStore((s) => s.aiAnalysis?.runKind ?? null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -167,15 +168,15 @@ export function ActionPalette() {
       },
       {
         id: "ai-start",
-        label: "AI Analyse starten",
+        label: "AI Workspace starten",
         kind: "ai",
-        keywords: ["ai", "analyse", "start"],
+        keywords: ["ai", "workspace", "analyse", "start"],
         disabled: aiRunning,
         run: () => dispatchSidebarCommand("ai-start"),
       },
       {
         id: "ai-resume",
-        label: "AI Analyse fortsetzen",
+        label: "AI Projektanalyse fortsetzen",
         kind: "ai",
         keywords: ["ai", "resume", "fortsetzen"],
         disabled: aiRunning || !canResume,
@@ -183,15 +184,15 @@ export function ActionPalette() {
       },
       {
         id: "ai-pause",
-        label: "AI Analyse pausieren",
+        label: "AI Lauf pausieren",
         kind: "ai",
         keywords: ["ai", "pause", "pausieren"],
-        disabled: !aiRunning,
+        disabled: !aiRunning || aiRunKind !== "project_analysis",
         run: () => dispatchSidebarCommand("ai-pause"),
       },
       {
         id: "ai-stop",
-        label: "AI Analyse stoppen",
+        label: "AI Lauf stoppen",
         kind: "ai",
         keywords: ["ai", "stop", "cancel"],
         disabled: !aiRunning,

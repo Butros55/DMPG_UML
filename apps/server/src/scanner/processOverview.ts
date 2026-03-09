@@ -7,7 +7,7 @@ import type {
   RelationType,
   Symbol,
 } from "@dmpg/shared";
-import { buildProcessDiagramConfigFromGraph } from "./processOverview.auto.js";
+import { buildProcessDiagramConfigFromGraph, describeProcessArtifact } from "./processOverview.auto.js";
 
 const PROCESS_TAG = "process-overview";
 const STUB_TAG = "external-stub";
@@ -118,7 +118,8 @@ export function augmentGraphWithUmlOverlays(graph: ProjectGraph): ProjectGraph {
   const withBaseUmlTypes = applyDefaultUmlTypes(graph);
   const withProcess = createProcessOverviewView(withBaseUmlTypes);
   const withStubs = addExternalContextStubs(withProcess);
-  return pruneManagedArchitectureViews(withStubs);
+  const pruned = pruneManagedArchitectureViews(withStubs);
+  return addManagedViewArtifactOverlay(pruned);
 }
 
 function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
@@ -207,7 +208,9 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
     parentViewId: null,
     scope: "root",
     nodeRefs: processNodeIds,
-    edgeRefs: processRelations.map((relation) => relation.id),
+    edgeRefs: processRelations
+      .filter((relation) => processNodeIds.includes(relation.source) && processNodeIds.includes(relation.target))
+      .map((relation) => relation.id),
     nodePositions: processPositions,
   };
 
@@ -426,11 +429,89 @@ function belongsToStageSubtree(
 }
 
 function keepNodeInManagedView(symbol: Symbol): boolean {
+  if (symbol.id.startsWith("proc:artifact:")) return true;
   if (symbol.id.startsWith("stub:") || symbol.id.startsWith("proc:")) return false;
   if (symbol.tags?.includes(STUB_TAG)) return false;
   if (symbol.kind === "external") return false;
   if (symbol.id.startsWith("grp:art-cat:") || symbol.id.startsWith("grp:artifacts:")) return false;
   return true;
+}
+
+function addManagedViewArtifactOverlay(graph: ProjectGraph): ProjectGraph {
+  const viewsById = new Map(graph.views.map((view) => [view.id, view]));
+  const symbolsById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
+  const ancestorIndex = buildAncestorIndex(graph.symbols);
+  const artifactWriteRelations = graph.relations.filter((relation) =>
+    relation.type === "writes" &&
+    !relation.id.startsWith(PROCESS_REL_PREFIX) &&
+    !relation.id.startsWith(STUB_REL_PREFIX),
+  );
+  const relationIds = new Set(graph.relations.map((relation) => relation.id));
+
+  for (const view of graph.views) {
+    if (view.id === PROCESS_VIEW_ID || view.id.startsWith(LEGACY_PROCESS_STAGE_VIEW_PREFIX)) continue;
+    if (!belongsToStageSubtree(view.id, viewsById)) continue;
+
+    const visible = new Set(view.nodeRefs.filter((nodeId) => !nodeId.startsWith("proc:artifact:")));
+    if (visible.size === 0) continue;
+
+    for (const relation of artifactWriteRelations) {
+      const writerRef = findNearestVisible(relation.source, visible, ancestorIndex);
+      if (!writerRef) continue;
+
+      const targetSymbol = symbolsById.get(relation.target);
+      if (!targetSymbol || targetSymbol.kind !== "external") continue;
+
+      const artifact = describeProcessArtifact(targetSymbol.label);
+      let artifactSymbol = symbolsById.get(artifact.id);
+      if (!artifactSymbol) {
+        artifactSymbol = {
+          id: artifact.id,
+          label: artifact.label,
+          kind: "external",
+          umlType: "artifact",
+          stereotype: "<<artifact>>",
+          preview: artifact.preview && artifact.preview.length > 0 ? { lines: artifact.preview } : undefined,
+          tags: [PROCESS_TAG],
+        };
+        graph.symbols.push(artifactSymbol);
+        symbolsById.set(artifact.id, artifactSymbol);
+        ancestorIndex.set(artifact.id, [artifact.id]);
+      }
+
+      if (!view.nodeRefs.includes(artifact.id)) {
+        view.nodeRefs.push(artifact.id);
+      }
+
+      const edgeId = `${PROCESS_REL_PREFIX}view-artifact:${sanitizeId(view.id)}:${sanitizeId(writerRef)}:${sanitizeId(artifact.id)}`;
+      if (!relationIds.has(edgeId)) {
+        graph.relations.push({
+          id: edgeId,
+          type: "writes",
+          source: writerRef,
+          target: artifact.id,
+          label: summarizeArtifactWrite(targetSymbol.label),
+          confidence: 1,
+        });
+        relationIds.add(edgeId);
+      }
+
+      if (!view.edgeRefs.includes(edgeId)) {
+        view.edgeRefs.push(edgeId);
+      }
+    }
+  }
+
+  return graph;
+}
+
+function summarizeArtifactWrite(label: string): string {
+  const normalized = label.replace(/\\/g, "/").toLowerCase();
+  if (normalized.endsWith(".csv")) return "writes csv";
+  if (normalized.endsWith(".json")) return "writes json";
+  if (normalized.endsWith(".xlsx") || normalized.endsWith(".xls")) return "writes xlsx";
+  if (normalized.endsWith(".pickle") || normalized.endsWith(".pkl")) return "writes pickle";
+  return "writes";
 }
 
 /**

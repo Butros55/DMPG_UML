@@ -1,18 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
-import type { ReviewItemStatus, UmlReferenceAutorefactorResponse } from "@dmpg/shared";
-import {
-  fetchGraph,
-  improveCurrentViewLabels,
-  reviewCurrentViewStructure,
-  runReferenceDrivenAutorefactor,
-  undoReferenceDrivenAutorefactor,
-} from "../api";
+import type { ReviewItemStatus } from "@dmpg/shared";
 import { buildReviewHighlightRequest, resolveReviewEntryTargets } from "../reviewFocus";
-import {
-  buildReferenceAutorefactorRequest,
-  captureCurrentViewAsVisionImage,
-  fileToVisionImageInput,
-} from "../referenceAutorefactor";
 import {
   filterReviewItems,
   normalizeViewReviewPanel,
@@ -22,7 +10,6 @@ import {
   type ReviewHintViewModel,
 } from "../reviewHints";
 import { useAppStore } from "../store";
-import { ReferenceAutorefactorDialog } from "./ReferenceAutorefactorDialog";
 
 const FILTERS: Array<{ key: ReviewFilterKey; label: string }> = [
   { key: "all", label: "All" },
@@ -207,7 +194,7 @@ function ReviewHintCard({
             className="review-item__focus-btn"
             onClick={(event) => { event.stopPropagation(); onFocusTarget(); }}
             disabled={!canResolveTarget}
-            title={canResolveTarget ? "Betroffene Symbole oder Gruppen fokussieren" : "Keine verknüpften Symbole"}
+            title={canResolveTarget ? "Betroffene Symbole oder Gruppen fokussieren" : "Keine verknuepften Symbole"}
           >
             <i className="bi bi-crosshair2" /> Focus
           </button>
@@ -231,24 +218,21 @@ function ReviewHintCard({
   );
 }
 
-export function ReviewHintsPanel() {
+interface ReviewHintsPanelProps {
+  embedded?: boolean;
+}
+
+export function ReviewHintsPanel({ embedded = false }: ReviewHintsPanelProps) {
   const graph = useAppStore((state) => state.graph);
   const currentViewId = useAppStore((state) => state.currentViewId);
   const reviewHighlight = useAppStore((state) => state.reviewHighlight);
-  const updateGraph = useAppStore((state) => state.updateGraph);
   const updateView = useAppStore((state) => state.updateView);
   const activateReviewHighlight = useAppStore((state) => state.activateReviewHighlight);
   const previewReviewHighlight = useAppStore((state) => state.previewReviewHighlight);
   const clearReviewHighlight = useAppStore((state) => state.clearReviewHighlight);
-  const navigateToView = useAppStore((state) => state.navigateToView);
 
   const [filter, setFilter] = useState<ReviewFilterKey>("all");
   const [showDismissed, setShowDismissed] = useState(false);
-  const [refreshing, setRefreshing] = useState<"structure" | "labels" | null>(null);
-  const [referenceDialogOpen, setReferenceDialogOpen] = useState(false);
-  const [autorefactorRunning, setAutorefactorRunning] = useState(false);
-  const [lastAutorefactor, setLastAutorefactor] = useState<UmlReferenceAutorefactorResponse | null>(null);
-  const [error, setError] = useState("");
 
   const panel = useMemo(() => normalizeViewReviewPanel(graph, currentViewId), [graph, currentViewId]);
 
@@ -339,109 +323,9 @@ export function ReviewHintsPanel() {
     previewReviewHighlight(resolution.targetIds);
   }, [currentViewId, graph, panel, previewReviewHighlight]);
 
-  const handleStructureRefresh = useCallback(async () => {
-    if (!currentViewId) return;
-    setRefreshing("structure");
-    setError("");
-    try {
-      await reviewCurrentViewStructure(currentViewId, { persist: true, includeContextReview: true });
-      const freshGraph = await fetchGraph();
-      updateGraph(freshGraph);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Structure review failed");
-    } finally {
-      setRefreshing(null);
-    }
-  }, [currentViewId, updateGraph]);
-
-  const handleLabelRefresh = useCallback(async () => {
-    if (!currentViewId) return;
-    setRefreshing("labels");
-    setError("");
-    try {
-      await improveCurrentViewLabels(currentViewId, { persist: true });
-      const freshGraph = await fetchGraph();
-      updateGraph(freshGraph);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Label improvement failed");
-    } finally {
-      setRefreshing(null);
-    }
-  }, [currentViewId, updateGraph]);
-
-  const handleReferenceAutorefactor = useCallback(async (payload: {
-    referenceFile: File;
-    instruction: string;
-    options: Parameters<typeof buildReferenceAutorefactorRequest>[0]["options"];
-  }) => {
-    if (!graph || !currentViewId) return;
-
-    setAutorefactorRunning(true);
-    setError("");
-    try {
-      const currentView = graph.views.find((candidate) => candidate.id === currentViewId);
-      const currentViewImage = await captureCurrentViewAsVisionImage();
-      const referenceImage = await fileToVisionImageInput(payload.referenceFile, "reference_view");
-      const request = buildReferenceAutorefactorRequest({
-        currentViewImage,
-        referenceImage,
-        viewId: currentViewId,
-        instruction: payload.instruction,
-        options: payload.options,
-        graphContext: {
-          viewId: currentViewId,
-          viewTitle: currentView?.title ?? currentViewId,
-          currentSummary: panel?.reviewSummary?.summary,
-        },
-      });
-      const result = await runReferenceDrivenAutorefactor(request);
-      if (result.graph) {
-        updateGraph(result.graph);
-      }
-
-      if (result.highlightTargetIds.length > 0 || result.focusViewId) {
-        activateReviewHighlight({
-          itemId: `reference-autorefactor:${Date.now()}`,
-          nodeIds: result.highlightTargetIds,
-          primaryNodeId: result.primaryFocusTargetIds[0] ?? result.highlightTargetIds[0] ?? null,
-          viewId: result.focusViewId ?? currentViewId,
-          fitView: true,
-          inspectPrimary: true,
-        });
-      } else if (result.focusViewId) {
-        navigateToView(result.focusViewId);
-      }
-
-      setLastAutorefactor(result);
-      setReferenceDialogOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Reference-driven UML autorefactor failed");
-    } finally {
-      setAutorefactorRunning(false);
-    }
-  }, [activateReviewHighlight, currentViewId, graph, navigateToView, panel?.reviewSummary?.summary, updateGraph]);
-
-  const handleUndoAutorefactor = useCallback(async () => {
-    const snapshotId = lastAutorefactor?.undoInfo?.snapshotId;
-    if (!snapshotId) return;
-
-    setAutorefactorRunning(true);
-    setError("");
-    try {
-      const result = await undoReferenceDrivenAutorefactor(snapshotId);
-      updateGraph(result.graph);
-      clearReviewHighlight();
-      setLastAutorefactor(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Undo for reference-driven UML autorefactor failed");
-    } finally {
-      setAutorefactorRunning(false);
-    }
-  }, [clearReviewHighlight, lastAutorefactor?.undoInfo?.snapshotId, updateGraph]);
-
   if (!panel) {
     return (
-      <div className="sidebar-section">
+      <div className={`sidebar-section review-panel${embedded ? " review-panel--embedded" : ""}`}>
         <h2>Review</h2>
         <div className="review-panel-empty">No current view loaded.</div>
       </div>
@@ -449,22 +333,10 @@ export function ReviewHintsPanel() {
   }
 
   return (
-    <div className="sidebar-section review-panel">
-      <ReferenceAutorefactorDialog
-        open={referenceDialogOpen}
-        viewTitle={panel.viewTitle}
-        running={autorefactorRunning}
-        error={error}
-        onClose={() => {
-          setReferenceDialogOpen(false);
-          setError("");
-        }}
-        onSubmit={handleReferenceAutorefactor}
-      />
-
+    <div className={`sidebar-section review-panel${embedded ? " review-panel--embedded" : ""}`}>
       <div className="review-panel__header">
         <div>
-          <h2>Review Hints</h2>
+          <h2>{embedded ? "Workspace Results" : "Review Hints"}</h2>
           <div className="review-panel__subtitle">{panel.viewTitle}</div>
         </div>
         <div className="review-panel__summary">
@@ -473,72 +345,6 @@ export function ReviewHintsPanel() {
           <span className="review-count review-count--low">{panel.counts.low} low</span>
         </div>
       </div>
-
-      <div className="review-toolbar review-toolbar--actions">
-        <button
-          className="btn btn-sm review-toolbar__action"
-          onClick={() => {
-            setError("");
-            setReferenceDialogOpen(true);
-          }}
-          disabled={!currentViewId || autorefactorRunning}
-        >
-          <i className="bi bi-magic" /> Mit Referenz anpassen
-        </button>
-        {lastAutorefactor?.undoInfo && (
-          <button
-            className="btn btn-sm btn-outline review-toolbar__action"
-            onClick={handleUndoAutorefactor}
-            disabled={autorefactorRunning}
-          >
-            <i className="bi bi-arrow-counterclockwise" /> Rückgängig
-          </button>
-        )}
-      </div>
-
-      {lastAutorefactor && (
-        <div className={`review-summary-card${lastAutorefactor.compare.isCurrentDiagramTooUiLike ? " review-summary-card--warning" : ""}`}>
-          <div className="review-summary-card__header">
-            <span className="review-tag review-tag--source">Reference Autorefactor</span>
-            <span className="review-tag review-tag--category">
-              {lastAutorefactor.autoApplied ? "auto-applied" : "review / dry-run"}
-            </span>
-            <span className="review-tag review-tag--delta">
-              {lastAutorefactor.appliedActions.length} applied / {lastAutorefactor.reviewOnlyActions.length} review-only
-            </span>
-          </div>
-          <p className="review-summary-card__text">{lastAutorefactor.plan.summary}</p>
-          <div className="review-item__targets">
-            <span className="review-item__target-pill">{lastAutorefactor.changedTargetIds.length} changed targets</span>
-            <span className="review-item__target-pill">{lastAutorefactor.changedViewIds.length} changed views</span>
-            <span className="review-item__target-pill">{lastAutorefactor.skippedActions.length} skipped</span>
-          </div>
-          <div className="review-summary-card__actions">
-            <button
-              className="review-item__focus-btn"
-              onClick={() => activateReviewHighlight({
-                itemId: `reference-autorefactor:summary:${lastAutorefactor.undoInfo?.applyRunId ?? "latest"}`,
-                nodeIds: lastAutorefactor.highlightTargetIds,
-                primaryNodeId: lastAutorefactor.primaryFocusTargetIds[0] ?? lastAutorefactor.highlightTargetIds[0] ?? null,
-                viewId: lastAutorefactor.focusViewId ?? currentViewId,
-                fitView: true,
-                inspectPrimary: true,
-              })}
-            >
-              <i className="bi bi-crosshair2" /> Geänderte Stellen fokussieren
-            </button>
-            {lastAutorefactor.undoInfo && (
-              <button
-                className="review-item__focus-btn"
-                onClick={handleUndoAutorefactor}
-                disabled={autorefactorRunning}
-              >
-                <i className="bi bi-arrow-counterclockwise" /> Letzten Lauf rückgängig
-              </button>
-            )}
-          </div>
-        </div>
-      )}
 
       {panel.reviewSummary && (
         <div className={`review-summary-card${panel.reviewSummary.isCurrentDiagramTooUiLike ? " review-summary-card--warning" : ""}`}>
@@ -600,25 +406,6 @@ export function ReviewHintsPanel() {
           <i className="bi bi-slash-circle" /> Clear highlight
         </button>
       </div>
-
-      <div className="review-toolbar review-toolbar--actions">
-        <button
-          className="btn btn-sm btn-outline review-toolbar__action"
-          onClick={handleStructureRefresh}
-          disabled={refreshing !== null}
-        >
-          <i className="bi bi-arrow-repeat" /> {refreshing === "structure" ? "Running…" : "Re-run structure review"}
-        </button>
-        <button
-          className="btn btn-sm btn-outline review-toolbar__action"
-          onClick={handleLabelRefresh}
-          disabled={refreshing !== null}
-        >
-          <i className="bi bi-type" /> {refreshing === "labels" ? "Running…" : "Re-run label review"}
-        </button>
-      </div>
-
-      {error && <div className="review-panel__error">{error}</div>}
 
       {visibleActions.length > 0 && (
         <div className="review-top-actions">

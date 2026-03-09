@@ -1,14 +1,9 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from "react";
-import { useAppStore } from "../store";
+import { collectNavigableSymbolIds, useAppStore } from "../store";
 import {
   scanProject,
   browseFolders,
   fetchConfig,
-  startAnalysis,
-  cancelAnalysis,
-  pauseAnalysis,
-  fetchAnalyzeStatus,
-  fetchGraph,
   fetchProjects,
   switchProject as switchProjectApi,
   deleteProjectApi,
@@ -16,8 +11,9 @@ import {
 } from "../api";
 import type { ProjectMeta } from "../api";
 import type { DiagramView, Symbol as Sym } from "@dmpg/shared";
-import { ReviewHintsPanel } from "./ReviewHintsPanel";
+import { AiWorkspacePanel } from "./AiWorkspacePanel";
 import { exportProjectPackage, importProjectPackageFile } from "../projectTransfer";
+import { formatViewTitle } from "../viewTitles";
 
 const NODE_KINDS = [
   { kind: "module", label: "Module", color: "#6c8cff" },
@@ -52,26 +48,12 @@ const SCOPE_ICONS: Record<string, string> = {
   class: "bi-building",
 };
 
-type SidebarTab = "views" | "review" | "nodes" | "ai" | "project";
+type SidebarTab = "views" | "nodes" | "ai" | "project";
 const SIDEBAR_TAB_STORAGE_KEY = "dmpg.sidebar.active-tab.v1";
 
 /** Navigate to the deepest view containing a symbol and focus it */
 function goToSymbol(symbolId: string) {
-  const store = useAppStore.getState();
-  const g = store.graph;
-  if (!g) return;
-  let bestView: string | null = null;
-  for (const v of g.views) {
-    if (v.nodeRefs.includes(symbolId)) {
-      if (!bestView || (v.parentViewId && v.parentViewId !== g.rootViewId)) {
-        bestView = v.id;
-      }
-    }
-  }
-  if (bestView && bestView !== store.currentViewId) {
-    store.navigateToView(bestView);
-  }
-  store.setFocusNode(symbolId);
+  useAppStore.getState().focusSymbolInContext(symbolId);
 }
 
 /** Small inline kind badge */
@@ -256,7 +238,7 @@ function ViewTreeItem({
         )}
         <span className="view-tree-icon"><i className={`bi ${icon}`} /></span>
         <span className="view-tree-label">
-          <HighlightText text={view.title} query={searchQuery} />
+          <HighlightText text={formatViewTitle(view.title, view.id)} query={searchQuery} />
         </span>
       </div>
       {hasChildren && !isCollapsed && (
@@ -385,15 +367,10 @@ function FolderBrowser({ onSelect, onClose }: { onSelect: (path: string) => void
 export function Sidebar() {
   const graph = useAppStore((s) => s.graph);
   const setGraph = useAppStore((s) => s.setGraph);
-  const updateGraph = useAppStore((s) => s.updateGraph);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const navigateToView = useAppStore((s) => s.navigateToView);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed);
-  const aiAnalysis = useAppStore((s) => s.aiAnalysis);
-  const addAiEvent = useAppStore((s) => s.addAiEvent);
-  const startAiAnalysis = useAppStore((s) => s.startAiAnalysis);
-  const stopAiAnalysis = useAppStore((s) => s.stopAiAnalysis);
   const exitValidateMode = useAppStore((s) => s.exitValidateMode);
   const resetPlaybackQueue = useAppStore((s) => s.resetPlaybackQueue);
 
@@ -409,13 +386,8 @@ export function Sidebar() {
   const toggleSection = useCallback((key: string) => {
     setSectionCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
-  const abortRef = useCallback(() => {}, []);
-  const [abortFn, setAbortFn] = useState<(() => void) | null>(null);
-  const [analyzeScope, setAnalyzeScope] = useState<"all" | "view">("all");
   const [aiProvider, setAiProvider] = useState("");
   const [ollamaModel, setOllamaModel] = useState("");
-  const [canResume, setCanResume] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [viewSearchQuery, setViewSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SidebarTab>("views");
@@ -423,8 +395,10 @@ export function Sidebar() {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(SIDEBAR_TAB_STORAGE_KEY);
-      if (raw === "views" || raw === "review" || raw === "nodes" || raw === "ai" || raw === "project") {
+      if (raw === "views" || raw === "nodes" || raw === "ai" || raw === "project") {
         setActiveTab(raw);
+      } else if (raw === "review") {
+        setActiveTab("ai");
       }
     } catch {
       // ignore invalid persisted tab state
@@ -470,12 +444,6 @@ export function Sidebar() {
       setOllamaModel(cfg.ollamaModel ?? "");
     });
     refreshProjects().catch(() => {});
-    // Check if there is a resumable AI analysis from a previous session
-    fetchAnalyzeStatus().then((status) => {
-      if (status.canResume && !status.running) {
-        setCanResume(true);
-      }
-    }).catch(() => {});
   }, [refreshProjects]);
 
   const handleScan = useCallback(async () => {
@@ -578,77 +546,6 @@ export function Sidebar() {
     } catch { /* ignore */ }
   }, [setGraph, exitValidateMode, resetPlaybackQueue]);
 
-  // Auto-scroll AI log when new entries arrive
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
-  }, [aiAnalysis?.log.length]);
-
-  /* ── AI Analysis ── */
-  const handleStartAnalysis = useCallback(async (resume = false) => {
-    console.log(`[AI] Starting AI analysis... (resume=${resume})`);
-    exitValidateMode();
-    resetPlaybackQueue();
-
-    // Ensure server has the latest full graph before starting
-    try {
-      const freshGraph = await fetchGraph();
-      updateGraph(freshGraph);
-    } catch { /* continue with what server has */ }
-
-    startAiAnalysis();
-    setCanResume(false);
-
-    // Determine scope
-    const viewId = analyzeScope === "view" ? currentViewId ?? undefined : undefined;
-    console.log(`[AI] Scope: ${viewId ? `view ${viewId}` : "all"}, resume: ${resume}`);
-
-    const abort = startAnalysis(
-      (event) => {
-        console.log("[AI] SSE event:", event.phase, event.action ?? "", event.symbolLabel ?? event.symbolId ?? "", JSON.stringify(event));
-        addAiEvent(event);
-
-        if (event.phase === "done" || event.phase === "cancelled") {
-          console.log("[AI] Analysis", event.phase, event.stats);
-        }
-        if (event.phase === "paused") {
-          console.log("[AI] Analysis paused", event.stats);
-          setCanResume(true);
-        }
-        if (event.phase === "error") {
-          console.error("[AI] Analysis error:", event.message);
-          setCanResume(true); // can resume after errors too
-        }
-      },
-      (err) => {
-        console.error("[AI] Connection error:", err);
-        addAiEvent({ phase: "error", message: err.message ?? "Verbindungsfehler" });
-        stopAiAnalysis();
-        setCanResume(true);
-      },
-      viewId,
-      resume,
-    );
-    setAbortFn(() => abort);
-  }, [startAiAnalysis, addAiEvent, stopAiAnalysis, updateGraph, analyzeScope, currentViewId, exitValidateMode, resetPlaybackQueue]);
-
-  const handleStopAnalysis = useCallback(() => {
-    // Tell the server to stop processing
-    cancelAnalysis().catch(() => {});
-    if (abortFn) abortFn();
-    stopAiAnalysis();
-    setCanResume(true); // cancelled analysis can be resumed
-    // Re-fetch graph to get whatever was saved server-side
-    fetch("/api/graph").then((r) => r.json()).then((g) => updateGraph(g)).catch(() => {});
-  }, [abortFn, stopAiAnalysis, updateGraph]);
-
-  const handlePauseAnalysis = useCallback(() => {
-    // Tell the server to pause (saves progress, can resume)
-    pauseAnalysis().catch(() => {});
-    // Don't abort the SSE — let it receive the "paused" event naturally
-  }, []);
-
   useEffect(() => {
     const onSidebarCommand = (event: Event) => {
       const detail = (event as CustomEvent<{ action?: string; projectPath?: string }>).detail;
@@ -681,20 +578,11 @@ export function Sidebar() {
           if (activeProjectPath) void handleDeleteProject(activeProjectPath);
           break;
         case "ai-start":
-          activateTab("ai");
-          void handleStartAnalysis(false);
-          break;
         case "ai-resume":
-          activateTab("ai");
-          void handleStartAnalysis(canResume ? true : false);
-          break;
         case "ai-pause":
-          activateTab("ai");
-          handlePauseAnalysis();
-          break;
         case "ai-stop":
           activateTab("ai");
-          handleStopAnalysis();
+          window.dispatchEvent(new CustomEvent("dmpg:ai-workspace-command", { detail }));
           break;
         default:
           break;
@@ -705,12 +593,8 @@ export function Sidebar() {
     return () => window.removeEventListener("dmpg:sidebar-command", onSidebarCommand as EventListener);
   }, [
     activeProjectPath,
-    canResume,
     handleDeleteProject,
-    handlePauseAnalysis,
     handleScan,
-    handleStartAnalysis,
-    handleStopAnalysis,
     handleSwitchProject,
     activateTab,
   ]);
@@ -740,6 +624,11 @@ export function Sidebar() {
     [views],
   );
   const allSymbols = graph?.symbols ?? [];
+  const searchableSymbols = useMemo(() => {
+    if (!graph) return [] as Sym[];
+    const navigableIds = collectNavigableSymbolIds(graph);
+    return graph.symbols.filter((symbol) => navigableIds.has(symbol.id));
+  }, [graph]);
   const { rootViews, childMap } = useMemo(() => {
     const cMap = new Map<string, DiagramView[]>();
     const roots: DiagramView[] = [];
@@ -898,15 +787,6 @@ export function Sidebar() {
           <i className="bi bi-diagram-3" />
         </button>
         <button
-          className={`sidebar-activity-btn${activeTab === "review" ? " sidebar-activity-btn--active" : ""}`}
-          onClick={() => handleActivityTabClick("review")}
-          title="Review Hints"
-          role="tab"
-          aria-selected={activeTab === "review"}
-        >
-          <i className="bi bi-clipboard2-check" />
-        </button>
-        <button
           className={`sidebar-activity-btn${activeTab === "nodes" ? " sidebar-activity-btn--active" : ""}`}
           onClick={() => handleActivityTabClick("nodes")}
           title="UML Nodes"
@@ -918,7 +798,7 @@ export function Sidebar() {
         <button
           className={`sidebar-activity-btn${activeTab === "ai" ? " sidebar-activity-btn--active" : ""}`}
           onClick={() => handleActivityTabClick("ai")}
-          title="AI Analysis"
+          title="AI Workspace"
           role="tab"
           aria-selected={activeTab === "ai"}
         >
@@ -937,18 +817,14 @@ export function Sidebar() {
 
       <div className="sidebar-content">
       {/* ── Global Symbol Search ── */}
-      {activeTab === "views" && allSymbols.length > 0 && (
+      {activeTab === "views" && searchableSymbols.length > 0 && (
         <div className="sidebar-section sidebar-section--search">
           <SymbolSearch
-            symbols={allSymbols}
+            symbols={searchableSymbols}
             query={viewSearchQuery}
             onQueryChange={setViewSearchQuery}
           />
         </div>
-      )}
-
-      {activeTab === "review" && (
-        <ReviewHintsPanel />
       )}
 
       {activeTab === "nodes" && (
@@ -1035,190 +911,8 @@ export function Sidebar() {
         </div>
       )}
 
-      {/* ── AI Analysis ── */}
-      {activeTab === "ai" && graph && (
-        <div className="sidebar-section">
-          <h2 className="sidebar-section__header" onClick={() => toggleSection("aiAnalysis")}>
-            <span className={`sidebar-section__chevron ${sectionCollapsed.aiAnalysis ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
-            AI Analysis
-          </h2>
-          {!sectionCollapsed.aiAnalysis && (<>
-
-          {/* Provider info */}
-          <div className="ai-provider-info">
-            <span className={`ai-provider-badge ai-provider-badge--${aiProvider}`}>
-              {aiProvider === "local" ? <><i className="bi bi-pc-display" /> Lokal</> : <><i className="bi bi-cloud" /> Cloud</>}
-            </span>
-            {ollamaModel && <span className="ai-provider-model">{ollamaModel}</span>}
-          </div>
-
-          {/* Scope toggle */}
-          <div className="ai-scope-toggle">
-            <label>
-              <input
-                type="radio"
-                name="aiScope"
-                value="all"
-                checked={analyzeScope === "all"}
-                onChange={() => setAnalyzeScope("all")}
-                disabled={!!aiAnalysis?.running}
-              />
-              Gesamtes Projekt
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="aiScope"
-                value="view"
-                checked={analyzeScope === "view"}
-                onChange={() => setAnalyzeScope("view")}
-                disabled={!!aiAnalysis?.running}
-              />
-              Nur aktuelle View
-            </label>
-          </div>
-
-          {!aiAnalysis?.running ? (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-              <button className="btn ai-analyze-btn ai-analyze-btn--start" onClick={() => handleStartAnalysis(false)} style={{ flex: 1 }}>
-                <i className="bi bi-cpu" /> AI Analyse starten
-              </button>
-              {canResume && (
-                <button className="btn ai-analyze-btn ai-analyze-btn--resume" onClick={() => handleStartAnalysis(true)} style={{ flex: 1 }}>
-                  <i className="bi bi-play-fill" /> Fortsetzen
-                </button>
-              )}
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn ai-analyze-btn ai-analyze-btn--pause" onClick={handlePauseAnalysis} style={{ flex: 1 }}>
-                <i className="bi bi-pause-fill" /> Pausieren
-              </button>
-              <button className="btn ai-analyze-btn ai-analyze-btn--stop" onClick={handleStopAnalysis} style={{ flex: 1 }}>
-                <i className="bi bi-stop-fill" /> Stoppen
-              </button>
-              <button
-                className={`btn ai-analyze-btn ${aiAnalysis?.navPaused ? "ai-analyze-btn--resume" : "ai-analyze-btn--nav-pause"}`}
-                onClick={() => useAppStore.getState().toggleAiNavPaused()}
-                title={aiAnalysis?.navPaused ? "Auto-Navigation fortsetzen" : "Auto-Navigation pausieren (Analyse läuft weiter)"}
-                style={{ flex: 1 }}
-              >
-                {aiAnalysis?.navPaused ? <><i className="bi bi-compass" /><i className="bi bi-play-fill" /> Nav</> : <><i className="bi bi-compass" /><i className="bi bi-pause-fill" /> Nav</>}
-              </button>
-            </div>
-          )}
-          {aiAnalysis && (
-            <div className="ai-log-panel">
-              {aiAnalysis.running && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span className="ai-spinner" />
-                    <span className={`ai-phase-badge ai-phase-badge--${aiAnalysis.phase}`}>{aiAnalysis.phase || "starting…"}</span>
-                    {/* Show progress text from last progress event OF CURRENT PHASE */}
-                    {(() => {
-                      const last = [...aiAnalysis.log].reverse().find((e) => (e.action === "progress" || e.action === "saved") && e.phase === aiAnalysis.phase);
-                      return last?.message ? <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: 4 }}>{last.message}</span> : null;
-                    })()}
-                  </div>
-                  {/* Progress bar */}
-                  {aiAnalysis.current != null && aiAnalysis.total != null && aiAnalysis.total > 0 && (
-                    <div className="ai-progress-bar">
-                      <div
-                        className="ai-progress-bar__fill"
-                        style={{ width: `${Math.min(100, Math.round((aiAnalysis.current / aiAnalysis.total) * 100))}%` }}
-                      />
-                      <span className="ai-progress-bar__text">
-                        {aiAnalysis.current} / {aiAnalysis.total}
-                      </span>
-                    </div>
-                  )}
-                  {/* AI thought — what the LLM is currently processing */}
-                  {aiAnalysis.thought && (
-                    <div className="ai-thought-line">
-                      <span className="ai-thought-icon"><i className="bi bi-lightbulb" /></span>
-                      <span className="ai-thought-text">{aiAnalysis.thought}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-              {!aiAnalysis.running && aiAnalysis.phase === "done" && (
-                <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--green)" }}>
-                  <i className="bi bi-check-circle" /> Analyse abgeschlossen
-                </div>
-              )}
-              {!aiAnalysis.running && aiAnalysis.phase === "error" && (
-                <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--red)" }}>
-                  <i className="bi bi-x-octagon" /> Analyse fehlgeschlagen
-                </div>
-              )}
-              {!aiAnalysis.running && aiAnalysis.phase === "stopped" && (
-                <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--yellow)" }}>
-                  <i className="bi bi-stop-circle" /> Analyse gestoppt — Änderungen bis hier gespeichert
-                </div>
-              )}
-              {!aiAnalysis.running && aiAnalysis.phase === "cancelled" && (
-                <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--yellow)" }}>
-                  <i className="bi bi-slash-circle" /> Analyse abgebrochen — Änderungen bis hier gespeichert
-                </div>
-              )}
-              {!aiAnalysis.running && aiAnalysis.phase === "paused" && (
-                <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--cyan, #66d9ef)" }}>
-                  <i className="bi bi-pause-circle" /> Analyse pausiert — Fortschritt gespeichert, Fortsetzen möglich
-                </div>
-              )}
-              {/* Stats summary after completion */}
-              {aiAnalysis.log.some((e) => e.phase === "done" || e.phase === "cancelled" || e.phase === "paused") && (() => {
-                const s = (aiAnalysis.log.find((e) => e.phase === "done") ?? aiAnalysis.log.find((e) => e.phase === "paused") ?? aiAnalysis.log.find((e) => e.phase === "cancelled"))?.stats;
-                return s ? (
-                  <div className="ai-stats">
-                    <div className="ai-stat"><span><i className="bi bi-pencil" /></span><span className="num">{s?.labelsFixed ?? 0}</span> Labels</div>
-                    <div className="ai-stat"><span><i className="bi bi-file-text" /></span><span className="num">{s?.docsGenerated ?? 0}</span> Docs</div>
-                    <div className="ai-stat"><span><i className="bi bi-link-45deg" /></span><span className="num">{s?.relationsAdded ?? 0}</span> Relations</div>
-                    <div className="ai-stat"><span><i className="bi bi-x-circle" /></span><span className="num">{s?.deadCodeFound ?? 0}</span> Dead Code</div>
-                    <div className="ai-stat"><span><i className="bi bi-collection" /></span><span className="num">{s?.groupsReviewed ?? 0}</span> Gruppen</div>
-                  </div>
-                ) : null;
-              })()}
-              {/* Validate mode button — shown after analysis completes */}
-              {!aiAnalysis.running && (aiAnalysis.phase === "done" || aiAnalysis.phase === "cancelled" || aiAnalysis.phase === "paused" || aiAnalysis.phase === "stopped") && (
-                <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
-                  <button
-                    className="btn ai-analyze-btn ai-analyze-btn--validate"
-                    onClick={() => useAppStore.getState().enterValidateMode()}
-                    style={{ width: "100%" }}
-                  >
-                    <i className="bi bi-patch-check" /> AI-Änderungen prüfen
-                  </button>
-                </div>
-              )}
-              <div className="ai-log-entries" ref={logRef}>
-                {aiAnalysis.log.filter((e) => e.action !== "progress" && e.action !== "saved").slice(-100).map((ev, i) => (
-                  <div key={i} className={`ai-log-entry`}>
-                    <span className={`ai-log-phase ai-log-phase--${ev.phase}`}>{ev.phase}</span>
-                    <span className="ai-log-text">
-                      {ev.action === "start" && `Phase gestartet…`}
-                      {ev.action === "error" && <span style={{ color: "var(--red)" }}><i className="bi bi-exclamation-triangle" /> {ev.message ?? "Fehler"} ({ev.symbolLabel ?? ""})</span>}
-                      {ev.phase === "labels" && !ev.action && <span><i className="bi bi-pencil" /> {ev.old} → {ev.new_}</span>}
-                      {ev.phase === "docs" && ev.action === "generated" && <span><i className="bi bi-file-text" /> {ev.symbolLabel}: {ev.summary?.slice(0, 60)}</span>}
-                      {ev.phase === "relations" && ev.action === "added" && <span><i className="bi bi-link-45deg" /> +{ev.relationType}: {ev.sourceLabel} → {ev.targetLabel}</span>}
-                      {ev.phase === "dead-code" && !ev.action && <span><i className="bi bi-x-circle" /> {ev.symbolLabel} — {ev.reason}</span>}
-                      {ev.phase === "structure" && ev.action === "rename" && <span><i className="bi bi-collection" /> {ev.old} → {ev.new_}</span>}
-                      {ev.phase === "structure" && ev.action === "move" && <span><i className="bi bi-collection" /> {ev.moduleLabel}: {ev.fromGroup} → {ev.toGroup}</span>}
-                      {ev.phase === "structure" && ev.action === "merge" && <span><i className="bi bi-collection" /> {ev.sourceGroup} → {ev.targetGroup}</span>}
-                      {ev.phase === "structure" && ev.action === "split" && <span><i className="bi bi-scissors" /> {ev.groupLabel} → {ev.subGroupCount} Sub-Gruppen</span>}
-                      {ev.phase === "structure" && ev.action === "split-subgroup" && <span><i className="bi bi-box" /> {ev.parentGroup} → {ev.subGroupLabel} ({ev.moduleCount})</span>}
-                      {ev.phase === "done" && <span><i className="bi bi-check-circle" /> Fertig!</span>}
-                      {ev.phase === "cancelled" && <span><i className="bi bi-slash-circle" /> Abgebrochen</span>}
-                      {ev.phase === "paused" && <span><i className="bi bi-pause-circle" /> Pausiert</span>}
-                      {ev.phase === "error" && !ev.action && <span style={{ color: "var(--red)" }}><i className="bi bi-x-octagon" /> {ev.message}</span>}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          </>)}
-        </div>
+      {activeTab === "ai" && (
+        <AiWorkspacePanel aiProvider={aiProvider} ollamaModel={ollamaModel} />
       )}
 
       {activeTab === "project" && (

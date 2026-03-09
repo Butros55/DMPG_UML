@@ -100,6 +100,11 @@ interface StageRule {
   score: number;
 }
 
+interface StageOverrideRule {
+  stage: StageId;
+  pattern: RegExp;
+}
+
 interface Classification {
   primaryStage: StageId;
   score: number;
@@ -108,7 +113,6 @@ interface Classification {
 
 interface RankedStageNode {
   symbol: Symbol;
-  classification: Classification;
   stageScore: number;
   rank: number;
 }
@@ -124,6 +128,7 @@ interface Context {
   neighborTextById: Map<string, string>;
   textById: Map<string, string>;
   classifications: Map<string, Classification | null>;
+  stageAssignments: Map<string, StageId | null>;
 }
 
 interface ArtifactFlowGroup {
@@ -132,6 +137,8 @@ interface ArtifactFlowGroup {
   paths: string[];
   producerStageIds: StageId[];
   consumerStageIds: StageId[];
+  producerSourceIds: string[];
+  consumerSourceIds: string[];
   producerLabels: string[];
   consumerLabels: string[];
   relationCount: number;
@@ -148,9 +155,25 @@ interface LayerOneContent {
   edges: ProcessEdgeConfig[];
 }
 
+interface LayerOneSideNodeConfig {
+  node: ProcessNodeConfig;
+  edgeLabel: string;
+}
+
+interface BuiltStageView {
+  view: ProcessStageViewConfig;
+  edges: ProcessEdgeConfig[];
+}
+
+export interface ProcessArtifactDescriptor {
+  id: string;
+  label: string;
+  preview?: string[];
+}
+
 const VIEW_ID = "view:process-overview";
 const STAGE_VIEW_PREFIX = "view:process-stage:";
-const VIEW_TITLE = "Layer 1 - Architecture & Dataflow Overview";
+const VIEW_TITLE = "Architecture & Dataflow Overview";
 
 const STAGES: readonly StageDef[] = [
   {
@@ -263,16 +286,25 @@ const RULES: Record<StageId, readonly StageRule[]> = {
   ],
 };
 
+const STAGE_OVERRIDE_RULES: readonly StageOverrideRule[] = [
+  { stage: "inputs", pattern: /\bconnector\b|\bmes connector\b|\bdruid connector\b/ },
+  { stage: "extract", pattern: /\bdata extraction\b|\bdata extractor\b/ },
+  { stage: "transform", pattern: /\bcolor change\b|\bdata analyzer\b|\bstatistics\b/ },
+  { stage: "match", pattern: /\bfilter methods\b|\biqr filter\b|\bis table\b|\bgenerate is table\b/ },
+  { stage: "distribution", pattern: /\bdistribution\b|\bkerndichtesch/ },
+  { stage: "simulation", pattern: /\bsimulation data generator\b|\bsim generator\b/ },
+  { stage: "outputs", pattern: /\barrival table\b|\bgenerate arrival table\b/ },
+] as const;
+
 const FLOW_NODE_WIDTH = 322;
 const FLOW_NODE_HEIGHT = 96;
 const FLOW_SIDE_GAP = 430;
 const FLOW_VERTICAL_GAP = 122;
-const INPUT_GRID_COLUMNS = 3;
-const INPUT_GRID_GAP_X = 340;
-const INPUT_GRID_GAP_Y = 112;
-const OUTPUT_GRID_COLUMNS = 3;
-const OUTPUT_GRID_GAP_X = 350;
-const OUTPUT_GRID_GAP_Y = 116;
+const SIDE_NODE_TOP_Y = 36;
+const SIDE_NODE_BOTTOM_OFFSET = 102;
+const SIDE_NODE_ESTIMATED_WIDTH = 188;
+const SIDE_NODE_GAP_X = 286;
+const SIDE_NODE_GAP_Y = 96;
 
 const PIPELINE_EDGES: readonly ProcessEdgeConfig[] = [
   {
@@ -280,43 +312,63 @@ const PIPELINE_EDGES: readonly ProcessEdgeConfig[] = [
     source: "proc:pkg:inputs",
     target: "proc:pkg:extract",
     type: "reads",
-    label: "load source data",
+    label: "source records",
   },
   {
     id: "pipeline:extract->transform",
     source: "proc:pkg:extract",
     target: "proc:pkg:transform",
     type: "calls",
-    label: "pre-clean / normalize",
+    label: "prepared data",
   },
   {
     id: "pipeline:transform->match",
     source: "proc:pkg:transform",
     target: "proc:pkg:match",
     type: "calls",
-    label: "enrich / align",
+    label: "normalized entities",
   },
   {
     id: "pipeline:match->distribution",
     source: "proc:pkg:match",
     target: "proc:pkg:distribution",
     type: "calls",
-    label: "filtered fit inputs",
+    label: "matched / filtered data",
   },
   {
     id: "pipeline:distribution->simulation",
     source: "proc:pkg:distribution",
     target: "proc:pkg:simulation",
     type: "reads",
-    label: "load persisted models",
+    label: "fitted distributions / KDE",
   },
   {
     id: "pipeline:simulation->outputs",
     source: "proc:pkg:simulation",
     target: "proc:pkg:outputs",
     type: "writes",
-    label: "produce artefacts",
+    label: "simulation artefacts",
   },
+] as const;
+
+const KNOWN_ARTIFACT_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /^df data$/, label: "df_data.csv" },
+  { pattern: /^df data with order$/, label: "df_data_with_order.csv" },
+  { pattern: /^df data with order cluster$/, label: "df_data_with_order_cluster.csv" },
+  { pattern: /^df data with order worker$/, label: "df_data_with_order_worker.csv" },
+  { pattern: /^df wt$/, label: "df_wt.csv" },
+  { pattern: /^df wt to order$/, label: "df_wt_to_order.csv" },
+  { pattern: /^nass var$/, label: "nass_var.csv" },
+  { pattern: /^nass var constant times$/, label: "nass_var_constant_times.csv" },
+  { pattern: /^arrival klein$/i, label: "Arrival_Klein.csv" },
+  { pattern: /^arrival gro.*$/i, label: "Arrival_Groß.csv" },
+  { pattern: /^kde min max values$/i, label: "kde_min_max_values.json" },
+  { pattern: /^effency$/i, label: "effency.json" },
+  { pattern: /^distribution$/i, label: "distribution.json" },
+  { pattern: /^fallback$/i, label: "fallback.json" },
+  { pattern: /^color change$/i, label: "color_change.json" },
+  { pattern: /^color change fallback$/i, label: "color_change_fallback.json" },
+  { pattern: /^data analyzation$/i, label: "data_analyzation.xlsx" },
 ] as const;
 
 export function buildProcessDiagramConfigFromGraph(graph: ProjectGraph): ProcessDiagramConfig {
@@ -325,31 +377,42 @@ export function buildProcessDiagramConfigFromGraph(graph: ProjectGraph): Process
     ctx.classifications.set(symbol.id, classifySymbol(symbol, ctx));
   }
 
-  const stageViews = STAGES.map((stage) => buildStageViewConfig(graph, ctx, stage));
-  const layerOne = buildLayerOneContent(graph, ctx, stageViews);
+  const flowGroups = collectArtifactFlowGroups(graph, ctx);
+  const prominentFlowGroups = selectArtifactFlowGroupsForStageOverlay(flowGroups);
+  const builtStageViews = STAGES.map((stage) => buildStageViewConfig(graph, ctx, stage, prominentFlowGroups));
+  const stageViews = builtStageViews.map((entry) => entry.view);
+  const stageEdges = builtStageViews.flatMap((entry) => entry.edges);
+  const layerOne = buildLayerOneContent(ctx, stageViews, flowGroups, prominentFlowGroups);
 
   return {
     viewId: VIEW_ID,
     title: VIEW_TITLE,
     packages: layerOne.packages,
     nodes: layerOne.nodes,
-    edges: [...layerOne.edges, ...PIPELINE_EDGES],
+    edges: [...layerOne.edges, ...stageEdges, ...PIPELINE_EDGES],
     stageViews,
     viewAdjustments: buildViewAdjustments(graph, ctx),
   };
 }
 
 function buildLayerOneContent(
-  graph: ProjectGraph,
   ctx: Context,
   stageViews: ProcessStageViewConfig[],
+  flowGroups: ArtifactFlowGroup[],
+  prominentFlowGroups: ArtifactFlowGroup[],
 ): LayerOneContent {
-  const flowGroups = collectArtifactFlowGroups(graph, ctx);
-  const selectedGroups = selectArtifactFlowGroupsForLayer(flowGroups);
   const stageViewById = new Map(stageViews.map((view) => [view.id, view]));
-  const inputConnectorNode = buildInputConnectorNode(
+  const inputNodes = buildLayerOneInputNodes(
     ctx,
     stageViewById.get(stageDef("inputs").viewId)?.nodeRefs ?? [],
+    flowGroups,
+  );
+  const outputNodes = buildLayerOneOutputNodes(flowGroups);
+  const stageFlowNodes = STAGES.flatMap((stage) =>
+    positionStageSideNodes(
+      stage,
+      prominentFlowGroups.filter((group) => dominantStage(group.producerStageIds) === stage.id),
+    ),
   );
 
   const packages = STAGES.map((stage) =>
@@ -364,89 +427,293 @@ function buildLayerOneContent(
   const nodes: ProcessNodeConfig[] = [];
   const edges: ProcessEdgeConfig[] = [];
 
-  const inputNodes = [
-    ...(inputConnectorNode ? [inputConnectorNode] : []),
-    ...selectedGroups.filter((group) => group.kind === "input").map((group) => flowGroupToNode(group)),
-  ];
-  nodes.push(...positionInputNodes(inputNodes));
-  if (inputConnectorNode) {
+  nodes.push(...positionInputNodes(inputNodes.map((entry) => entry.node)));
+  nodes.push(...stageFlowNodes);
+  for (const inputNode of inputNodes) {
     edges.push({
-      id: "attachment:connector-access",
-      source: inputConnectorNode.id,
+      id: `flow:${slugify(inputNode.node.id)}:to-inputs`,
+      source: inputNode.node.id,
       target: "proc:pkg:inputs",
       type: "reads",
-      label: "query / API access",
-    });
-  }
-  for (const group of selectedGroups.filter((candidate) => candidate.kind === "input")) {
-    edges.push({
-      id: `flow:${slugify(group.key)}:to-inputs`,
-      source: flowNodeId(group),
-      target: "proc:pkg:inputs",
-      type: "reads",
-      label: "imported",
+      label: inputNode.edgeLabel,
     });
   }
 
-  const handoffByStage = new Map<StageId, ArtifactFlowGroup[]>();
-  for (const group of selectedGroups.filter((candidate) => candidate.kind === "handoff")) {
-    const producerStage = dominantStage(group.producerStageIds);
-    if (!producerStage) continue;
-    const bucket = handoffByStage.get(producerStage) ?? [];
-    bucket.push(group);
-    handoffByStage.set(producerStage, bucket);
-  }
-
-  for (const stage of STAGES) {
-    const groups = handoffByStage.get(stage.id) ?? [];
-    if (groups.length === 0) continue;
-    nodes.push(...positionStageSideNodes(stage, groups));
-
-    for (const group of groups) {
-      const nodeId = flowNodeId(group);
-      edges.push({
-        id: `flow:${slugify(group.key)}:${stage.id}:write`,
-        source: stage.packageId,
-        target: nodeId,
-        type: "writes",
-        label: flowWriteLabel(group),
-      });
-
-      for (const consumerStage of crossStageConsumers(group)) {
-        edges.push({
-          id: `flow:${slugify(group.key)}:${consumerStage}:read`,
-          source: nodeId,
-          target: stageDef(consumerStage).packageId,
-          type: "reads",
-          label: flowReadLabel(group, consumerStage),
-        });
-      }
-    }
-  }
-
-  const outputGroups = selectedGroups.filter((group) => group.kind === "output");
-  nodes.push(...positionOutputNodes(outputGroups.map((group) => flowGroupToNode(group))));
-  for (const group of outputGroups) {
-    const producerStage = dominantStage(group.producerStageIds);
-    if (!producerStage) continue;
-    const nodeId = flowNodeId(group);
+  nodes.push(...positionOutputNodes(outputNodes.map((entry) => entry.node)));
+  for (const outputNode of outputNodes) {
     edges.push({
-      id: `flow:${slugify(group.key)}:${producerStage}:produce`,
+      id: `flow:${slugify(outputNode.node.id)}:to-outputs`,
+      source: "proc:pkg:outputs",
+      target: outputNode.node.id,
+      type: "writes",
+      label: outputNode.edgeLabel,
+    });
+  }
+
+  for (const group of prominentFlowGroups) {
+    const producerStage = dominantStage(group.producerStageIds);
+    if (!producerStage) continue;
+
+    const artifactNodeId = flowNodeId(group);
+    edges.push({
+      id: `flow:${slugify(stageDef(producerStage).packageId)}:${slugify(artifactNodeId)}:write`,
       source: stageDef(producerStage).packageId,
-      target: nodeId,
+      target: artifactNodeId,
       type: "writes",
       label: flowWriteLabel(group),
     });
-    edges.push({
-      id: `flow:${slugify(group.key)}:to-outputs`,
-      source: nodeId,
-      target: "proc:pkg:outputs",
-      type: "writes",
-      label: "final artefact",
-    });
+
+    for (const consumerStage of crossStageConsumers(group)) {
+      edges.push({
+        id: `flow:${slugify(artifactNodeId)}:${slugify(stageDef(consumerStage).packageId)}:read`,
+        source: artifactNodeId,
+        target: stageDef(consumerStage).packageId,
+        type: "reads",
+        label: flowReadLabel(group, consumerStage),
+      });
+    }
   }
 
   return { packages, nodes, edges };
+}
+
+function buildLayerOneInputNodes(
+  ctx: Context,
+  stageNodeRefs: string[],
+  flowGroups: ArtifactFlowGroup[],
+): LayerOneSideNodeConfig[] {
+  const inputSymbols = stageNodeRefs
+    .map((nodeRef) => ctx.symbolById.get(nodeRef))
+    .filter((symbol): symbol is Symbol => Boolean(symbol));
+  const inputLabels = unique(inputSymbols.map((symbol) => symbol.label));
+  const fileInputs = flowGroups
+    .filter((group) =>
+      group.kind === "input" &&
+      (group.category === "tabular" || group.category === "source" || looksLikeConcreteArtifact(group.label)),
+    )
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+
+  const dbExamples = inputLabels.filter((label) =>
+    /\bdruid\b|\bdb\b|\bsql\b|\bdatabase\b/.test(normalize(label)),
+  );
+  const externalExamples = inputLabels.filter((label) =>
+    /\bmes\b|\bapi\b|\bexternal\b|\bconnector\b/.test(normalize(label)) &&
+    !dbExamples.includes(label),
+  );
+
+  const nodes: LayerOneSideNodeConfig[] = [];
+
+  if (dbExamples.length > 0) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:input:database-import",
+        "Database Import",
+        "database",
+        dbExamples,
+      ),
+      edgeLabel: "database import",
+    });
+  }
+
+  if (fileInputs.length > 0) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:input:file-imports",
+        "CSV / Files",
+        "artifact",
+        fileInputs.map((group) => group.label),
+      ),
+      edgeLabel: "file ingest",
+    });
+  }
+
+  if (externalExamples.length > 0 || (inputLabels.length > 0 && dbExamples.length === 0)) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:input:external-sources",
+        "MES / External Sources",
+        "component",
+        externalExamples.length > 0 ? externalExamples : inputLabels,
+      ),
+      edgeLabel: "external feeds",
+    });
+  }
+
+  return nodes;
+}
+
+function buildLayerOneOutputNodes(flowGroups: ArtifactFlowGroup[]): LayerOneSideNodeConfig[] {
+  const finalOutputs = flowGroups
+    .filter((group) =>
+      group.kind === "output" ||
+      group.consumerStageIds.includes("outputs") ||
+      group.producerStageIds.includes("outputs"),
+    )
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+
+  const usedKeys = new Set<string>();
+  const takeGroups = (predicate: (group: ArtifactFlowGroup) => boolean): ArtifactFlowGroup[] => {
+    const groups = finalOutputs.filter((group) => !usedKeys.has(group.key) && predicate(group));
+    for (const group of groups) {
+      usedKeys.add(group.key);
+    }
+    return groups;
+  };
+
+  const arrivalGroups = takeGroups((group) =>
+    group.category === "arrival" || /\barrival\b/.test(normalize(group.label)),
+  );
+  const generatedGroups = takeGroups((group) =>
+    !group.producerStageIds.includes("simulation") &&
+    group.category === "tabular" &&
+    !/\barrival\b/.test(normalize(group.label)),
+  );
+  const persistedGroups = takeGroups((group) =>
+    !group.producerStageIds.includes("simulation") &&
+    (
+      group.category === "json" ||
+      group.category === "binary" ||
+      /\bkde\b|\bpickle\b|\bdistribution\b/.test(normalize(group.label))
+    ),
+  );
+  const visualGroups = takeGroups((group) =>
+    /\bvisual\b|\bplot\b|\bchart\b|\bfigure\b|\bdashboard\b|\breport\b/.test(
+      normalize(`${group.label} ${group.paths.join(" ")}`),
+    ),
+  );
+  const simulationGroups = takeGroups((group) =>
+    group.producerStageIds.includes("simulation") ||
+    /\bsim\b|\bsimulation\b|\beffenc?\b|\bfilter stats\b|\bruntime\b/.test(normalize(group.label)),
+  );
+  const remainingGroups = takeGroups(() => true);
+
+  const nodes: LayerOneSideNodeConfig[] = [];
+
+  if (arrivalGroups.length > 0) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:output:arrival-table",
+        "Arrival Table",
+        "artifact",
+        arrivalGroups.map((group) => group.label),
+      ),
+      edgeLabel: "arrival data",
+    });
+  }
+
+  if (generatedGroups.length > 0) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:output:generated-data",
+        "Generated Data",
+        "artifact",
+        generatedGroups.map((group) => group.label),
+      ),
+      edgeLabel: "generated data",
+    });
+  }
+
+  if (persistedGroups.length > 0) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:output:persisted-models",
+        "Persisted Models",
+        "artifact",
+        persistedGroups.map((group) => group.label),
+      ),
+      edgeLabel: "stored models",
+    });
+  }
+
+  if (visualGroups.length > 0) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:output:visual-outputs",
+        "Visual Outputs",
+        "note",
+        visualGroups.map((group) => group.label),
+      ),
+      edgeLabel: "visual output",
+    });
+  }
+
+  if (simulationGroups.length > 0) {
+    nodes.push({
+      node: createLayerOneSideNode(
+        "proc:output:simulation-results",
+        "Simulation Results",
+        "artifact",
+        simulationGroups.map((group) => group.label),
+      ),
+      edgeLabel: "simulation results",
+    });
+  }
+
+  if (remainingGroups.length > 0) {
+    const generatedNode = nodes.find((entry) => entry.node.id === "proc:output:generated-data");
+    if (generatedNode) {
+      generatedNode.node.preview = [
+        `Examples: ${summarizeList(unique([
+          ...extractPreviewExamples(generatedNode.node.preview),
+          ...remainingGroups.map((group) => group.label),
+        ]), 3)}`,
+      ];
+    } else {
+      nodes.push({
+        node: createLayerOneSideNode(
+          "proc:output:generated-data",
+          "Generated Data",
+          "artifact",
+          remainingGroups.map((group) => group.label),
+        ),
+        edgeLabel: "generated data",
+      });
+    }
+  }
+
+  return nodes;
+}
+
+function extractPreviewExamples(preview: string[] | undefined): string[] {
+  if (!preview || preview.length === 0) return [];
+  const examplesLine = preview.find((line) => line.startsWith("Examples: "));
+  if (!examplesLine) return [];
+  return examplesLine
+    .slice("Examples: ".length)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function createLayerOneSideNode(
+  id: string,
+  label: string,
+  umlType: UmlType,
+  examples: string[],
+): ProcessNodeConfig {
+  return {
+    id,
+    label,
+    umlType,
+    stereotype: stereotypeForUmlType(umlType),
+    preview: examples.length > 0 ? [`Examples: ${summarizeList(unique(examples), 3)}`] : undefined,
+    position: { x: 0, y: 0, width: FLOW_NODE_WIDTH, height: FLOW_NODE_HEIGHT },
+  };
+}
+
+function stereotypeForUmlType(umlType: UmlType): string | undefined {
+  switch (umlType) {
+    case "database":
+      return "<<database>>";
+    case "component":
+      return "<<component>>";
+    case "note":
+      return "<<note>>";
+    case "artifact":
+      return "<<artifact>>";
+    default:
+      return undefined;
+  }
 }
 
 function buildStagePackageConfig(
@@ -478,7 +745,10 @@ function buildStagePackagePreview(
 ): string[] | undefined {
   const focus = summarizeList(
     unique(stageNodeRefs
-      .map((nodeRef) => ctx.symbolById.get(nodeRef)?.label)
+      .map((nodeRef) => ctx.symbolById.get(nodeRef))
+      .filter((symbol): symbol is Symbol => Boolean(symbol))
+      .filter((symbol) => !symbol.id.startsWith("proc:"))
+      .map((symbol) => symbol.label)
       .filter((label): label is string => Boolean(label))),
     2,
   );
@@ -510,6 +780,8 @@ function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactF
     paths: Set<string>;
     producerStageCounts: Map<StageId, number>;
     consumerStageCounts: Map<StageId, number>;
+    producerSourceIds: Set<string>;
+    consumerSourceIds: Set<string>;
     producerLabels: Set<string>;
     consumerLabels: Set<string>;
     readCount: number;
@@ -526,27 +798,32 @@ function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactF
     const stage = resolveStageForSymbolId(relation.source, ctx);
     if (!stage) continue;
 
-    const key = artifactFamilyKey(target.label);
+    const artifactLabel = canonicalArtifactLabel(target.label);
+    const key = artifactFamilyKey(artifactLabel);
     const bucket = byKey.get(key) ?? {
-      originalLabel: target.label,
+      originalLabel: artifactLabel,
       paths: new Set<string>(),
       producerStageCounts: new Map<StageId, number>(),
       consumerStageCounts: new Map<StageId, number>(),
+      producerSourceIds: new Set<string>(),
+      consumerSourceIds: new Set<string>(),
       producerLabels: new Set<string>(),
       consumerLabels: new Set<string>(),
       readCount: 0,
       writeCount: 0,
     };
-    bucket.paths.add(target.label);
+    bucket.paths.add(artifactLabel);
 
     const sourceLabel = ctx.symbolById.get(relation.source)?.label ?? relation.source;
     if (relation.type === "writes") {
       bucket.writeCount += 1;
       bucket.producerStageCounts.set(stage, (bucket.producerStageCounts.get(stage) ?? 0) + 1);
+      bucket.producerSourceIds.add(relation.source);
       bucket.producerLabels.add(sourceLabel);
     } else {
       bucket.readCount += 1;
       bucket.consumerStageCounts.set(stage, (bucket.consumerStageCounts.get(stage) ?? 0) + 1);
+      bucket.consumerSourceIds.add(relation.source);
       bucket.consumerLabels.add(sourceLabel);
     }
 
@@ -583,6 +860,8 @@ function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactF
         paths: [...bucket.paths].sort((a, b) => a.localeCompare(b)),
         producerStageIds,
         consumerStageIds,
+        producerSourceIds: [...bucket.producerSourceIds].sort((a, b) => a.localeCompare(b)),
+        consumerSourceIds: [...bucket.consumerSourceIds].sort((a, b) => a.localeCompare(b)),
         producerLabels: [...bucket.producerLabels].sort((a, b) => a.localeCompare(b)),
         consumerLabels: [...bucket.consumerLabels].sort((a, b) => a.localeCompare(b)),
         relationCount: bucket.readCount + bucket.writeCount,
@@ -651,6 +930,37 @@ function selectArtifactFlowGroupsForLayer(flowGroups: ArtifactFlowGroup[]): Arti
   return selected.sort((a, b) => compareFlowLayoutOrder(a, b) || a.label.localeCompare(b.label));
 }
 
+function selectArtifactFlowGroupsForStageOverlay(flowGroups: ArtifactFlowGroup[]): ArtifactFlowGroup[] {
+  const selected: ArtifactFlowGroup[] = [];
+  const selectedKeys = new Set<string>();
+
+  const take = (stage: StageId, limit: number) => {
+    for (const group of flowGroups
+      .filter((candidate) => dominantStage(candidate.producerStageIds) === stage)
+      .sort((a, b) =>
+        stageArtifactPriority(stage, b) - stageArtifactPriority(stage, a) ||
+        b.score - a.score ||
+        a.label.localeCompare(b.label),
+      )) {
+      if (selectedKeys.has(group.key)) continue;
+      selected.push(group);
+      selectedKeys.add(group.key);
+      if (selected.filter((candidate) => dominantStage(candidate.producerStageIds) === stage).length >= limit) {
+        break;
+      }
+    }
+  };
+
+  take("extract", 4);
+  take("transform", 2);
+  take("match", 2);
+  take("distribution", 4);
+  take("simulation", 3);
+  take("outputs", 3);
+
+  return selected.sort((a, b) => compareFlowLayoutOrder(a, b) || a.label.localeCompare(b.label));
+}
+
 function buildInputConnectorNode(ctx: Context, stageNodeRefs: string[]): ProcessNodeConfig | null {
   const connectorSymbols = stageNodeRefs
     .map((nodeRef) => ctx.symbolById.get(nodeRef))
@@ -658,7 +968,8 @@ function buildInputConnectorNode(ctx: Context, stageNodeRefs: string[]): Process
     .filter((symbol) => /\bconnector\b|\bmes\b|\bdruid\b|\bapi\b|\bsql\b/.test(normalize(symbol.label)));
 
   const preferred = connectorSymbols.filter((symbol) => symbol.kind === "class");
-  const labels = unique((preferred.length > 0 ? preferred : connectorSymbols).map((symbol) => symbol.label));
+  const labels = unique((preferred.length > 0 ? preferred : connectorSymbols).map((symbol) => symbol.label))
+    .sort((a, b) => a.localeCompare(b));
 
   if (labels.length === 0) return null;
 
@@ -715,23 +1026,12 @@ function buildFlowLine(group: ArtifactFlowGroup): string {
 function positionInputNodes(nodes: ProcessNodeConfig[]): ProcessNodeConfig[] {
   if (nodes.length === 0) return [];
   const inputStage = stageDef("inputs");
-  const centerX = inputStage.x + Math.round(inputStage.width / 2);
-  const startX = centerX - Math.floor((INPUT_GRID_COLUMNS - 1) / 2) * INPUT_GRID_GAP_X - 160;
-  const startY = 18;
-
-  return nodes.map((node, index) => {
-    const column = index % INPUT_GRID_COLUMNS;
-    const row = Math.floor(index / INPUT_GRID_COLUMNS);
-    return {
-      ...node,
-      position: {
-        x: startX + column * INPUT_GRID_GAP_X,
-        y: startY + row * INPUT_GRID_GAP_Y,
-        width: node.position.width ?? FLOW_NODE_WIDTH,
-        height: node.position.height ?? FLOW_NODE_HEIGHT,
-      },
-    };
-  });
+  return positionHorizontalBandNodes(
+    nodes,
+    inputStage.x + Math.round(inputStage.width / 2),
+    SIDE_NODE_TOP_Y,
+    3,
+  );
 }
 
 function positionStageSideNodes(stage: StageDef, groups: ArtifactFlowGroup[]): ProcessNodeConfig[] {
@@ -755,18 +1055,34 @@ function positionStageSideNodes(stage: StageDef, groups: ArtifactFlowGroup[]): P
 function positionOutputNodes(nodes: ProcessNodeConfig[]): ProcessNodeConfig[] {
   if (nodes.length === 0) return [];
   const outputsStage = stageDef("outputs");
-  const centerX = outputsStage.x + Math.round(outputsStage.width / 2);
-  const startX = centerX - OUTPUT_GRID_GAP_X;
-  const startY = outputsStage.y + outputsStage.height + 82;
+  return positionHorizontalBandNodes(
+    nodes,
+    outputsStage.x + Math.round(outputsStage.width / 2),
+    outputsStage.y + outputsStage.height + SIDE_NODE_BOTTOM_OFFSET,
+    4,
+  );
+}
+
+function positionHorizontalBandNodes(
+  nodes: ProcessNodeConfig[],
+  centerX: number,
+  startY: number,
+  maxColumns: number,
+): ProcessNodeConfig[] {
+  const columns = Math.max(1, Math.min(maxColumns, nodes.length));
+  const startX =
+    centerX -
+    Math.round(((columns - 1) * SIDE_NODE_GAP_X) / 2) -
+    Math.round(SIDE_NODE_ESTIMATED_WIDTH / 2);
 
   return nodes.map((node, index) => {
-    const column = index % OUTPUT_GRID_COLUMNS;
-    const row = Math.floor(index / OUTPUT_GRID_COLUMNS);
+    const column = index % columns;
+    const row = Math.floor(index / columns);
     return {
       ...node,
       position: {
-        x: startX + column * OUTPUT_GRID_GAP_X,
-        y: startY + row * OUTPUT_GRID_GAP_Y,
+        x: startX + column * SIDE_NODE_GAP_X,
+        y: startY + row * SIDE_NODE_GAP_Y,
         width: node.position.width ?? FLOW_NODE_WIDTH,
         height: node.position.height ?? FLOW_NODE_HEIGHT,
       },
@@ -777,8 +1093,10 @@ function positionOutputNodes(nodes: ProcessNodeConfig[]): ProcessNodeConfig[] {
 function resolveStageForSymbolId(symbolId: string, ctx: Context): StageId | null {
   const chain = ctx.ancestorsById.get(symbolId) ?? [symbolId];
   for (const candidateId of chain) {
-    const classification = ctx.classifications.get(candidateId);
-    if (classification?.primaryStage) return classification.primaryStage;
+    const symbol = ctx.symbolById.get(candidateId);
+    if (!symbol) continue;
+    const assignedStage = mapSymbolToStage(symbol, ctx);
+    if (assignedStage) return assignedStage;
   }
 
   const symbol = ctx.symbolById.get(symbolId);
@@ -795,20 +1113,21 @@ function isLayerOneArtifactCandidate(symbol: Symbol): boolean {
 }
 
 function looksLikeConcreteArtifact(label: string): boolean {
-  const basename = basenameOf(label.trim());
+  const canonical = canonicalArtifactLabel(label.trim());
+  const basename = basenameOf(canonical);
   if (/^\{[^}]+\}$/.test(basename)) return false;
-  return /[\\/]/.test(label) || /\.(csv|xlsx|xls|json|pkl|pickle|parquet)$/i.test(label);
+  return /[\\/]/.test(canonical) || /\.(csv|xlsx|xls|json|pkl|pickle|parquet)$/i.test(canonical);
 }
 
 function artifactFamilyKey(label: string): string {
-  const basename = basenameOf(label).toLowerCase();
+  const basename = basenameOf(canonicalArtifactLabel(label)).toLowerCase();
   if (basename.startsWith("arrival_")) return "arrival_csvs";
   if (/^filter_stats(_fallback)?\.xlsx$/.test(basename)) return "filter_stats_exports";
   return basename;
 }
 
 function artifactDisplayLabel(primaryLabel: string, paths: string[]): string {
-  const basenames = unique(paths.map((path) => basenameOf(path)));
+  const basenames = unique(paths.map((path) => basenameOf(canonicalArtifactLabel(path))));
   if (basenames.length > 0 && basenames.every((name) => /^Arrival_/i.test(name))) {
     return "Arrival CSVs";
   }
@@ -816,7 +1135,13 @@ function artifactDisplayLabel(primaryLabel: string, paths: string[]): string {
     return "filter_stats.xlsx";
   }
   if (basenames.length === 1) return basenames[0];
-  return basenameOf(primaryLabel);
+  return basenameOf(canonicalArtifactLabel(primaryLabel));
+}
+
+function processArtifactDisplayLabel(key: string, canonicalLabel: string): string {
+  if (key === "arrival_csvs") return "Arrival CSVs";
+  if (key === "filter_stats_exports") return "filter_stats.xlsx";
+  return basenameOf(canonicalLabel);
 }
 
 function detectArtifactCategory(
@@ -885,6 +1210,16 @@ function flowNodeId(group: ArtifactFlowGroup): string {
   return `proc:artifact:${slugify(group.key)}`;
 }
 
+export function describeProcessArtifact(rawLabel: string): ProcessArtifactDescriptor {
+  const canonical = canonicalArtifactLabel(rawLabel);
+  const key = artifactFamilyKey(canonical);
+  return {
+    id: `proc:artifact:${slugify(key)}`,
+    label: processArtifactDisplayLabel(key, canonical),
+    preview: [`Path: ${shortArtifactPath(canonical)}`],
+  };
+}
+
 function slugify(value: string): string {
   return value
     .normalize("NFKD")
@@ -894,6 +1229,10 @@ function slugify(value: string): string {
     .toLowerCase();
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function basenameOf(value: string): string {
   const normalized = value.replace(/\\/g, "/");
   const segments = normalized.split("/");
@@ -901,9 +1240,24 @@ function basenameOf(value: string): string {
 }
 
 function shortArtifactPath(value: string): string {
-  const normalized = value.replace(/\\/g, "/");
+  const normalized = canonicalArtifactLabel(value).replace(/\\/g, "/");
   const segments = normalized.split("/").filter(Boolean);
   return segments.slice(-2).join("/");
+}
+
+function canonicalArtifactLabel(value: string): string {
+  const trimmed = value.trim();
+  const basename = basenameOf(trimmed);
+  const normalized = normalize(basename);
+  for (const rule of KNOWN_ARTIFACT_LABELS) {
+    if (rule.pattern.test(normalized)) {
+      if (trimmed === basename) {
+        return rule.label;
+      }
+      return trimmed.replace(new RegExp(`${escapeRegExp(basename)}$`), rule.label);
+    }
+  }
+  return trimmed;
 }
 
 function unique(values: string[]): string[] {
@@ -943,6 +1297,47 @@ function flowReadLabel(group: ArtifactFlowGroup, stage: StageId): string {
   if (group.category === "json" || group.category === "binary") return "loads";
   if (stage === "simulation") return "consumes";
   return "reads";
+}
+
+function stageArtifactPriority(stage: StageId, group: ArtifactFlowGroup): number {
+  const text = normalize(`${group.label} ${group.paths.join(" ")}`);
+  let priority = group.score;
+
+  if (group.category === "arrival") priority += 80;
+  if (group.category === "json" || group.category === "binary") priority += 60;
+  if (looksLikeConcreteArtifact(group.label)) priority += 20;
+
+  switch (stage) {
+    case "extract":
+      if (text.includes("df_data_with_order_cluster")) priority += 180;
+      if (text.includes("df_data_with_order")) priority += 160;
+      if (text.includes("df_data.csv")) priority += 140;
+      if (text.includes("df_wt_to_order")) priority += 90;
+      if (text.includes("df_wt.csv")) priority += 80;
+      if (text.includes("nass_var")) priority += 60;
+      break;
+    case "distribution":
+      if (text.includes("pickle") || text.includes("kde")) priority += 160;
+      if (text.includes("json")) priority += 140;
+      if (text.includes("distribution")) priority += 90;
+      if (text.includes("mat_export")) priority += 80;
+      break;
+    case "simulation":
+      if (text.includes("filter_stats")) priority += 140;
+      if (text.includes("outliners")) priority += 120;
+      if (text.includes("distribution.xlsx")) priority += 90;
+      if (text.includes("effency")) priority += 80;
+      break;
+    case "outputs":
+      if (text.includes("arrival")) priority += 180;
+      break;
+    case "transform":
+    case "match":
+    case "inputs":
+      break;
+  }
+
+  return priority;
 }
 
 function outputSelectionPriority(group: ArtifactFlowGroup): number {
@@ -1039,6 +1434,7 @@ function buildContext(graph: ProjectGraph): Context {
     neighborTextById,
     textById,
     classifications: new Map(),
+    stageAssignments: new Map(),
   };
 }
 
@@ -1067,6 +1463,9 @@ function classifySymbol(symbol: Symbol, ctx: Context): Classification | null {
     scores.extract += 10;
     scores.match += 14;
     scores.outputs += 8;
+  }
+  if (fileText.includes("arrival_table") || fileText.includes("generate_arrival_table")) {
+    scores.outputs += 12;
   }
   if (fileText.includes("color_change")) {
     scores.transform += 16;
@@ -1164,16 +1563,76 @@ function buildStageViewConfig(
   graph: ProjectGraph,
   ctx: Context,
   stage: StageDef,
-): ProcessStageViewConfig {
-  const nodeRefs = selectStageNodeRefs(graph, ctx, stage.id);
+  flowGroups: ArtifactFlowGroup[],
+): BuiltStageView {
+  const coreNodeRefs = selectStageNodeRefs(graph, ctx, stage.id);
+  const artifactOverlay = buildStageArtifactOverlay(stage.id, coreNodeRefs, flowGroups, ctx);
+  const nodeRefs = [...coreNodeRefs, ...artifactOverlay.nodeRefs];
   return {
-    id: stage.viewId,
-    title: `Layer 2 - ${stage.label}`,
-    scope: "group",
-    hiddenInSidebar: false,
-    nodeRefs,
-    edgeRefs: collectStageEdgeRefs(graph, ctx, nodeRefs),
+    view: {
+      id: stage.viewId,
+      title: stage.label,
+      scope: "group",
+      hiddenInSidebar: false,
+      nodeRefs,
+      edgeRefs: [
+        ...collectStageEdgeRefs(graph, ctx, coreNodeRefs),
+        ...artifactOverlay.edges.map((edge) => `process-edge:${edge.id}`),
+      ],
+    },
+    edges: artifactOverlay.edges,
   };
+}
+
+function buildStageArtifactOverlay(
+  stage: StageId,
+  coreNodeRefs: string[],
+  flowGroups: ArtifactFlowGroup[],
+  ctx: Context,
+): { nodeRefs: string[]; edges: ProcessEdgeConfig[] } {
+  if (coreNodeRefs.length === 0) {
+    return { nodeRefs: [], edges: [] };
+  }
+
+  const visibleCore = new Set(coreNodeRefs);
+  const nodeRefs: string[] = [];
+  const nodeRefSet = new Set<string>();
+  const edges: ProcessEdgeConfig[] = [];
+  const edgeIdSet = new Set<string>();
+
+  for (const group of flowGroups) {
+    if (!group.producerStageIds.includes(stage)) continue;
+
+    const visibleWriters = unique(
+      group.producerSourceIds
+        .map((sourceId) => findNearestVisible(sourceId, visibleCore, ctx.ancestorsById))
+        .filter((sourceId): sourceId is string => Boolean(sourceId)),
+    );
+
+    const writerRefs = visibleWriters.length > 0 ? visibleWriters : coreNodeRefs.slice(0, 1);
+    if (writerRefs.length === 0) continue;
+
+    const artifactNodeId = flowNodeId(group);
+    if (!nodeRefSet.has(artifactNodeId)) {
+      nodeRefSet.add(artifactNodeId);
+      nodeRefs.push(artifactNodeId);
+    }
+
+    for (const writerRef of writerRefs) {
+      const edgeId = `stage-flow:${slugify(writerRef)}:${slugify(artifactNodeId)}:write`;
+      if (edgeIdSet.has(edgeId)) continue;
+      edgeIdSet.add(edgeId);
+      edges.push({
+        id: edgeId,
+        source: writerRef,
+        target: artifactNodeId,
+        type: "writes",
+        label: flowWriteLabel(group),
+      });
+    }
+  }
+
+  return { nodeRefs, edges };
 }
 
 function buildViewAdjustments(graph: ProjectGraph, ctx: Context): ProcessViewAdjustment[] {
@@ -1194,7 +1653,7 @@ function buildViewAdjustments(graph: ProjectGraph, ctx: Context): ProcessViewAdj
 
     const owner = ownerSymbolByViewId.get(view.id);
     const viewText = normalize(`${view.id} ${view.title} ${owner?.label ?? ""} ${owner?.location?.file ?? ""}`);
-    const stage = owner ? resolvePreferredStage(owner, ctx, viewText) : chooseBestStageFromText(viewText);
+    const stage = owner ? mapSymbolToStage(owner, ctx) : chooseBestStageFromText(viewText);
     if (stage) {
       stageByViewId.set(view.id, stage);
     }
@@ -1234,22 +1693,26 @@ function selectStageNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId):
 
   for (const symbol of graph.symbols) {
     if (!isStageViewNodeCandidate(symbol)) continue;
+    if (looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "")) continue;
+
+    const assignedStage = mapSymbolToStage(symbol, ctx);
+    if (assignedStage !== stage) continue;
 
     const classification = ctx.classifications.get(symbol.id);
-    if (!classification) continue;
-
-    const stageScore = classification.scores[stage] ?? 0;
+    const stageScore = classification?.scores[stage] ?? scoreByTerms(
+      `${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`,
+      viewTerms(stage),
+    );
     const threshold = minimumStageScore(stage, symbol.kind);
     if (stageScore < threshold) continue;
 
     let rank = stageScore;
-    if (classification.primaryStage === stage) rank += 10;
+    if (classification?.primaryStage === stage) rank += 10;
     if (symbol.kind === "module") rank += 10;
     if (symbol.kind === "class") rank += 7;
     if (symbol.childViewId) rank += 4;
-    if (looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "")) rank -= 10;
 
-    candidates.push({ symbol, classification, stageScore, rank });
+    candidates.push({ symbol, stageScore, rank });
   }
 
   candidates.sort((a, b) =>
@@ -1258,45 +1721,69 @@ function selectStageNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId):
     a.symbol.label.localeCompare(b.symbol.label),
   );
 
+  const candidateIds = new Set(candidates.map((candidate) => candidate.symbol.id));
+
   const selected: string[] = [];
   const selectedSet = new Set<string>();
-  const moduleRankById = new Map<string, number>();
 
   for (const candidate of candidates) {
     if (selected.length >= maxStageNodeCount(stage)) break;
 
-    const parentId = candidate.symbol.parentId;
-    if (candidate.symbol.kind === "class" && parentId && selectedSet.has(parentId)) {
-      const parentRank = moduleRankById.get(parentId) ?? Number.POSITIVE_INFINITY;
-      if (candidate.rank <= parentRank + 6) continue;
+    if (shouldSkipClassInStageView(candidate.symbol, candidateIds, selectedSet)) {
+      continue;
     }
 
     selected.push(candidate.symbol.id);
     selectedSet.add(candidate.symbol.id);
-    if (candidate.symbol.kind === "module") {
-      moduleRankById.set(candidate.symbol.id, candidate.rank);
-    }
   }
 
   if (selected.length > 0) {
     return selected;
   }
 
-  return fallbackStageNodesByTerms(graph, stage);
+  return fallbackStageNodesByTerms(graph, ctx, stage);
 }
 
-function fallbackStageNodesByTerms(graph: ProjectGraph, stage: StageId): string[] {
+function fallbackStageNodesByTerms(graph: ProjectGraph, ctx: Context, stage: StageId): string[] {
   const terms = viewTerms(stage);
-  return graph.symbols
-    .filter((symbol) => isStageViewNodeCandidate(symbol))
+  const entries = graph.symbols
+    .filter((symbol) =>
+      isStageViewNodeCandidate(symbol) &&
+      !looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "") &&
+      mapSymbolToStage(symbol, ctx) === stage,
+    )
     .map((symbol) => ({
       symbol,
       score: scoreByTerms(`${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`, terms),
     }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score || a.symbol.label.localeCompare(b.symbol.label))
-    .slice(0, maxStageNodeCount(stage))
-    .map((entry) => entry.symbol.id);
+    .slice(0, maxStageNodeCount(stage));
+
+  const candidateIds = new Set(entries.map((entry) => entry.symbol.id));
+  const selectedSet = new Set<string>();
+  const selected: string[] = [];
+
+  for (const entry of entries) {
+    if (shouldSkipClassInStageView(entry.symbol, candidateIds, selectedSet)) {
+      continue;
+    }
+    selected.push(entry.symbol.id);
+    selectedSet.add(entry.symbol.id);
+  }
+
+  return selected;
+}
+
+function shouldSkipClassInStageView(
+  symbol: Symbol,
+  candidateIds: Set<string>,
+  selectedSet: Set<string>,
+): boolean {
+  if (symbol.kind !== "class") return false;
+  const parentId = symbol.parentId;
+  if (!parentId) return false;
+  return selectedSet.has(parentId) || candidateIds.has(parentId);
 }
 
 function collectStageEdgeRefs(
@@ -1469,6 +1956,59 @@ function resolvePreferredStage(symbol: Symbol, ctx: Context, fallbackText: strin
   }
 
   return chooseBestStageFromText(fallbackText);
+}
+
+function mapSymbolToStage(symbol: Symbol, ctx: Context): StageId | undefined {
+  return resolveStageAssignment(symbol.id, ctx);
+}
+
+function resolveStageAssignment(symbolId: string, ctx: Context, depth = 0): StageId | undefined {
+  if (depth > 24) return undefined;
+
+  const cached = ctx.stageAssignments.get(symbolId);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
+
+  const symbol = ctx.symbolById.get(symbolId);
+  if (!symbol) {
+    ctx.stageAssignments.set(symbolId, null);
+    return undefined;
+  }
+
+  const parent = symbol.parentId ? ctx.symbolById.get(symbol.parentId) : undefined;
+  let stage: StageId | undefined;
+
+  if (symbol.kind === "class" && parent && (parent.kind === "group" || parent.kind === "module")) {
+    stage = resolveStageAssignment(parent.id, ctx, depth + 1);
+  }
+
+  if (!stage) {
+    stage = resolveStageOverride(symbol);
+  }
+
+  if (!stage) {
+    stage = ctx.classifications.get(symbolId)?.primaryStage;
+  }
+
+  if (!stage && parent) {
+    if (parent && (parent.kind === "group" || parent.kind === "module" || parent.kind === "class")) {
+      stage = resolveStageAssignment(parent.id, ctx, depth + 1);
+    }
+  }
+
+  if (!stage) {
+    const fallbackText = normalize(`${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`);
+    stage = resolvePreferredStage(symbol, ctx, fallbackText);
+  }
+
+  ctx.stageAssignments.set(symbolId, stage ?? null);
+  return stage;
+}
+
+function resolveStageOverride(symbol: Symbol): StageId | undefined {
+  const text = normalize(`${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`);
+  return STAGE_OVERRIDE_RULES.find((rule) => rule.pattern.test(text))?.stage;
 }
 
 function chooseBestStageFromText(text: string): StageId | undefined {

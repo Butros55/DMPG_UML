@@ -710,6 +710,32 @@ export const UmlReferenceAutorefactorOptionsSchema = z.object({
 });
 export type UmlReferenceAutorefactorOptions = z.infer<typeof UmlReferenceAutorefactorOptionsSchema>;
 
+export const AiSessionRunKindEnum = z.enum(["project_analysis", "view_workspace"]);
+export type AiSessionRunKind = z.infer<typeof AiSessionRunKindEnum>;
+
+export const AiWorkspaceRunStepEnum = z.enum(["structure", "context", "labels", "reference"]);
+export type AiWorkspaceRunStep = z.infer<typeof AiWorkspaceRunStepEnum>;
+
+export const AiViewWorkspaceRunRequestSchema = z.object({
+  viewId: z.string().min(1),
+  currentViewImage: AiVisionImageInputSchema.optional(),
+  referenceImage: AiVisionImageInputSchema.optional(),
+  instruction: z.string().max(4000).optional(),
+  options: UmlReferenceAutorefactorOptionsSchema.optional(),
+  includeStructure: z.boolean().optional(),
+  includeContext: z.boolean().optional(),
+  includeLabels: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.referenceImage && !value.currentViewImage) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["currentViewImage"],
+      message: "currentViewImage is required when referenceImage is provided.",
+    });
+  }
+});
+export type AiViewWorkspaceRunRequest = z.infer<typeof AiViewWorkspaceRunRequestSchema>;
+
 export const UmlReferenceAutorefactorRequestSchema = z.object({
   currentViewImage: AiVisionImageInputSchema,
   referenceImage: AiVisionImageInputSchema,

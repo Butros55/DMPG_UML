@@ -238,9 +238,7 @@ export function SymbolHoverCard() {
   const hoverSymbolId = useAppStore((s) => s.hoverSymbolId);
   const hoverPosition = useAppStore((s) => s.hoverPosition);
   const graph = useAppStore((s) => s.graph);
-  const selectSymbol = useAppStore((s) => s.selectSymbol);
-  const navigateToView = useAppStore((s) => s.navigateToView);
-  const setFocusNode = useAppStore((s) => s.setFocusNode);
+  const focusSymbolInContext = useAppStore((s) => s.focusSymbolInContext);
   const openSourceViewer = useAppStore((s) => s.openSourceViewer);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -264,15 +262,12 @@ export function SymbolHoverCard() {
     (symId: string) => {
       const targetSym = graph?.symbols.find((s) => s.id === symId);
       if (!targetSym) return;
-      selectSymbol(symId);
-      const view = graph?.views.find((v) => v.nodeRefs.includes(symId));
-      if (view) navigateToView(view.id);
-      setFocusNode(symId);
+      focusSymbolInContext(symId);
       // Close hover card
       setMouseOverCard(false);
       useAppStore.getState().setHoverSymbol(null);
     },
-    [graph, selectSymbol, navigateToView, setFocusNode],
+    [graph, focusSymbolInContext],
   );
 
   const handleOpenSource = useCallback(() => {

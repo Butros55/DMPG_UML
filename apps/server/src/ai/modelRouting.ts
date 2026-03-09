@@ -60,12 +60,12 @@ export function resolveModelForTask(
 ): ResolvedAiTaskModel {
   const globalSource: AiResolvedModelSource = aiConfig.modelSource === "default" ? "global_default" : "global";
 
-  if (!aiConfig.routing.enabled) {
+  if (aiConfig.provider === "local" || !aiConfig.routing.enabled) {
     return {
       taskType,
       model: aiConfig.model,
       source: globalSource,
-      routingEnabled: false,
+      routingEnabled: aiConfig.routing.enabled,
     };
   }
 

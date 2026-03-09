@@ -1,4 +1,5 @@
 import { useAppStore } from "../store";
+import { formatViewTitle } from "../viewTitles";
 
 export function Breadcrumb() {
   const breadcrumb = useAppStore((s) => s.breadcrumb);
@@ -16,9 +17,9 @@ export function Breadcrumb() {
           <span key={viewId}>
             {i > 0 && <span className="sep">›</span>}
             {isLast ? (
-              <span style={{ color: "var(--text)" }}>{view?.title ?? viewId}</span>
+              <span style={{ color: "var(--text)" }}>{formatViewTitle(view?.title, viewId)}</span>
             ) : (
-              <button onClick={() => navigateToView(viewId)}>{view?.title ?? viewId}</button>
+              <button onClick={() => navigateToView(viewId)}>{formatViewTitle(view?.title, viewId)}</button>
             )}
           </span>
         );

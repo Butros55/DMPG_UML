@@ -1,6 +1,7 @@
-import { Router, type Router as RouterType } from "express";
+import { Router, type Response, type Router as RouterType } from "express";
 import {
   AiSymbolEnrichmentRequestSchema,
+  AiViewWorkspaceRunRequestSchema,
   AiViewActionRequestSchema,
   AiViewRequestSchema,
 } from "@dmpg/shared";
@@ -14,8 +15,17 @@ import {
   reviewViewStructure,
   suggestMissingRelationsForView,
 } from "../ai/umlReview.js";
+import { runViewWorkspaceSession, type ViewWorkspaceRunEvent } from "../ai/viewWorkspace.js";
 
 export const aiUmlRouter: RouterType = Router();
+let workspaceRunActive = false;
+
+function flushResponse(res: Response) {
+  const flush = (res as unknown as { flush?: () => void }).flush;
+  if (typeof flush === "function") {
+    flush.call(res);
+  }
+}
 
 function requireGraph() {
   const graph = getGraph();
@@ -194,5 +204,69 @@ aiUmlRouter.post("/review-view", async (req, res) => {
     });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "UML composite review failed" });
+  }
+});
+
+aiUmlRouter.post("/workspace-run", async (req, res) => {
+  const parsed = AiViewWorkspaceRunRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  if (workspaceRunActive) {
+    res.status(409).json({ error: "A view workspace run is already active." });
+    return;
+  }
+
+  try {
+    const graph = requireGraph();
+    workspaceRunActive = true;
+    let clientGone = false;
+
+    req.on("close", () => {
+      clientGone = true;
+    });
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(":ok\n\n");
+    flushResponse(res);
+
+    const send = (event: ViewWorkspaceRunEvent) => {
+      if (clientGone) return;
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      flushResponse(res);
+    };
+
+    await runViewWorkspaceSession({
+      graph,
+      request: parsed.data,
+      emit: send,
+      ensureActive: () => {
+        if (clientGone) {
+          throw new Error("__workspace_aborted__");
+        }
+      },
+    });
+
+    if (!clientGone) {
+      res.end();
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "View workspace run failed";
+    if (message !== "__workspace_aborted__" && !res.writableEnded) {
+      res.write(`data: ${JSON.stringify({
+        runKind: "view_workspace",
+        phase: "error",
+        message,
+      })}\n\n`);
+      res.end();
+    }
+  } finally {
+    workspaceRunActive = false;
   }
 });

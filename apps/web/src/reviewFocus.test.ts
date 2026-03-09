@@ -78,6 +78,15 @@ function buildGraph(): ProjectGraph {
         nodeRefs: ["sym:pkg:analytics", "sym:db:mes"],
         edgeRefs: [],
       },
+      {
+        id: "view:hidden-overview",
+        title: "Data Pipeline Overview",
+        parentViewId: "view:root",
+        scope: "root",
+        hiddenInSidebar: true,
+        nodeRefs: ["sym:group:datenquellen", "sym:db:mes", "sym:db:druid"],
+        edgeRefs: [],
+      },
     ],
     rootViewId: "view:root",
   };
@@ -130,6 +139,29 @@ test("resolveReviewEntryTargets prefers the view with the strongest multi-target
   assert.equal(resolution.viewId, "view:groups");
   assert.equal(resolution.primaryTargetId, "sym:db:mes");
   assert.deepEqual(resolution.targetIds, ["sym:db:mes", "sym:db:druid"]);
+});
+
+test("resolveReviewEntryTargets ignores hidden technical views even when they cover more targets", () => {
+  const graph = buildGraph();
+  const resolution = resolveReviewEntryTargets(
+    graph,
+    "view:root",
+    {
+      id: "item:hidden",
+      source: "uml_reference_compare",
+      category: "context",
+      severity: "high",
+      title: "Keep visible context view",
+      message: "Focus should stay on a visible tree view.",
+      targetIds: ["sym:group:datenquellen", "sym:db:mes", "sym:db:druid"],
+      status: "new",
+      sourceLabel: "UML Reference Compare",
+      storage: { kind: "item", collection: "graphSuggestions", id: "item:hidden" },
+    },
+  );
+
+  assert.equal(resolution.viewId, "view:groups");
+  assert.equal(resolution.primaryTargetId, "sym:group:datenquellen");
 });
 
 test("resolveReviewEntryTargets keeps label fallback in the current view when match strength is equal", () => {
