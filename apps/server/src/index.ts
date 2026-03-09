@@ -11,9 +11,10 @@ import { getActiveAiUseCaseRouting } from "./ai/useCases.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
+const JSON_BODY_LIMIT = process.env.AI_HTTP_JSON_LIMIT?.trim() || "50mb";
 
 app.use(cors());
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 app.use("/api/graph", graphRouter);
 app.use("/api/scan", scanRouter);
@@ -105,6 +106,23 @@ app.get("/api/config", (_req, res) => {
     aiModelRouting: getActiveAiModelConfig(aiConfig),
     aiUseCaseRouting: getActiveAiUseCaseRouting(aiConfig),
   });
+});
+
+app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
+
+  const err = error as { type?: string; status?: number; message?: string };
+  if (err?.type === "entity.too.large" || err?.status === 413) {
+    res.status(413).json({
+      error: `Request body too large. Reduce screenshot size or raise AI_HTTP_JSON_LIMIT (current ${JSON_BODY_LIMIT}).`,
+    });
+    return;
+  }
+
+  next(error);
 });
 
 app.listen(PORT, () => {

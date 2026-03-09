@@ -5,11 +5,17 @@ import {
   dataUrlToBase64,
   DEFAULT_REFERENCE_AUTOREFACTOR_INSTRUCTION,
   DEFAULT_REFERENCE_AUTOREFACTOR_OPTIONS,
+  estimateBase64Bytes,
   normalizeReferenceImageMimeType,
 } from "./referenceAutorefactor.js";
 
 test("dataUrlToBase64 strips the data URL prefix", () => {
   assert.equal(dataUrlToBase64("data:image/png;base64,QUJDRA=="), "QUJDRA==");
+});
+
+test("estimateBase64Bytes approximates decoded payload size", () => {
+  assert.equal(estimateBase64Bytes("QUJDRA=="), 4);
+  assert.equal(estimateBase64Bytes("TWE="), 2);
 });
 
 test("normalizeReferenceImageMimeType accepts supported reference image types", () => {

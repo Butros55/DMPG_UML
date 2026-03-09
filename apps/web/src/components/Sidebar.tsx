@@ -694,11 +694,15 @@ export function Sidebar() {
 
   // Build view tree structure
   const views = graph?.views ?? [];
+  const sidebarViews = useMemo(
+    () => views.filter((view) => !view.hiddenInSidebar),
+    [views],
+  );
   const allSymbols = graph?.symbols ?? [];
   const { rootViews, childMap } = useMemo(() => {
     const cMap = new Map<string, DiagramView[]>();
     const roots: DiagramView[] = [];
-    for (const v of views) {
+    for (const v of sidebarViews) {
       if (!v.parentViewId) {
         roots.push(v);
       } else {
@@ -708,20 +712,20 @@ export function Sidebar() {
       }
     }
     return { rootViews: roots, childMap: cMap };
-  }, [views]);
+  }, [sidebarViews]);
 
   // Build symbol list per view: only symbols that are direct children (not sub-view owners)
   const symbolsByView = useMemo(() => {
     const map = new Map<string, Sym[]>();
     // Collect set of symbol IDs that own a child view (these are shown as sub-trees, not leaf nodes)
     const viewOwnerIds = new Set<string>();
-    for (const v of views) {
+    for (const v of sidebarViews) {
       // Find the symbol that has childViewId === v.id
       for (const sym of allSymbols) {
         if (sym.childViewId === v.id) viewOwnerIds.add(sym.id);
       }
     }
-    for (const v of views) {
+    for (const v of sidebarViews) {
       const syms: Sym[] = [];
       for (const nid of v.nodeRefs) {
         if (viewOwnerIds.has(nid)) continue; // skip — shown as sub-view
@@ -734,7 +738,7 @@ export function Sidebar() {
       if (syms.length > 0) map.set(v.id, syms);
     }
     return map;
-  }, [views, allSymbols]);
+  }, [sidebarViews, allSymbols]);
 
   const normalizedViewSearch = viewSearchQuery.trim().toLowerCase();
   const viewSearchActive = normalizedViewSearch.length > 0;

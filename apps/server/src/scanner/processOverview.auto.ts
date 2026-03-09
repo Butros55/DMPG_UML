@@ -35,6 +35,7 @@ interface ProcessPackageConfig {
   stereotype?: string;
   preview?: string[];
   parentId?: string;
+  childViewId?: string;
   position: PositionConfig;
   drilldown?: DrilldownConfig;
 }
@@ -46,6 +47,7 @@ interface ProcessNodeConfig {
   stereotype?: string;
   preview?: string[];
   parentId?: string;
+  childViewId?: string;
   position: PositionConfig;
   drilldown?: DrilldownConfig;
 }
@@ -63,6 +65,25 @@ export interface ProcessDiagramConfig {
   title: string;
   packages: ProcessPackageConfig[];
   nodes: ProcessNodeConfig[];
+  edges: ProcessEdgeConfig[];
+  stageViews: ProcessStageViewConfig[];
+}
+
+interface StageViewNodePosition {
+  symbolId: string;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+}
+
+interface ProcessStageViewConfig {
+  id: string;
+  title: string;
+  stage: StageId;
+  nodeRefs: string[];
+  edgeRefs: string[];
+  nodePositions: StageViewNodePosition[];
   edges: ProcessEdgeConfig[];
 }
 
@@ -110,6 +131,7 @@ interface DraftNode {
   stereotype?: string;
   preview?: string[];
   parentId?: string;
+  childViewId?: string;
   drilldown?: DrilldownConfig;
   mappedSymbolIds: string[];
   drilldownSymbolIds: string[];
@@ -230,16 +252,41 @@ export function buildProcessDiagramConfigFromGraph(graph: ProjectGraph): Process
   const sourceNodes = buildSyntheticSourceNodes(graph, ctx);
   const artifactNodes = buildSyntheticArtifactNodes(graph, ctx);
   const stageNodes = ensureStageCoverage(graph, ctx, [...sourceNodes, ...componentNodes, ...artifactNodes]);
+  const stageViews = buildStageViews(graph, ctx, stageNodes);
   const packages = STAGES.map((stage) => ({
     id: stage.packageId,
     label: stage.label,
     stage: stage.id,
     stereotype: "<<package>>",
     preview: buildStagePreview(stage.id, ctx, stageNodes),
-    drilldown: { preferredViewIds: compact([chooseBestStageDrilldownView(graph, ctx, stage.id)]), preferredSymbolIds: collectStageSymbolIds(ctx, stage.id, stageNodes), viewSearch: viewTerms(stage.id) },
+    childViewId: stageViewId(stage.id),
+    drilldown: { preferredViewIds: [stageViewId(stage.id)] },
   }));
-  const note: DraftNode = { id: "proc:note:overview", label: "Scan-basierte Layer-1-Prozesssicht\nsynthetisch aus Symbolen, Relationen und Artefakten erzeugt.", umlType: "note", role: "overview-note", order: 0, priority: 1, mappedSymbolIds: [], drilldownSymbolIds: [] };
-  return generateProcessLayout({ viewId: VIEW_ID, title: VIEW_TITLE, packages, nodes: [note, ...stageNodes], edges: aggregateProcessEdges(graph, ctx, stageNodes) });
+  const note: DraftNode = {
+    id: "proc:note:overview",
+    label: "Scan-basierte Layer-1-Prozesssicht\nsynthetisch aus Symbolen, Relationen und Artefakten erzeugt.",
+    umlType: "note",
+    role: "overview-note",
+    order: 0,
+    priority: 1,
+    mappedSymbolIds: [],
+    drilldownSymbolIds: [],
+  };
+  return generateProcessLayout({
+    viewId: VIEW_ID,
+    title: VIEW_TITLE,
+    packages,
+    nodes: [
+      note,
+      ...stageNodes.map((node) =>
+        node.stage && !isStoreDraftNode(node)
+          ? { ...node, drilldown: { preferredViewIds: [stageViewId(node.stage)] }, childViewId: stageViewId(node.stage) }
+          : { ...node, drilldown: undefined, childViewId: undefined },
+      ),
+    ],
+    edges: aggregateProcessEdges(graph, ctx, stageNodes),
+    stageViews,
+  });
 }
 
 function buildContext(graph: ProjectGraph): Context {
@@ -553,6 +600,334 @@ function ensureStageCoverage(graph: ProjectGraph, ctx: Context, nodes: DraftNode
   return next.sort(compareNodes);
 }
 
+function buildStageViews(graph: ProjectGraph, ctx: Context, nodes: DraftNode[]): ProcessStageViewConfig[] {
+  return STAGES.map((stage) => {
+    const storeNodes = stageStoreNodes(stage.id, nodes);
+    const internalNodeRefs = buildStageViewInternalNodeRefs(graph, ctx, stage.id, nodes);
+    const nodeRefs = compact([
+      ...storeNodes.map((node) => node.id),
+      ...internalNodeRefs,
+    ]);
+    const nodeRefSet = new Set(nodeRefs);
+    const edgeRefs = graph.relations
+      .filter((relation) =>
+        relation.type !== "contains" &&
+        !relation.id.startsWith("process-edge:") &&
+        !relation.id.startsWith("stub-edge:") &&
+        nodeRefSet.has(relation.source) &&
+        nodeRefSet.has(relation.target),
+      )
+      .map((relation) => relation.id);
+    const edges = buildStageStoreEdges(graph, ctx, stage.id, nodes, storeNodes, internalNodeRefs);
+    return {
+      id: stageViewId(stage.id),
+      title: stage.label,
+      stage: stage.id,
+      nodeRefs,
+      edgeRefs,
+      edges,
+      nodePositions: generateStageViewLayout(graph, nodeRefs, nodes),
+    };
+  });
+}
+
+function buildStageViewInternalNodeRefs(
+  graph: ProjectGraph,
+  ctx: Context,
+  stage: StageId,
+  nodes: DraftNode[],
+): string[] {
+  const symbolById = ctx.symbolById;
+  const ranked = new Map<string, number>();
+  const boost = (symbolId: string | undefined, amount: number) => {
+    if (!symbolId) return;
+    const symbol = symbolById.get(symbolId);
+    if (!symbol || !isStageViewInternalSymbol(symbol)) return;
+    ranked.set(symbol.id, Math.max(ranked.get(symbol.id) ?? Number.NEGATIVE_INFINITY, amount));
+  };
+
+  const seedIds = new Set<string>();
+  for (const id of collectStageSymbolIds(ctx, stage, nodes)) {
+    for (const candidateId of ctx.ancestorsById.get(id) ?? [id]) {
+      const candidate = symbolById.get(candidateId);
+      if (!candidate || !isStageViewInternalSymbol(candidate)) continue;
+      seedIds.add(candidate.id);
+      break;
+    }
+  }
+
+  for (const node of nodes.filter((candidate) => candidate.stage === stage && !isStoreDraftNode(candidate))) {
+    for (const id of [...node.mappedSymbolIds, ...node.drilldownSymbolIds]) {
+      for (const candidateId of ctx.ancestorsById.get(id) ?? [id]) {
+        const candidate = symbolById.get(candidateId);
+        if (!candidate || !isStageViewInternalSymbol(candidate)) continue;
+        seedIds.add(candidate.id);
+        break;
+      }
+    }
+  }
+
+  if (stage === "sources" || stage === "connectors") {
+    for (const node of nodes.filter((candidate) => candidate.stage === "connectors" && !isStoreDraftNode(candidate))) {
+      for (const id of [...node.mappedSymbolIds, ...node.drilldownSymbolIds]) {
+        for (const candidateId of ctx.ancestorsById.get(id) ?? [id]) {
+          const candidate = symbolById.get(candidateId);
+          if (!candidate || !isStageViewInternalSymbol(candidate)) continue;
+          seedIds.add(candidate.id);
+          break;
+        }
+      }
+    }
+  }
+
+  for (const id of seedIds) {
+    const symbol = symbolById.get(id);
+    if (!symbol) continue;
+    boost(symbol.id, scoreStageViewSymbol(symbol, stage, ctx, graph));
+    if (symbol.kind === "class") {
+      boost(symbol.parentId, scoreStageViewSymbol(symbol, stage, ctx, graph) + 12);
+    }
+    if (symbol.kind === "module" || symbol.kind === "class") {
+      for (const ancestorId of ctx.ancestorsById.get(symbol.id) ?? []) {
+        const ancestor = symbolById.get(ancestorId);
+        if (!ancestor || ancestor.id === symbol.id || ancestor.kind !== "group" || !isStageViewInternalSymbol(ancestor)) continue;
+        boost(ancestor.id, scoreStageViewSymbol(symbol, stage, ctx, graph) + 6);
+        break;
+      }
+    }
+  }
+
+  const modules = [...ranked.entries()]
+    .map(([id, score]) => ({ id, score, symbol: symbolById.get(id)! }))
+    .filter((entry) => entry.symbol.kind === "module" && isAcceptedStageSymbol(entry.symbol, stage, ctx))
+    .sort((a, b) => b.score - a.score || a.symbol.label.localeCompare(b.symbol.label))
+    .slice(0, 8)
+    .map((entry) => entry.id);
+  const classes = [...ranked.entries()]
+    .map(([id, score]) => ({ id, score, symbol: symbolById.get(id)! }))
+    .filter((entry) => entry.symbol.kind === "class" && isAcceptedStageSymbol(entry.symbol, stage, ctx))
+    .sort((a, b) => b.score - a.score || a.symbol.label.localeCompare(b.symbol.label))
+    .slice(0, 8)
+    .map((entry) => entry.id);
+  const groupCandidates = compact([...modules, ...classes].flatMap((id) =>
+    (ctx.ancestorsById.get(id) ?? [])
+      .map((ancestorId) => symbolById.get(ancestorId))
+      .filter((ancestor): ancestor is Symbol => Boolean(ancestor && ancestor.kind === "group" && isStageViewInternalSymbol(ancestor)))
+      .map((ancestor) => ancestor.id)
+      .slice(0, 1),
+  ));
+  const groups = groupCandidates
+    .map((id) => ({ id, score: ranked.get(id) ?? 0, symbol: symbolById.get(id)! }))
+    .sort((a, b) => b.score - a.score || a.symbol.label.localeCompare(b.symbol.label))
+    .slice(0, 2)
+    .map((entry) => entry.id);
+
+  return compact([...groups, ...modules, ...classes]);
+}
+
+function buildStageStoreEdges(
+  graph: ProjectGraph,
+  ctx: Context,
+  stage: StageId,
+  nodes: DraftNode[],
+  storeNodes: DraftNode[],
+  internalNodeRefs: string[],
+): ProcessEdgeConfig[] {
+  if (internalNodeRefs.length === 0) return [];
+  const internalSet = new Set(internalNodeRefs);
+  const componentNodes = nodes.filter((node) => node.stage === stage && !isStoreDraftNode(node));
+  const primaryTargets = componentNodes
+    .flatMap((node) => resolveInternalTargets(node, ctx, internalSet))
+    .slice(0, 4);
+  const fallbackTarget = primaryTargets[0] ?? internalNodeRefs[0];
+  const edges: ProcessEdgeConfig[] = [];
+  for (const storeNode of storeNodes) {
+    const targets = resolveInternalTargets(storeNode, ctx, internalSet);
+    const targetIds = compact([...targets, fallbackTarget]).slice(0, 2);
+    if (targetIds.length === 0) continue;
+    for (const targetId of targetIds) {
+      const spec = stageStoreEdgeSpec(storeNode, stage);
+      edges.push({
+        id: `stage-${stage}-${safe(storeNode.id)}-${safe(targetId)}`,
+        source: spec.direction === "out" ? targetId : storeNode.id,
+        target: spec.direction === "out" ? storeNode.id : targetId,
+        type: spec.type,
+        label: spec.label,
+      });
+    }
+  }
+  return dedupeProcessEdges(edges);
+}
+
+function resolveInternalTargets(
+  node: DraftNode,
+  ctx: Context,
+  internalSet: Set<string>,
+): string[] {
+  const matches: string[] = [];
+  for (const id of [...node.mappedSymbolIds, ...node.drilldownSymbolIds]) {
+    for (const candidateId of ctx.ancestorsById.get(id) ?? [id]) {
+      if (internalSet.has(candidateId)) {
+        matches.push(candidateId);
+        break;
+      }
+    }
+  }
+  return compact(matches);
+}
+
+function stageStoreNodes(stage: StageId, nodes: DraftNode[]): DraftNode[] {
+  if (stage === "sources") {
+    return nodes.filter((node) => node.umlType === "database").sort(compareNodes);
+  }
+  if (stage === "connectors") {
+    return nodes.filter((node) => node.umlType === "database" && node.stage === "sources").sort(compareNodes);
+  }
+  return nodes
+    .filter((node) => node.stage === stage && isStoreDraftNode(node))
+    .sort(compareNodes);
+}
+
+function stageStoreEdgeSpec(
+  storeNode: DraftNode,
+  stage: StageId,
+): { direction: "in" | "out"; type: RelationType; label?: string } {
+  if (storeNode.umlType === "database") {
+    return {
+      direction: "in",
+      type: "reads",
+      label: storeNode.role.includes("druid")
+        ? "read analytics data"
+        : storeNode.role.includes("sap")
+          ? "read ERP data"
+          : "read production data",
+    };
+  }
+  if (storeNode.role === "input-files") return { direction: "in", type: "reads", label: "read input tables" };
+  if (storeNode.role === "raw-datasets") {
+    return stage === "extract"
+      ? { direction: "out", type: "writes", label: "write raw csv" }
+      : { direction: "in", type: "reads", label: "load raw csv" };
+  }
+  if (storeNode.role === "matched-datasets") {
+    return stage === "transform"
+      ? { direction: "out", type: "writes", label: "write clean dataset" }
+      : { direction: "in", type: "reads", label: "fit distributions" };
+  }
+  if (storeNode.role === "distribution-json") return { direction: "out", type: "writes", label: "persist json" };
+  if (storeNode.role === "kde-artifacts") return { direction: "out", type: "writes", label: "persist kde" };
+  if (storeNode.role === "distribution-exports") return { direction: "out", type: "writes", label: "export statistics" };
+  if (storeNode.role === "arrival-tables") return { direction: "in", type: "reads", label: "load arrival tables" };
+  if (storeNode.role === "simulation-output") return { direction: "out", type: "writes", label: "export simulation output" };
+  return {
+    direction: stage === "persist" ? "out" : "in",
+    type: stage === "persist" ? "writes" : "reads",
+    label: stage === "persist" ? "persist data" : "load data",
+  };
+}
+
+function generateStageViewLayout(
+  graph: ProjectGraph,
+  nodeRefs: string[],
+  nodes: DraftNode[],
+): StageViewNodePosition[] {
+  const symbolById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
+  const draftById = new Map(nodes.map((node) => [node.id, node]));
+  const columns: Array<{ ids: string[]; x: number; width: number; step: number }> = [
+    { ids: [], x: 40, width: 250, step: 110 },
+    { ids: [], x: 330, width: 280, step: 130 },
+    { ids: [], x: 660, width: 300, step: 130 },
+    { ids: [], x: 1010, width: 320, step: 150 },
+  ];
+
+  for (const nodeRef of nodeRefs) {
+    const symbol = symbolById.get(nodeRef);
+    const draft = draftById.get(nodeRef);
+    const umlType = symbol?.umlType ?? draft?.umlType;
+    const kind = symbol?.kind ?? kindFromDraftUmlType(draft?.umlType);
+    if (umlType === "database" || umlType === "artifact") columns[0].ids.push(nodeRef);
+    else if (kind === "group") columns[1].ids.push(nodeRef);
+    else if (kind === "module") columns[2].ids.push(nodeRef);
+    else columns[3].ids.push(nodeRef);
+  }
+
+  return columns.flatMap((column, columnIndex) =>
+    column.ids.map((symbolId, index) => ({
+      symbolId,
+      x: column.x,
+      y: 40 + index * column.step,
+      width: column.width,
+      height:
+        columnIndex === 0
+          ? 86
+          : columnIndex === 1
+            ? 116
+            : columnIndex === 2
+              ? 112
+              : 138,
+    })),
+  );
+}
+
+function kindFromDraftUmlType(umlType: DraftNode["umlType"] | undefined): Symbol["kind"] {
+  if (umlType === "package" || umlType === "group") return "group";
+  if (umlType === "component" || umlType === "module") return "module";
+  if (umlType === "class") return "class";
+  return "external";
+}
+
+function isStageViewInternalSymbol(symbol: Symbol): boolean {
+  if (symbol.tags?.includes("process-overview") || symbol.tags?.includes("external-stub")) return false;
+  if (symbol.tags?.includes("artifact-cluster")) return false;
+  if (symbol.tags?.some((tag) => tag.startsWith("art-cat:")) || symbol.tags?.includes("artifact-category")) return false;
+  if (symbol.id.startsWith("ext:") || symbol.id.startsWith("stub:")) return false;
+  if (symbol.id === "grp:dir:__root__" || symbol.id.startsWith("grp:domain:")) return false;
+  if (symbol.kind !== "group" && symbol.kind !== "module" && symbol.kind !== "class") return false;
+  return true;
+}
+
+function isStoreDraftNode(node: DraftNode): boolean {
+  return node.umlType === "database" || node.umlType === "artifact";
+}
+
+function scoreStageViewSymbol(
+  symbol: Symbol,
+  stage: StageId,
+  ctx: Context,
+  graph: ProjectGraph,
+): number {
+  const ownScore = ctx.classifications.get(symbol.id)?.scores[stage] ?? 0;
+  let descendantScore = 0;
+  for (const candidate of graph.symbols) {
+    if (candidate.id === symbol.id) continue;
+    const ancestors = ctx.ancestorsById.get(candidate.id) ?? [];
+    if (!ancestors.includes(symbol.id)) continue;
+    descendantScore = Math.max(descendantScore, ctx.classifications.get(candidate.id)?.scores[stage] ?? 0);
+  }
+  return ownScore + descendantScore + kindWeight(symbol.kind) + (symbol.childViewId ? 8 : 0);
+}
+
+function isAcceptedStageSymbol(symbol: Symbol, stage: StageId, ctx: Context): boolean {
+  const acceptedStages =
+    stage === "sources" || stage === "connectors"
+      ? new Set<StageId>(["sources", "connectors"])
+      : new Set<StageId>([stage]);
+  const classification = ctx.classifications.get(symbol.id);
+  return classification ? acceptedStages.has(classification.stage) : false;
+}
+
+function dedupeProcessEdges(edges: ProcessEdgeConfig[]): ProcessEdgeConfig[] {
+  const seen = new Set<string>();
+  const uniqueEdges: ProcessEdgeConfig[] = [];
+  for (const edge of edges) {
+    const key = `${edge.source}|${edge.target}|${edge.type}|${edge.label ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueEdges.push(edge);
+  }
+  return uniqueEdges;
+}
+
 function aggregateProcessEdges(graph: ProjectGraph, ctx: Context, nodes: DraftNode[]): ProcessEdgeConfig[] {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const ownerBySymbolId = new Map<string, string>();
@@ -647,7 +1022,14 @@ function addFallbackFlow(edgeMap: Map<string, EdgeAcc>, nodes: DraftNode[]): voi
   if (simulate && simOutput) addEdge(edgeMap, simulate.id, simOutput.id, "writes", "export simulation output", 1);
 }
 
-function generateProcessLayout(input: { viewId: string; title: string; packages: Array<Omit<ProcessPackageConfig, "position"> & { stage: StageId }>; nodes: DraftNode[]; edges: ProcessEdgeConfig[] }): ProcessDiagramConfig {
+function generateProcessLayout(input: {
+  viewId: string;
+  title: string;
+  packages: Array<Omit<ProcessPackageConfig, "position"> & { stage: StageId }>;
+  nodes: DraftNode[];
+  edges: ProcessEdgeConfig[];
+  stageViews: ProcessStageViewConfig[];
+}): ProcessDiagramConfig {
   const packages: ProcessPackageConfig[] = input.packages.map((pkg) => {
     const stage = stageDef(pkg.stage);
     const childCount = input.nodes.filter((node) => node.parentId === pkg.id).length;
@@ -674,7 +1056,14 @@ function generateProcessLayout(input: { viewId: string; title: string; packages:
       },
     };
   });
-  return { viewId: input.viewId, title: input.title, packages, nodes, edges: input.edges };
+  return {
+    viewId: input.viewId,
+    title: input.title,
+    packages,
+    nodes,
+    edges: input.edges,
+    stageViews: input.stageViews,
+  };
 }
 
 function collectStageSymbolIds(ctx: Context, stage: StageId, nodes: DraftNode[]): string[] {
@@ -706,8 +1095,15 @@ function chooseBestStageDrilldownView(graph: ProjectGraph, ctx: Context, stage: 
   let best: { id: string; score: number } | null = null;
   for (const view of graph.views) {
     if (view.id === VIEW_ID) continue;
+    if (view.hiddenInSidebar) continue;
+    if (view.id.startsWith("view:artifacts:") || view.id.startsWith("view:art-cat:")) continue;
+    if (/artifacts|other artifacts|data files|libraries|i\/o/i.test(view.title)) continue;
     let score = scopeScore(view.scope);
     for (const nodeId of view.nodeRefs) {
+      if (nodeId.startsWith("ext:") || nodeId.startsWith("stub:")) {
+        score -= 8;
+        continue;
+      }
       const chain = ctx.ancestorsById.get(nodeId) ?? [nodeId];
       const hit = chain.find((id) => stageSymbols.has(id));
       if (hit) score += ctx.classifications.get(hit)?.score ?? 4;
@@ -907,6 +1303,10 @@ function stageDef(stage: StageId): StageDef {
   const found = STAGES.find((candidate) => candidate.id === stage);
   if (!found) throw new Error(`Unknown process stage: ${stage}`);
   return found;
+}
+
+function stageViewId(stage: StageId): string {
+  return `view:process-stage:${stage}`;
 }
 
 function viewTerms(stage: StageId): string[] {

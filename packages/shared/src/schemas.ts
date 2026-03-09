@@ -309,6 +309,7 @@ export const DiagramViewSchema = z.object({
   title: z.string(),
   parentViewId: z.string().nullable().optional(),
   scope: ViewScopeEnum.optional(),
+  hiddenInSidebar: z.boolean().optional(),
   nodeRefs: z.array(z.string()),
   edgeRefs: z.array(z.string()),
   nodePositions: z.array(NodePositionSchema).optional(),

@@ -11,6 +11,7 @@ import type {
   ProjectConfig,
 } from "@dmpg/shared";
 import { buildCodingGuidelinesForSymbol } from "./codingGuidelines.js";
+import { augmentGraphWithUmlOverlays } from "./processOverview.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -749,11 +750,11 @@ function buildGraphFromScan(
     ];
   }
 
-  return {
+  return augmentGraphWithUmlOverlays({
     symbols: [...allSymbols, ...artifactGroups],
     relations: [...allRelations, ...artifactContains],
     views: [...allViewsList, ...artifactViews],
     rootViewId: "view:root",
     projectPath,
-  };
+  });
 }

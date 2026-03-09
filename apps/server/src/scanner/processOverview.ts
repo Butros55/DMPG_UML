@@ -36,6 +36,7 @@ interface ProcessPackageConfig {
   stereotype?: string;
   preview?: string[];
   parentId?: string;
+  childViewId?: string;
   position: PositionConfig;
   drilldown?: DrilldownConfig;
 }
@@ -47,6 +48,7 @@ interface ProcessNodeConfig {
   stereotype?: string;
   preview?: string[];
   parentId?: string;
+  childViewId?: string;
   position: PositionConfig;
   drilldown?: DrilldownConfig;
 }
@@ -64,6 +66,25 @@ interface ProcessDiagramConfig {
   title: string;
   packages: ProcessPackageConfig[];
   nodes: ProcessNodeConfig[];
+  edges: ProcessEdgeConfig[];
+  stageViews?: ProcessStageViewConfig[];
+}
+
+interface StageViewNodePosition {
+  symbolId: string;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+}
+
+interface ProcessStageViewConfig {
+  id: string;
+  title: string;
+  stage: string;
+  nodeRefs: string[];
+  edgeRefs: string[];
+  nodePositions: StageViewNodePosition[];
   edges: ProcessEdgeConfig[];
 }
 
@@ -128,6 +149,7 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
     fallbackKind: Symbol["kind"],
   ): Symbol => {
     const resolvedView =
+      item.childViewId ??
       resolveDrilldownViewId(graph, item.drilldown) ??
       (umlType === "package" && !item.parentId ? oldRootViewId : undefined);
     const symbol: Symbol = {
@@ -189,10 +211,36 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
 
   graph.views.push(processView);
 
+  const stageRelations: Relation[] = [];
+  const stageViews = (config.stageViews ?? []).map((view) => {
+    const syntheticRelations = view.edges.map((edge) => ({
+      id: `${PROCESS_REL_PREFIX}${edge.id}`,
+      type: normalizeRelationType(edge.type),
+      source: edge.source,
+      target: edge.target,
+      label: edge.label,
+      confidence: 1,
+    }));
+    stageRelations.push(...syntheticRelations);
+    return {
+      id: view.id,
+      title: view.title,
+      parentViewId: processView.id,
+      scope: "group" as const,
+      hiddenInSidebar: false,
+      nodeRefs: view.nodeRefs,
+      edgeRefs: [...view.edgeRefs, ...syntheticRelations.map((relation) => relation.id)],
+      nodePositions: view.nodePositions,
+    } satisfies DiagramView;
+  });
+  graph.relations.push(...stageRelations);
+  graph.views.push(...stageViews);
+
   // Keep the previous graph root reachable from Layer-1.
   const oldRoot = graph.views.find((view) => view.id === oldRootViewId);
   if (oldRoot && oldRoot.id !== processView.id) {
     oldRoot.parentViewId = processView.id;
+    setHiddenInSidebarForSubtree(graph, oldRoot.id, true);
   }
 
   graph.rootViewId = processView.id;
@@ -206,6 +254,9 @@ function addExternalContextStubs(graph: ProjectGraph): ProjectGraph {
   const ancestorIndex = buildAncestorIndex(graph.symbols);
 
   for (const view of graph.views) {
+    if (view.id === PROCESS_VIEW_ID || view.id.startsWith("view:process-stage:")) {
+      continue;
+    }
     const visible = new Set(view.nodeRefs);
     if (visible.size === 0) continue;
 
@@ -609,12 +660,42 @@ function viewDepth(graph: ProjectGraph, viewId: string): number {
   return depth;
 }
 
+function setHiddenInSidebarForSubtree(
+  graph: ProjectGraph,
+  rootViewId: string,
+  hidden: boolean,
+): void {
+  const pending = [rootViewId];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+    const view = graph.views.find((candidate) => candidate.id === current);
+    if (!view) continue;
+    view.hiddenInSidebar = hidden;
+    for (const child of graph.views) {
+      if (child.parentViewId === current) {
+        pending.push(child.id);
+      }
+    }
+  }
+}
+
 function removeExistingProcessOverlay(graph: ProjectGraph, processViewId: string): void {
   const processIds = new Set(
     graph.symbols
       .filter((symbol) => symbol.tags?.includes(PROCESS_TAG))
       .map((symbol) => symbol.id),
   );
+  const processViewIds = new Set(
+    graph.views
+      .filter((view) => view.id === processViewId || view.id.startsWith("view:process-stage:"))
+      .map((view) => view.id),
+  );
+  const detachedRootIds = graph.views
+    .filter((view) => view.parentViewId && processViewIds.has(view.parentViewId))
+    .map((view) => view.id);
 
   graph.symbols = graph.symbols.filter((symbol) => !processIds.has(symbol.id));
   graph.relations = graph.relations.filter(
@@ -623,17 +704,21 @@ function removeExistingProcessOverlay(graph: ProjectGraph, processViewId: string
       !processIds.has(relation.source) &&
       !processIds.has(relation.target),
   );
-  graph.views = graph.views.filter((view) => view.id !== processViewId);
+  graph.views = graph.views.filter((view) => !processViewIds.has(view.id));
 
   for (const view of graph.views) {
     view.nodeRefs = view.nodeRefs.filter((nodeId) => !processIds.has(nodeId));
     view.edgeRefs = view.edgeRefs.filter((edgeId) => !edgeId.startsWith(PROCESS_REL_PREFIX));
-    if (view.parentViewId === processViewId) {
+    if (view.parentViewId && processViewIds.has(view.parentViewId)) {
       view.parentViewId = null;
     }
     if (view.nodePositions?.length) {
       view.nodePositions = view.nodePositions.filter((position) => !processIds.has(position.symbolId));
     }
+  }
+
+  for (const viewId of detachedRootIds) {
+    setHiddenInSidebarForSubtree(graph, viewId, false);
   }
 }
 

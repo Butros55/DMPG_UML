@@ -59,6 +59,18 @@ test("buildProcessDiagramConfigFromGraph produces a scan-driven DMPG pipeline ov
   assert.ok(
     [...edgeSet].some((edge) => edge.includes("proc:art:arrival->proc:node:simulate:sim-generator:load arrival tables")),
   );
+
+  assert.deepEqual(
+    config.stageViews.map((view) => view.id),
+    [
+      "view:process-stage:sources",
+      "view:process-stage:connectors",
+      "view:process-stage:extract",
+      "view:process-stage:transform",
+      "view:process-stage:persist",
+      "view:process-stage:simulate",
+    ],
+  );
 });
 
 test("augmentGraphWithUmlOverlays makes the generated process overview the root view", () => {
@@ -72,9 +84,37 @@ test("augmentGraphWithUmlOverlays makes the generated process overview the root 
   assert.ok(processView?.nodeRefs.includes("proc:pkg:sources"));
   assert.ok(processView?.nodeRefs.includes("proc:pkg:simulate"));
 
-  const processPackage = augmented.symbols.find((symbol) => symbol.id === "proc:pkg:persist");
-  assert.ok(processPackage?.childViewId);
+  const stagePackages = [
+    "proc:pkg:sources",
+    "proc:pkg:connectors",
+    "proc:pkg:extract",
+    "proc:pkg:transform",
+    "proc:pkg:persist",
+    "proc:pkg:simulate",
+  ];
+  for (const [index, packageId] of stagePackages.entries()) {
+    const processPackage = augmented.symbols.find((symbol) => symbol.id === packageId);
+    const expectedStageId = [
+      "sources",
+      "connectors",
+      "extract",
+      "transform",
+      "persist",
+      "simulate",
+    ][index];
+    assert.equal(processPackage?.childViewId, `view:process-stage:${expectedStageId}`);
+  }
 
   const oldRoot = augmented.views.find((view) => view.id === "view:root");
   assert.equal(oldRoot?.parentViewId, "view:process-overview");
+  assert.equal(oldRoot?.hiddenInSidebar, true);
+
+  const stageViews = augmented.views.filter((view) => view.id.startsWith("view:process-stage:"));
+  assert.equal(stageViews.length, 6);
+  for (const stageView of stageViews) {
+    assert.equal(stageView.parentViewId, "view:process-overview");
+    assert.equal(stageView.hiddenInSidebar, false);
+    assert.ok(stageView.nodeRefs.every((nodeRef) => !nodeRef.startsWith("ext:")));
+    assert.ok(stageView.nodeRefs.every((nodeRef) => !nodeRef.startsWith("stub:")));
+  }
 });
