@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useMemo } from "react";
+import { useCallback, useLayoutEffect, useRef, useMemo, useState } from "react";
 import { useAppStore } from "../store";
-import type { Symbol as Sym, Relation, ProjectGraph } from "@dmpg/shared";
+import { projectEdgesForView, type Symbol as Sym, type Relation, type ProjectGraph } from "@dmpg/shared";
+import {
+  HOVER_CARD_VIEWPORT_MARGIN,
+  HOVER_CARD_WIDTH,
+  buildCorridorRect,
+  rectFromDomRect,
+  resolveHoverCardPlacement,
+  type RectBox,
+} from "../hoverCardPlacement";
 
 /* ── Hover timer management (module-level for cross-component access) ── */
 
@@ -49,9 +57,10 @@ export function scheduleShowHover(symbolId: string, rect: DOMRect) {
       showTimer = null;
       return;
     }
-    // Position: to the right of the node, or left if near screen edge
-    const x = rect.right + 12 + 380 > window.innerWidth ? rect.left - 392 : rect.right + 12;
-    const y = Math.max(8, Math.min(rect.top, window.innerHeight - 500));
+    const x = rect.right + 12 + HOVER_CARD_WIDTH > window.innerWidth
+      ? rect.left - (HOVER_CARD_WIDTH + 12)
+      : rect.right + 12;
+    const y = Math.max(HOVER_CARD_VIEWPORT_MARGIN, Math.min(rect.top, window.innerHeight - 500));
     useAppStore.getState().setHoverSymbol(symbolId, { x, y });
     showTimer = null;
   }, HOVER_SHOW_DELAY_MS);
@@ -232,15 +241,59 @@ const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: stri
   "in:uses_config":   { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
 };
 
+function isArtifactLikeSymbol(symbol: Pick<Sym, "kind" | "umlType">): boolean {
+  return (
+    symbol.kind === "external" ||
+    symbol.umlType === "artifact" ||
+    symbol.umlType === "database" ||
+    symbol.umlType === "component" ||
+    symbol.umlType === "note" ||
+    symbol.umlType === "external"
+  );
+}
+
+function getNodeRect(nodeId: string): RectBox | null {
+  const el = document.querySelector(`[data-id="${CSS.escape(nodeId)}"]`);
+  if (!(el instanceof HTMLElement)) return null;
+  return rectFromDomRect(el.getBoundingClientRect());
+}
+
+function getPlacementBounds(cardEl: HTMLDivElement): RectBox {
+  const canvasArea = cardEl.closest(".canvas-area");
+  if (canvasArea instanceof HTMLElement) {
+    const rect = canvasArea.getBoundingClientRect();
+    return {
+      left: rect.left + HOVER_CARD_VIEWPORT_MARGIN,
+      top: rect.top + HOVER_CARD_VIEWPORT_MARGIN,
+      right: rect.right - HOVER_CARD_VIEWPORT_MARGIN,
+      bottom: rect.bottom - HOVER_CARD_VIEWPORT_MARGIN,
+      width: Math.max(0, rect.width - HOVER_CARD_VIEWPORT_MARGIN * 2),
+      height: Math.max(0, rect.height - HOVER_CARD_VIEWPORT_MARGIN * 2),
+    };
+  }
+
+  return {
+    left: HOVER_CARD_VIEWPORT_MARGIN,
+    top: HOVER_CARD_VIEWPORT_MARGIN,
+    right: window.innerWidth - HOVER_CARD_VIEWPORT_MARGIN,
+    bottom: window.innerHeight - HOVER_CARD_VIEWPORT_MARGIN,
+    width: Math.max(0, window.innerWidth - HOVER_CARD_VIEWPORT_MARGIN * 2),
+    height: Math.max(0, window.innerHeight - HOVER_CARD_VIEWPORT_MARGIN * 2),
+  };
+}
+
 /* ── The Hover Card Component ── */
 
 export function SymbolHoverCard() {
   const hoverSymbolId = useAppStore((s) => s.hoverSymbolId);
   const hoverPosition = useAppStore((s) => s.hoverPosition);
   const graph = useAppStore((s) => s.graph);
+  const currentViewId = useAppStore((s) => s.currentViewId);
+  const diagramSettings = useAppStore((s) => s.diagramSettings);
   const focusSymbolInContext = useAppStore((s) => s.focusSymbolInContext);
   const openSourceViewer = useAppStore((s) => s.openSourceViewer);
   const cardRef = useRef<HTMLDivElement>(null);
+  const [resolvedPosition, setResolvedPosition] = useState<{ symbolId: string; x: number; y: number } | null>(null);
 
   const info = useMemo(() => {
     if (!hoverSymbolId || !graph) return null;
@@ -249,14 +302,88 @@ export function SymbolHoverCard() {
     return enrichSymbol(sym, graph);
   }, [hoverSymbolId, graph]);
 
-  // Reposition if card goes off-screen
-  useEffect(() => {
-    if (!cardRef.current || !hoverPosition) return;
-    const rect = cardRef.current.getBoundingClientRect();
-    if (rect.bottom > window.innerHeight - 8) {
-      cardRef.current.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
+  const relatedNodeIds = useMemo(() => {
+    if (!graph || !currentViewId || !hoverSymbolId) return [] as string[];
+
+    const view = graph.views.find((entry) => entry.id === currentViewId);
+    if (!view) return [] as string[];
+
+    const hiddenSymbolIds = diagramSettings.showArtifacts
+      ? new Set<string>()
+      : new Set(graph.symbols.filter((symbol) => isArtifactLikeSymbol(symbol)).map((symbol) => symbol.id));
+    const visibleNodeRefs = view.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    const visibleRelations = graph.relations.filter(
+      (rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target),
+    );
+    const relationMap = new Map(graph.relations.map((rel) => [rel.id, rel]));
+    const projectedEdges = projectEdgesForView(
+      { ...view, nodeRefs: visibleNodeRefs },
+      graph.symbols,
+      visibleRelations,
+    );
+
+    const ids = new Set<string>();
+    for (const edge of projectedEdges) {
+      const hasVisibleRelation = edge.relationIds.some((relationId) => {
+        const relation = relationMap.get(relationId);
+        return !!relation && diagramSettings.relationFilters[relation.type];
+      });
+      if (!hasVisibleRelation) continue;
+      if (edge.source === hoverSymbolId) ids.add(edge.target);
+      if (edge.target === hoverSymbolId) ids.add(edge.source);
     }
-  }, [info, hoverPosition]);
+
+    ids.delete(hoverSymbolId);
+    return Array.from(ids);
+  }, [currentViewId, diagramSettings.relationFilters, diagramSettings.showArtifacts, graph, hoverSymbolId]);
+
+  useLayoutEffect(() => {
+    if (!cardRef.current || !hoverSymbolId || !hoverPosition) return;
+
+    const updatePlacement = () => {
+      if (!cardRef.current) return;
+
+      const anchorRect = getNodeRect(hoverSymbolId);
+      if (!anchorRect) {
+        setResolvedPosition({
+          symbolId: hoverSymbolId,
+          x: hoverPosition.x,
+          y: hoverPosition.y,
+        });
+        return;
+      }
+
+      const relatedRects = relatedNodeIds
+        .map((nodeId) => getNodeRect(nodeId))
+        .filter((rect): rect is RectBox => rect !== null);
+      const corridorRects = relatedRects.map((rect) => buildCorridorRect(anchorRect, rect));
+      const cardRect = cardRef.current.getBoundingClientRect();
+      const placement = resolveHoverCardPlacement({
+        anchorRect,
+        cardSize: { width: cardRect.width, height: cardRect.height },
+        bounds: getPlacementBounds(cardRef.current),
+        avoidRects: relatedRects,
+        corridorRects,
+      });
+
+      setResolvedPosition({
+        symbolId: hoverSymbolId,
+        x: placement.x,
+        y: placement.y,
+      });
+    };
+
+    updatePlacement();
+
+    const resizeObserver = new ResizeObserver(() => updatePlacement());
+    resizeObserver.observe(cardRef.current);
+    window.addEventListener("resize", updatePlacement);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updatePlacement);
+    };
+  }, [hoverPosition, hoverSymbolId, info, relatedNodeIds]);
 
   const handleNavigate = useCallback(
     (symId: string) => {
@@ -278,6 +405,10 @@ export function SymbolHoverCard() {
   }, [info, openSourceViewer]);
 
   if (!info || !hoverPosition) return null;
+
+  const cardPosition = resolvedPosition?.symbolId === hoverSymbolId
+    ? { x: resolvedPosition.x, y: resolvedPosition.y }
+    : hoverPosition;
 
   const { sym } = info;
   const doc = sym.doc;
@@ -324,7 +455,7 @@ export function SymbolHoverCard() {
     <div
       ref={cardRef}
       className="symbol-hover-card"
-      style={{ left: hoverPosition.x, top: hoverPosition.y }}
+      style={{ left: cardPosition.x, top: cardPosition.y }}
       onMouseEnter={() => setMouseOverCard(true)}
       onMouseLeave={() => { setMouseOverCard(false); scheduleHideHover(); }}
     >
