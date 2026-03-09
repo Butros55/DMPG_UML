@@ -29,6 +29,48 @@ export function isNavigableView(graph: ProjectGraph, view: DiagramView): boolean
   return !isTechnicalNavigationView(graph, view);
 }
 
+export function normalizeGraphForFrontend(graph: ProjectGraph): ProjectGraph {
+  const keptViews = graph.views.filter((view) => isNavigableView(graph, view));
+  if (keptViews.length === 0) return graph;
+
+  const keptViewIds = new Set(keptViews.map((view) => view.id));
+  const viewMap = new Map(graph.views.map((view) => [view.id, view]));
+
+  const normalizedViews = keptViews.map((view) => {
+    let parentViewId = view.parentViewId ?? null;
+
+    while (parentViewId && !keptViewIds.has(parentViewId)) {
+      parentViewId = viewMap.get(parentViewId)?.parentViewId ?? null;
+    }
+
+    return {
+      ...view,
+      parentViewId,
+    };
+  });
+
+  const normalizedRootViewId = keptViewIds.has(graph.rootViewId)
+    ? graph.rootViewId
+    : normalizedViews.find((view) => view.parentViewId == null)?.id ?? normalizedViews[0].id;
+
+  const normalizedSymbols = graph.symbols.map((symbol) => (
+    symbol.childViewId && !keptViewIds.has(symbol.childViewId)
+      ? { ...symbol, childViewId: undefined }
+      : symbol
+  ));
+
+  return {
+    ...graph,
+    symbols: normalizedSymbols,
+    views: normalizedViews.map((view) => (
+      view.id === normalizedRootViewId
+        ? { ...view, parentViewId: null }
+        : view
+    )),
+    rootViewId: normalizedRootViewId,
+  };
+}
+
 export function collectNavigableSymbolIds(graph: ProjectGraph): Set<string> {
   const ids = new Set<string>();
   for (const view of graph.views) {
@@ -102,6 +144,52 @@ export function buildBreadcrumbPath(
   }
 
   return chain.length > 0 ? chain : [viewId];
+}
+
+function normalizeSymbolLabel(label: string): string {
+  return label.trim().replace(/\\/g, "/").toLowerCase();
+}
+
+function labelBasename(label: string): string {
+  const normalized = normalizeSymbolLabel(label);
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] ?? normalized;
+}
+
+export function resolveNavigableSymbolId(
+  graph: ProjectGraph,
+  symbolIdOrLabel: string,
+): string | null {
+  const navigableIds = collectNavigableSymbolIds(graph);
+  if (navigableIds.has(symbolIdOrLabel)) return symbolIdOrLabel;
+
+  const symbolsById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
+  const rawSymbol = symbolsById.get(symbolIdOrLabel);
+  const rawLabel = rawSymbol?.label ?? symbolIdOrLabel;
+  const normalizedLabel = normalizeSymbolLabel(rawLabel);
+  const basename = labelBasename(rawLabel);
+
+  const candidates = graph.symbols.filter((symbol) => navigableIds.has(symbol.id));
+  const scored = candidates
+    .map((symbol) => {
+      const candidateLabel = normalizeSymbolLabel(symbol.label);
+      const candidateBasename = labelBasename(symbol.label);
+
+      let score = Number.POSITIVE_INFINITY;
+      if (candidateLabel === normalizedLabel) score = 0;
+      else if (candidateBasename === basename && basename.length > 0) score = 10;
+      else if (candidateLabel.endsWith(`/${basename}`) && basename.length > 0) score = 20;
+
+      return { symbol, score };
+    })
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((left, right) =>
+      left.score - right.score ||
+      left.symbol.label.length - right.symbol.label.length ||
+      left.symbol.id.localeCompare(right.symbol.id),
+    );
+
+  return scored[0]?.symbol.id ?? null;
 }
 
 export function bestNavigableViewForSymbol(

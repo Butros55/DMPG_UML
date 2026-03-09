@@ -222,3 +222,17 @@ test("navigateToView uses the filtered breadcrumb path for normal visible descen
     "view:mod:data_analyzer",
   ]);
 });
+
+test("navigateToView clears any previous node focus so tree view clicks only fit the target view", () => {
+  const graph = buildGraph();
+  useAppStore.getState().setGraph(graph);
+  useAppStore.getState().focusSymbolInContext("sym:method");
+
+  useAppStore.getState().navigateToView("view:process-stage:inputs");
+
+  const state = useAppStore.getState();
+  assert.equal(state.currentViewId, "view:process-stage:inputs");
+  assert.equal(state.selectedSymbolId, null);
+  assert.equal(state.focusNodeId, null);
+  assert.equal(state.viewFitViewId, "view:process-stage:inputs");
+});

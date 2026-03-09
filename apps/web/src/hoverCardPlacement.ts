@@ -24,6 +24,7 @@ export interface ResolveHoverCardPlacementInput {
   bounds: RectBox;
   avoidRects?: RectBox[];
   corridorRects?: RectBox[];
+  edgeRects?: RectBox[];
 }
 
 const EDGE_CORRIDOR_THICKNESS = 26;
@@ -31,6 +32,7 @@ const NODE_KEEP_OUT_PADDING = 10;
 const DISTANCE_WEIGHT = 1.25;
 const NODE_OVERLAP_WEIGHT = 8;
 const CORRIDOR_OVERLAP_WEIGHT = 2.6;
+const EDGE_PATH_OVERLAP_WEIGHT = 7.5;
 const ANCHOR_OVERLAP_WEIGHT = 14;
 const PLACEMENT_BASE_PENALTY: Record<string, number> = {
   right: 0,
@@ -170,6 +172,7 @@ function scoreCandidate(
   cardSize: SizeBox,
   avoidRects: RectBox[],
   corridorRects: RectBox[],
+  edgeRects: RectBox[],
 ): number {
   const cardRect = candidateRect(candidate, cardSize);
   const anchorCenter = centerOf(anchorRect);
@@ -187,17 +190,22 @@ function scoreCandidate(
     score += intersectArea(cardRect, corridorRect) * CORRIDOR_OVERLAP_WEIGHT;
   }
 
+  for (const edgeRect of edgeRects) {
+    score += intersectArea(cardRect, edgeRect) * EDGE_PATH_OVERLAP_WEIGHT;
+  }
+
   return score;
 }
 
 export function resolveHoverCardPlacement(input: ResolveHoverCardPlacementInput): HoverPlacementCandidate {
   const avoidRects = input.avoidRects ?? [];
   const corridorRects = input.corridorRects ?? [];
+  const edgeRects = input.edgeRects ?? [];
 
   return buildCandidates(input.anchorRect, input.cardSize)
     .map((candidate) => clampToBounds(candidate, input.cardSize, input.bounds))
     .reduce((best, candidate) => {
-      const score = scoreCandidate(candidate, input.anchorRect, input.cardSize, avoidRects, corridorRects);
+      const score = scoreCandidate(candidate, input.anchorRect, input.cardSize, avoidRects, corridorRects, edgeRects);
       if (!best || score < best.score) {
         return { candidate, score };
       }

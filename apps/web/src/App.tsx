@@ -12,17 +12,48 @@ import { DebugTransportPanel } from "./components/DebugTransportPanel";
 import { useAppStore } from "./store";
 import { fetchGraph } from "./api";
 
+const PANEL_WIDTH_STORAGE_KEYS = {
+  sidebar: "dmpg.layout.sidebar-width.v1",
+  inspector: "dmpg.layout.inspector-width.v1",
+  validate: "dmpg.layout.validate-width.v1",
+} as const;
+
+function clampPanelWidth(width: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, width));
+}
+
 /** Reusable drag-resize hook for panel widths */
 function useResizeHandle(
   side: "left" | "right",
   initial: number,
   min: number,
   max: number,
+  storageKey: string,
 ) {
-  const [width, setWidth] = useState(initial);
+  const [width, setWidth] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      const parsed = raw ? Number.parseFloat(raw) : Number.NaN;
+      return Number.isFinite(parsed) ? clampPanelWidth(parsed, min, max) : initial;
+    } catch {
+      return initial;
+    }
+  });
   const dragging = useRef(false);
   const startX = useRef(0);
   const startW = useRef(0);
+
+  useEffect(() => {
+    setWidth((prev) => clampPanelWidth(prev, min, max));
+  }, [min, max]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, String(width));
+    } catch {
+      // ignore persistence failures
+    }
+  }, [storageKey, width]);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -38,7 +69,7 @@ function useResizeHandle(
       const newW = side === "left"
         ? startW.current + delta
         : startW.current - delta;
-      setWidth(Math.max(min, Math.min(max, newW)));
+      setWidth(clampPanelWidth(newW, min, max));
     };
 
     const onMouseUp = () => {
@@ -74,9 +105,9 @@ export function App() {
   const prevViewId = useRef<string | null>(null);
 
   // Resizable panels
-  const sidebar = useResizeHandle("left", 240, 160, 500);
-  const inspector = useResizeHandle("right", 340, 200, 600);
-  const validatePanel = useResizeHandle("left", 380, 280, 560);
+  const sidebar = useResizeHandle("left", 240, 160, 500, PANEL_WIDTH_STORAGE_KEYS.sidebar);
+  const inspector = useResizeHandle("right", 340, 200, 600, PANEL_WIDTH_STORAGE_KEYS.inspector);
+  const validatePanel = useResizeHandle("left", 380, 280, 560, PANEL_WIDTH_STORAGE_KEYS.validate);
   const sidebarActivityWidth = 50;
   const sidebarColumnWidth = sidebarCollapsed ? sidebarActivityWidth : sidebar.width;
 

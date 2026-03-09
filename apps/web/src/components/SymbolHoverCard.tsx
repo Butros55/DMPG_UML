@@ -1,6 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useMemo, useState } from "react";
 import { useAppStore } from "../store";
 import { projectEdgesForView, type Symbol as Sym, type Relation, type ProjectGraph } from "@dmpg/shared";
+import { buildNavigableRelationItems } from "../relationNavigation";
+import { scheduleHideHover, setMouseOverCard } from "./hoverCardController";
 import {
   HOVER_CARD_VIEWPORT_MARGIN,
   HOVER_CARD_WIDTH,
@@ -9,91 +11,7 @@ import {
   resolveHoverCardPlacement,
   type RectBox,
 } from "../hoverCardPlacement";
-
-/* ── Hover timer management (module-level for cross-component access) ── */
-
-let showTimer: ReturnType<typeof setTimeout> | null = null;
-let hideTimer: ReturnType<typeof setTimeout> | null = null;
-/** True while the pointer is physically over the hover card. */
-let _mouseOverCard = false;
-/** While true, hover open is fully blocked (used during drag interactions). */
-let _hoverBlocked = false;
-/** Absolute time until hover remains suppressed after unblock. */
-let _hoverSuppressedUntil = 0;
-
-const HOVER_SHOW_DELAY_MS = 560;
-const HOVER_HIDE_DELAY_MS = 300;
-
-function hoverIsSuppressed(): boolean {
-  return _hoverBlocked || Date.now() < _hoverSuppressedUntil;
-}
-
-/**
- * Blocks/unblocks hover card interactions globally.
- * - `blocked=true`: hide immediately and cancel all timers.
- * - `blocked=false`: optionally keep hover suppressed for `suppressMs`.
- */
-export function setHoverInteractionBlocked(blocked: boolean, suppressMs = 0) {
-  _hoverBlocked = blocked;
-
-  if (blocked) {
-    _mouseOverCard = false;
-    if (showTimer) { clearTimeout(showTimer); showTimer = null; }
-    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-    useAppStore.getState().setHoverSymbol(null);
-    return;
-  }
-
-  _hoverSuppressedUntil = suppressMs > 0 ? Date.now() + suppressMs : 0;
-}
-
-/** Schedule showing the hover card after a short delay */
-export function scheduleShowHover(symbolId: string, rect: DOMRect) {
-  if (hoverIsSuppressed()) return;
-  cancelHideHover();
-  if (showTimer) clearTimeout(showTimer);
-  showTimer = setTimeout(() => {
-    if (hoverIsSuppressed()) {
-      showTimer = null;
-      return;
-    }
-    const x = rect.right + 12 + HOVER_CARD_WIDTH > window.innerWidth
-      ? rect.left - (HOVER_CARD_WIDTH + 12)
-      : rect.right + 12;
-    const y = Math.max(HOVER_CARD_VIEWPORT_MARGIN, Math.min(rect.top, window.innerHeight - 500));
-    useAppStore.getState().setHoverSymbol(symbolId, { x, y });
-    showTimer = null;
-  }, HOVER_SHOW_DELAY_MS);
-}
-
-/** Schedule hiding the hover card after a short delay (allows mouse to reach card) */
-export function scheduleHideHover() {
-  if (showTimer) { clearTimeout(showTimer); showTimer = null; }
-  // Always clear previous hide timer to avoid duplicate / orphan timeouts
-  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-  if (hoverIsSuppressed()) {
-    _mouseOverCard = false;
-    useAppStore.getState().setHoverSymbol(null);
-    return;
-  }
-  hideTimer = setTimeout(() => {
-    hideTimer = null;
-    // Safety: never close while the pointer is physically over the card
-    if (_mouseOverCard) return;
-    useAppStore.getState().setHoverSymbol(null);
-  }, HOVER_HIDE_DELAY_MS);
-}
-
-/** Cancel pending hide (called when mouse enters the card) */
-export function cancelHideHover() {
-  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-}
-
-/** Notify that the pointer entered / left the card surface. */
-export function setMouseOverCard(over: boolean) {
-  _mouseOverCard = over;
-  if (over) cancelHideHover();
-}
+import { resolveNavigableSymbolId } from "../viewNavigation";
 
 /* ── Enriched symbol info (computed from graph relations) ── */
 
@@ -282,6 +200,42 @@ function getPlacementBounds(cardEl: HTMLDivElement): RectBox {
   };
 }
 
+function getHighlightedEdgeRects(): RectBox[] {
+  const rects: RectBox[] = [];
+  const paths = document.querySelectorAll(".edge-hover-highlight .react-flow__edge-path");
+
+  for (const path of paths) {
+    if (!(path instanceof SVGPathElement)) continue;
+
+    try {
+      const totalLength = path.getTotalLength();
+      const matrix = path.getScreenCTM();
+      if (!matrix || !Number.isFinite(totalLength) || totalLength <= 0) {
+        rects.push(rectFromDomRect(path.getBoundingClientRect()));
+        continue;
+      }
+
+      const step = Math.max(16, Math.min(30, totalLength / 10));
+      for (let length = 0; length <= totalLength; length += step) {
+        const point = path.getPointAtLength(Math.min(length, totalLength));
+        const screenPoint = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+        rects.push({
+          left: screenPoint.x - 16,
+          top: screenPoint.y - 16,
+          right: screenPoint.x + 16,
+          bottom: screenPoint.y + 16,
+          width: 32,
+          height: 32,
+        });
+      }
+    } catch {
+      rects.push(rectFromDomRect(path.getBoundingClientRect()));
+    }
+  }
+
+  return rects;
+}
+
 /* ── The Hover Card Component ── */
 
 export function SymbolHoverCard() {
@@ -301,6 +255,20 @@ export function SymbolHoverCard() {
     if (!sym) return null;
     return enrichSymbol(sym, graph);
   }, [hoverSymbolId, graph]);
+  const outgoingCallItems = useMemo(() => buildNavigableRelationItems(graph, info?.outgoingCalls.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
+  const incomingCallItems = useMemo(() => buildNavigableRelationItems(graph, info?.incomingCalls.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
+  const readItems = useMemo(() => buildNavigableRelationItems(graph, info?.reads.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
+  const readByItems = useMemo(() => buildNavigableRelationItems(graph, info?.readBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
+  const writeItems = useMemo(() => buildNavigableRelationItems(graph, info?.writes.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
+  const writtenByItems = useMemo(() => buildNavigableRelationItems(graph, info?.writtenBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
+  const importItems = useMemo(() => buildNavigableRelationItems(graph, info?.imports.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
+  const importedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.importedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
+  const inheritItems = useMemo(() => buildNavigableRelationItems(graph, info?.inherits.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
+  const inheritedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.inheritedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
+  const instantiateItems = useMemo(() => buildNavigableRelationItems(graph, info?.instantiates.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
+  const instantiatedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.instantiatedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
+  const usesConfigItems = useMemo(() => buildNavigableRelationItems(graph, info?.usesConfig.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
+  const configUsedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.configUsedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
 
   const relatedNodeIds = useMemo(() => {
     if (!graph || !currentViewId || !hoverSymbolId) return [] as string[];
@@ -357,6 +325,7 @@ export function SymbolHoverCard() {
         .map((nodeId) => getNodeRect(nodeId))
         .filter((rect): rect is RectBox => rect !== null);
       const corridorRects = relatedRects.map((rect) => buildCorridorRect(anchorRect, rect));
+      const edgeRects = getHighlightedEdgeRects();
       const cardRect = cardRef.current.getBoundingClientRect();
       const placement = resolveHoverCardPlacement({
         anchorRect,
@@ -364,6 +333,7 @@ export function SymbolHoverCard() {
         bounds: getPlacementBounds(cardRef.current),
         avoidRects: relatedRects,
         corridorRects,
+        edgeRects,
       });
 
       setResolvedPosition({
@@ -387,9 +357,10 @@ export function SymbolHoverCard() {
 
   const handleNavigate = useCallback(
     (symId: string) => {
-      const targetSym = graph?.symbols.find((s) => s.id === symId);
-      if (!targetSym) return;
-      focusSymbolInContext(symId);
+      if (!graph) return;
+      const resolvedId = resolveNavigableSymbolId(graph, symId);
+      if (!resolvedId) return;
+      focusSymbolInContext(resolvedId);
       // Close hover card
       setMouseOverCard(false);
       useAppStore.getState().setHoverSymbol(null);
@@ -420,20 +391,20 @@ export function SymbolHoverCard() {
   const returnType = doc?.outputs?.map((o) => o.type ?? o.name).join(", ") ?? "";
   const isDeadCode = sym.tags?.includes("dead-code") ?? false;
   const relationBadgeKeys = [
-    ...(info.outgoingCalls.length > 0 ? ["out:calls"] : []),
-    ...(info.incomingCalls.length > 0 ? ["in:calls"] : []),
-    ...(info.reads.length > 0 ? ["out:reads"] : []),
-    ...(info.readBy.length > 0 ? ["in:reads"] : []),
-    ...(info.writes.length > 0 ? ["out:writes"] : []),
-    ...(info.writtenBy.length > 0 ? ["in:writes"] : []),
-    ...(info.imports.length > 0 ? ["out:imports"] : []),
-    ...(info.importedBy.length > 0 ? ["in:imports"] : []),
-    ...(info.inherits.length > 0 ? ["out:inherits"] : []),
-    ...(info.inheritedBy.length > 0 ? ["in:inherits"] : []),
-    ...(info.instantiates.length > 0 ? ["out:instantiates"] : []),
-    ...(info.instantiatedBy.length > 0 ? ["in:instantiates"] : []),
-    ...(info.usesConfig.length > 0 ? ["out:uses_config"] : []),
-    ...(info.configUsedBy.length > 0 ? ["in:uses_config"] : []),
+    ...(outgoingCallItems.length > 0 ? ["out:calls"] : []),
+    ...(incomingCallItems.length > 0 ? ["in:calls"] : []),
+    ...(readItems.length > 0 ? ["out:reads"] : []),
+    ...(readByItems.length > 0 ? ["in:reads"] : []),
+    ...(writeItems.length > 0 ? ["out:writes"] : []),
+    ...(writtenByItems.length > 0 ? ["in:writes"] : []),
+    ...(importItems.length > 0 ? ["out:imports"] : []),
+    ...(importedByItems.length > 0 ? ["in:imports"] : []),
+    ...(inheritItems.length > 0 ? ["out:inherits"] : []),
+    ...(inheritedByItems.length > 0 ? ["in:inherits"] : []),
+    ...(instantiateItems.length > 0 ? ["out:instantiates"] : []),
+    ...(instantiatedByItems.length > 0 ? ["in:instantiates"] : []),
+    ...(usesConfigItems.length > 0 ? ["out:uses_config"] : []),
+    ...(configUsedByItems.length > 0 ? ["in:uses_config"] : []),
   ];
   const deadCodeReasonText = (() => {
     const explicit = (doc?.deadCodeReason ?? "").trim();
@@ -450,6 +421,18 @@ export function SymbolHoverCard() {
     }
     return "Das Symbol trägt das Dead-Code-Tag, aber es liegt keine detaillierte LLM-Begründung vor.";
   })();
+  const renderRelationChips = (items: ReturnType<typeof buildNavigableRelationItems>, className = "shc-link-chip") => (
+    items.map((item) => (
+      <span
+        key={item.symbolId}
+        className={className}
+        onClick={() => handleNavigate(item.symbolId)}
+        title={item.symbol.doc?.summary}
+      >
+        {item.symbol.label}
+      </span>
+    ))
+  );
 
   return (
     <div
@@ -577,256 +560,114 @@ export function SymbolHoverCard() {
       )}
 
       {/* ── Calls (outgoing) ── */}
-      {info.outgoingCalls.length > 0 && (
+      {outgoingCallItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-arrow-right" /> Ruft auf</div>
-          <div className="shc-links">
-            {info.outgoingCalls.map(({ rel, target }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => target && handleNavigate(target.id)}
-                title={target?.doc?.summary}
-              >
-                {target?.label ?? rel.target}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(outgoingCallItems)}</div>
         </div>
       )}
 
       {/* ── Called by (incoming) ── */}
-      {info.incomingCalls.length > 0 && (
+      {incomingCallItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-arrow-left" /> Aufgerufen von</div>
-          <div className="shc-links">
-            {info.incomingCalls.map(({ rel, source }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => source && handleNavigate(source.id)}
-                title={source?.doc?.summary}
-              >
-                {source?.label ?? rel.source}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(incomingCallItems)}</div>
         </div>
       )}
 
       {/* ── Reads ── */}
-      {info.reads.length > 0 && (
+      {readItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-book" /> Liest</div>
-          <div className="shc-links">
-            {info.reads.map(({ rel, target }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip shc-link-read"
-                onClick={() => target && handleNavigate(target.id)}
-              >
-                {target?.label ?? rel.target}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(readItems, "shc-link-chip shc-link-read")}</div>
         </div>
       )}
 
       {/* ── Read By (incoming) ── */}
-      {info.readBy.length > 0 && (
+      {readByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-book" /> Gelesen von</div>
-          <div className="shc-links">
-            {info.readBy.map(({ rel, source }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip shc-link-read"
-                onClick={() => source && handleNavigate(source.id)}
-              >
-                {source?.label ?? rel.source}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(readByItems, "shc-link-chip shc-link-read")}</div>
         </div>
       )}
 
       {/* ── Writes ── */}
-      {info.writes.length > 0 && (
+      {writeItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-pencil-square" /> Schreibt</div>
-          <div className="shc-links">
-            {info.writes.map(({ rel, target }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip shc-link-write"
-                onClick={() => target && handleNavigate(target.id)}
-              >
-                {target?.label ?? rel.target}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(writeItems, "shc-link-chip shc-link-write")}</div>
         </div>
       )}
 
       {/* ── Written By (incoming) ── */}
-      {info.writtenBy.length > 0 && (
+      {writtenByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-pencil-square" /> Geschrieben von</div>
-          <div className="shc-links">
-            {info.writtenBy.map(({ rel, source }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip shc-link-write"
-                onClick={() => source && handleNavigate(source.id)}
-              >
-                {source?.label ?? rel.source}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(writtenByItems, "shc-link-chip shc-link-write")}</div>
         </div>
       )}
 
       {/* ── Imports ── */}
-      {info.imports.length > 0 && (
+      {importItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-box-arrow-in-down" /> Importiert</div>
-          <div className="shc-links">
-            {info.imports.map(({ rel, target }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip shc-link-import"
-                onClick={() => target && handleNavigate(target.id)}
-              >
-                {target?.label ?? rel.target}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(importItems, "shc-link-chip shc-link-import")}</div>
         </div>
       )}
 
       {/* ── Imported By ── */}
-      {info.importedBy.length > 0 && (
+      {importedByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-box-arrow-up" /> Importiert von</div>
-          <div className="shc-links">
-            {info.importedBy.map(({ rel, source }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip shc-link-import"
-                onClick={() => source && handleNavigate(source.id)}
-              >
-                {source?.label ?? rel.source}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(importedByItems, "shc-link-chip shc-link-import")}</div>
         </div>
       )}
 
       {/* ── Inherits ── */}
-      {info.inherits.length > 0 && (
+      {inheritItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-diagram-3" /> Erbt von</div>
-          <div className="shc-links">
-            {info.inherits.map(({ rel, target }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => target && handleNavigate(target.id)}
-              >
-                {target?.label ?? rel.target}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(inheritItems)}</div>
         </div>
       )}
 
       {/* ── Inherited By (incoming) ── */}
-      {info.inheritedBy.length > 0 && (
+      {inheritedByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-diagram-3" /> Vererbt an</div>
-          <div className="shc-links">
-            {info.inheritedBy.map(({ rel, source }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => source && handleNavigate(source.id)}
-              >
-                {source?.label ?? rel.source}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(inheritedByItems)}</div>
         </div>
       )}
 
       {/* ── Instantiates ── */}
-      {info.instantiates.length > 0 && (
+      {instantiateItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-lightning" /> Instanziiert</div>
-          <div className="shc-links">
-            {info.instantiates.map(({ rel, target }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => target && handleNavigate(target.id)}
-              >
-                {target?.label ?? rel.target}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(instantiateItems)}</div>
         </div>
       )}
 
       {/* ── Instantiated By (incoming) ── */}
-      {info.instantiatedBy.length > 0 && (
+      {instantiatedByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-lightning" /> Instanziiert von</div>
-          <div className="shc-links">
-            {info.instantiatedBy.map(({ rel, source }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => source && handleNavigate(source.id)}
-              >
-                {source?.label ?? rel.source}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(instantiatedByItems)}</div>
         </div>
       )}
 
       {/* ── Uses Config ── */}
-      {info.usesConfig.length > 0 && (
+      {usesConfigItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-gear" /> Konfiguration</div>
-          <div className="shc-links">
-            {info.usesConfig.map(({ rel, target }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => target && handleNavigate(target.id)}
-              >
-                {target?.label ?? rel.target}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(usesConfigItems)}</div>
         </div>
       )}
 
       {/* ── Config Used By (incoming) ── */}
-      {info.configUsedBy.length > 0 && (
+      {configUsedByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-gear" /> Konfig. verwendet von</div>
-          <div className="shc-links">
-            {info.configUsedBy.map(({ rel, source }) => (
-              <span
-                key={rel.id}
-                className="shc-link-chip"
-                onClick={() => source && handleNavigate(source.id)}
-              >
-                {source?.label ?? rel.source}
-              </span>
-            ))}
-          </div>
+          <div className="shc-links">{renderRelationChips(configUsedByItems)}</div>
         </div>
       )}
 

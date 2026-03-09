@@ -52,8 +52,14 @@ type SidebarTab = "views" | "nodes" | "ai" | "project";
 const SIDEBAR_TAB_STORAGE_KEY = "dmpg.sidebar.active-tab.v1";
 
 /** Navigate to the deepest view containing a symbol and focus it */
-function goToSymbol(symbolId: string) {
-  useAppStore.getState().focusSymbolInContext(symbolId);
+function goToSymbol(symbolId: string, preferredViewId?: string | null) {
+  const { graph, navigateToView, focusSymbolInContext } = useAppStore.getState();
+  const symbol = graph?.symbols.find((entry) => entry.id === symbolId);
+  if (symbol?.childViewId) {
+    navigateToView(symbol.childViewId);
+    return;
+  }
+  focusSymbolInContext(symbolId, preferredViewId);
 }
 
 /** Small inline kind badge */
@@ -271,7 +277,7 @@ function ViewTreeItem({
               style={{ paddingLeft: 8 + (level + 1) * 16 }}
               onClick={(e) => {
                 e.stopPropagation();
-                goToSymbol(sym.id);
+                goToSymbol(sym.id, view.id);
               }}
             >
               <span className="view-tree-chevron view-tree-chevron--leaf" />
@@ -667,7 +673,6 @@ export function Sidebar() {
     }
     return map;
   }, [sidebarViews, allSymbols]);
-
   const normalizedViewSearch = viewSearchQuery.trim().toLowerCase();
   const viewSearchActive = normalizedViewSearch.length > 0;
   const {
@@ -773,6 +778,9 @@ export function Sidebar() {
   const deadCodeSymbols = useMemo(() => {
     return (graph?.symbols ?? []).filter((s) => s.tags?.includes("dead-code"));
   }, [graph]);
+  const handleViewTreeClick = useCallback((viewId: string) => {
+    navigateToView(viewId);
+  }, [navigateToView]);
 
   return (
     <div className={`sidebar sidebar--vscode${sidebarCollapsed ? " sidebar--collapsed" : ""}`}>
@@ -875,7 +883,7 @@ export function Sidebar() {
                   childMap={childMap}
                   symbolsByView={filteredSymbolsByView}
                   currentViewId={currentViewId}
-                  navigateToView={navigateToView}
+                  navigateToView={handleViewTreeClick}
                   collapsed={collapsed}
                   toggleCollapse={toggleCollapse}
                   deadSymbolIds={deadSymbolIds}

@@ -30,6 +30,21 @@ test("resolveHoverCardPlacement avoids connected nodes and corridors on the righ
   assert.ok(placement.x < anchorRect.left);
 });
 
+test("resolveHoverCardPlacement also avoids highlighted edge segments when possible", () => {
+  const anchorRect = rectFromBox({ left: 520, top: 220, right: 660, bottom: 300 });
+  const placement = resolveHoverCardPlacement({
+    anchorRect,
+    cardSize: { width: 380, height: 260 },
+    bounds: rectFromBox({ left: 0, top: 0, right: 1500, bottom: 900 }),
+    edgeRects: [
+      rectFromBox({ left: 690, top: 140, right: 722, bottom: 520 }),
+      rectFromBox({ left: 722, top: 254, right: 860, bottom: 286 }),
+    ],
+  });
+
+  assert.notEqual(placement.id, "right");
+});
+
 test("resolveHoverCardPlacement keeps the card inside the available bounds", () => {
   const anchorRect = rectFromBox({ left: 1080, top: 760, right: 1220, bottom: 840 });
   const placement = resolveHoverCardPlacement({

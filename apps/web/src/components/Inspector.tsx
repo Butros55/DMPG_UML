@@ -1,9 +1,12 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore } from "../store";
 import { summarizeSymbol } from "../api";
-import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
+import { scheduleShowHover, scheduleHideHover } from "./hoverCardController";
 import { DiagramSettingsPanel } from "./DiagramSettingsPanel";
-import type { Relation, RelationType } from "@dmpg/shared";
+import type { ProjectGraph, Relation, RelationType } from "@dmpg/shared";
+import type { NavigableRelationItem } from "../relationNavigation";
+import { buildNavigableRelationItems } from "../relationNavigation";
+import { resolveNavigableSymbolId } from "../viewNavigation";
 
 const RELATION_TYPES: RelationType[] = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"];
 const SYMBOL_KINDS = ["module", "class", "function", "method", "group", "package", "interface", "variable"] as const;
@@ -141,8 +144,8 @@ function AiBadge({ field, symbolId, onConfirm, onReject }: {
   );
 }
 
-function AiRelationBadge({ relationId, onConfirm, onReject }: {
-  relationId: string;
+function AiRelationBadge({ relationIds, onConfirm, onReject }: {
+  relationIds: string[];
   onConfirm: (id: string) => void;
   onReject: (id: string) => void;
 }) {
@@ -151,12 +154,12 @@ function AiRelationBadge({ relationId, onConfirm, onReject }: {
       <span className="ai-badge" title="Vom LLM entdeckt"><i className="bi bi-cpu" /></span>
       <button
         className="ai-action-btn ai-confirm-btn"
-        onClick={(e) => { e.stopPropagation(); onConfirm(relationId); }}
+        onClick={(e) => { e.stopPropagation(); relationIds.forEach((relationId) => onConfirm(relationId)); }}
         title="Bestätigen"
       ><i className="bi bi-check-lg" /></button>
       <button
         className="ai-action-btn ai-reject-btn"
-        onClick={(e) => { e.stopPropagation(); onReject(relationId); }}
+        onClick={(e) => { e.stopPropagation(); relationIds.forEach((relationId) => onReject(relationId)); }}
         title="Löschen"
       ><i className="bi bi-x-lg" /></button>
     </span>
@@ -200,8 +203,7 @@ function isProjectOwn(
 
 /** Reusable list that partitions relation targets into project-own (top, highlighted) and stdlib (collapsed) */
 function RelationItemList({
-  relations,
-  direction,
+  items,
   graph,
   showKind,
   showConfidence,
@@ -209,9 +211,8 @@ function RelationItemList({
   onConfirmAi,
   onRejectAi,
 }: {
-  relations: Relation[];
-  direction: "out" | "in";
-  graph: { symbols: Array<{ id: string; kind: string; label: string }> } | null;
+  items: NavigableRelationItem[];
+  graph: ProjectGraph | null;
   showKind?: boolean;
   showConfidence?: boolean;
   onSymbolClick: (id: string) => void;
@@ -250,30 +251,38 @@ function RelationItemList({
   }, [graph]);
 
   const { own, stdlib } = useMemo(() => {
-    const ownArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: true }> = [];
-    const stdlibArr: Array<{ r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: false }> = [];
-    for (const r of relations) {
-      const otherId = direction === "out" ? r.target : r.source;
-      const sym = graph?.symbols.find((s) => s.id === otherId);
-      if (isProjectOwn(sym, otherId, projectPrefixes, externalPrefixes)) {
-        ownArr.push({ r, otherId, sym, isOwn: true });
+    const ownArr: Array<{ item: NavigableRelationItem; isOwn: true }> = [];
+    const stdlibArr: Array<{ item: NavigableRelationItem; isOwn: false }> = [];
+    for (const item of items) {
+      if (isProjectOwn(item.symbol, item.symbolId, projectPrefixes, externalPrefixes)) {
+        ownArr.push({ item, isOwn: true });
       } else {
-        stdlibArr.push({ r, otherId, sym, isOwn: false });
+        stdlibArr.push({ item, isOwn: false });
       }
     }
     return { own: ownArr, stdlib: stdlibArr };
-  }, [relations, graph, direction, projectPrefixes, externalPrefixes]);
+  }, [items, projectPrefixes, externalPrefixes]);
 
-  const renderItem = ({ r, otherId, sym, isOwn }: { r: Relation; otherId: string; sym: { id: string; kind: string; label: string } | undefined; isOwn: boolean }) => (
-    <li key={r.id} className={`rel-item ${isOwn ? "rel-own" : "rel-stdlib"} ${r.aiGenerated ? "ai-generated-item" : ""}`}>
-      <SymbolLink symbolId={otherId} label={sym?.label ?? otherId} onClick={() => onSymbolClick(otherId)} />
-      {showKind && sym?.kind && <span className="rel-kind">({sym.kind})</span>}
-      {showConfidence && r.confidence != null && r.confidence < 1 && (
-        <span className="rel-confidence">{Math.round(r.confidence * 100)}%</span>
-      )}
-      {r.aiGenerated && <AiRelationBadge relationId={r.id} onConfirm={onConfirmAi} onReject={onRejectAi} />}
-    </li>
-  );
+  const renderItem = ({ item, isOwn }: { item: NavigableRelationItem; isOwn: boolean }) => {
+    const singleRelation = item.relations.length === 1 ? item.relations[0] : null;
+
+    return (
+      <li
+        key={item.symbolId}
+        className={`rel-item ${isOwn ? "rel-own" : "rel-stdlib"} ${item.aiRelationIds.length > 0 ? "ai-generated-item" : ""}`}
+      >
+        <SymbolLink symbolId={item.symbolId} label={item.symbol.label} onClick={() => onSymbolClick(item.symbolId)} />
+        {showKind && item.symbol.kind && <span className="rel-kind">({item.symbol.kind})</span>}
+        {item.relations.length > 1 && (
+          <span className="rel-confidence">{item.relations.length}x</span>
+        )}
+        {showConfidence && singleRelation?.confidence != null && singleRelation.confidence < 1 && (
+          <span className="rel-confidence">{Math.round(singleRelation.confidence * 100)}%</span>
+        )}
+        {item.aiRelationIds.length > 0 && <AiRelationBadge relationIds={item.aiRelationIds} onConfirm={onConfirmAi} onReject={onRejectAi} />}
+      </li>
+    );
+  };
 
   return (
     <ul>
@@ -338,8 +347,10 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
   };
 
   const handleSymbolClick = (symId: string) => {
-    if (!graph?.symbols.some((symbol) => symbol.id === symId)) return;
-    focusSymbolInContext(symId);
+    if (!graph) return;
+    const resolvedId = resolveNavigableSymbolId(graph, symId);
+    if (!resolvedId) return;
+    focusSymbolInContext(resolvedId);
   };
 
   return (
@@ -767,17 +778,10 @@ export function Inspector() {
 
   const handleSymbolLinkClick = useCallback(
     (targetId: string) => {
-      const targetSym = graph?.symbols.find((s) => s.id === targetId);
-      if (!targetSym) {
-        const byLabel = graph?.symbols.find(
-          (s) => s.label.toLowerCase() === targetId.toLowerCase(),
-        );
-        if (byLabel) {
-          focusSymbolInContext(byLabel.id);
-        }
-        return;
-      }
-      focusSymbolInContext(targetSym.id);
+      if (!graph) return;
+      const resolvedId = resolveNavigableSymbolId(graph, targetId);
+      if (!resolvedId) return;
+      focusSymbolInContext(resolvedId);
     },
     [graph, focusSymbolInContext],
   );
@@ -833,31 +837,45 @@ export function Inspector() {
     );
   }
 
-  const doc = sym.doc;
-  const relations = graph?.relations.filter(
-    (r) => r.source === sym.id || r.target === sym.id,
-  ) ?? [];
+  const doc = sym?.doc;
+  const relations = sym
+    ? graph?.relations.filter((r) => r.source === sym.id || r.target === sym.id) ?? []
+    : [];
 
   // Enriched info — compute from graph relations
-  const outgoingCalls = relations.filter((r) => r.source === sym.id && r.type === "calls");
-  const incomingCalls = relations.filter((r) => r.target === sym.id && r.type === "calls");
-  const reads = relations.filter((r) => r.source === sym.id && r.type === "reads");
-  const readBy = relations.filter((r) => r.target === sym.id && r.type === "reads");
-  const writes = relations.filter((r) => r.source === sym.id && r.type === "writes");
-  const writtenBy = relations.filter((r) => r.target === sym.id && r.type === "writes");
-  const importsR = relations.filter((r) => r.source === sym.id && r.type === "imports");
-  const importedByR = relations.filter((r) => r.target === sym.id && r.type === "imports");
-  const inheritsR = relations.filter((r) => r.source === sym.id && r.type === "inherits");
-  const inheritedByR = relations.filter((r) => r.target === sym.id && r.type === "inherits");
-  const instantiatesR = relations.filter((r) => r.source === sym.id && r.type === "instantiates");
-  const instantiatedByR = relations.filter((r) => r.target === sym.id && r.type === "instantiates");
-  const usesConfigR = relations.filter((r) => r.source === sym.id && r.type === "uses_config");
-  const configUsedByR = relations.filter((r) => r.target === sym.id && r.type === "uses_config");
-  const parentSym = sym.parentId ? graph?.symbols.find((s) => s.id === sym.parentId) : null;
-  const children = graph?.symbols.filter((s) => s.parentId === sym.id) ?? [];
-  const lineCount = sym.location?.startLine != null && sym.location?.endLine != null
+  const outgoingCalls = sym ? relations.filter((r) => r.source === sym.id && r.type === "calls") : [];
+  const incomingCalls = sym ? relations.filter((r) => r.target === sym.id && r.type === "calls") : [];
+  const reads = sym ? relations.filter((r) => r.source === sym.id && r.type === "reads") : [];
+  const readBy = sym ? relations.filter((r) => r.target === sym.id && r.type === "reads") : [];
+  const writes = sym ? relations.filter((r) => r.source === sym.id && r.type === "writes") : [];
+  const writtenBy = sym ? relations.filter((r) => r.target === sym.id && r.type === "writes") : [];
+  const importsR = sym ? relations.filter((r) => r.source === sym.id && r.type === "imports") : [];
+  const importedByR = sym ? relations.filter((r) => r.target === sym.id && r.type === "imports") : [];
+  const inheritsR = sym ? relations.filter((r) => r.source === sym.id && r.type === "inherits") : [];
+  const inheritedByR = sym ? relations.filter((r) => r.target === sym.id && r.type === "inherits") : [];
+  const instantiatesR = sym ? relations.filter((r) => r.source === sym.id && r.type === "instantiates") : [];
+  const instantiatedByR = sym ? relations.filter((r) => r.target === sym.id && r.type === "instantiates") : [];
+  const usesConfigR = sym ? relations.filter((r) => r.source === sym.id && r.type === "uses_config") : [];
+  const configUsedByR = sym ? relations.filter((r) => r.target === sym.id && r.type === "uses_config") : [];
+  const parentSym = sym?.parentId ? graph?.symbols.find((s) => s.id === sym.parentId) : null;
+  const children = sym ? graph?.symbols.filter((s) => s.parentId === sym.id) ?? [] : [];
+  const lineCount = sym?.location?.startLine != null && sym.location?.endLine != null
     ? sym.location.endLine - sym.location.startLine + 1
     : null;
+  const outgoingCallItems = buildNavigableRelationItems(graph, outgoingCalls, "out");
+  const incomingCallItems = buildNavigableRelationItems(graph, incomingCalls, "in");
+  const readItems = buildNavigableRelationItems(graph, reads, "out");
+  const readByItems = buildNavigableRelationItems(graph, readBy, "in");
+  const writeItems = buildNavigableRelationItems(graph, writes, "out");
+  const writtenByItems = buildNavigableRelationItems(graph, writtenBy, "in");
+  const importItems = buildNavigableRelationItems(graph, importsR, "out");
+  const importedByItems = buildNavigableRelationItems(graph, importedByR, "in");
+  const inheritItems = buildNavigableRelationItems(graph, inheritsR, "out");
+  const inheritedByItems = buildNavigableRelationItems(graph, inheritedByR, "in");
+  const instantiateItems = buildNavigableRelationItems(graph, instantiatesR, "out");
+  const instantiatedByItems = buildNavigableRelationItems(graph, instantiatedByR, "in");
+  const usesConfigItems = buildNavigableRelationItems(graph, usesConfigR, "out");
+  const configUsedByItems = buildNavigableRelationItems(graph, configUsedByR, "in");
 
   // Build signature
   const sigParams = doc?.inputs?.map((p) => `${p.name}${p.type ? `: ${p.type}` : ""}`).join(", ") ?? "";
@@ -892,7 +910,7 @@ export function Inspector() {
     : "guideline-score";
 
   // Available nodes for connection target (all symbols in graph except current)
-  const availableTargets = graph?.symbols.filter((s) => s.id !== sym.id) ?? [];
+  const availableTargets = graph?.symbols.filter((s) => s.id !== sym?.id) ?? [];
 
   return (
     <div className={`inspector${inspectorAnimClass ? " inspector--ai-animating" : ""}`}>
@@ -1286,11 +1304,10 @@ export function Inspector() {
       )}
 
       {/* ─── Calls (outgoing) ─── */}
-      {outgoingCalls.length > 0 && (
-        <CollapsibleSection title="Ruft auf" icon="bi-telephone-outbound" count={outgoingCalls.length} badge="out:calls">
+      {outgoingCallItems.length > 0 && (
+        <CollapsibleSection title="Ruft auf" icon="bi-telephone-outbound" count={outgoingCallItems.length} badge="out:calls">
           <RelationItemList
-            relations={outgoingCalls}
-            direction="out"
+            items={outgoingCallItems}
             graph={graph}
             showKind
             showConfidence
@@ -1302,11 +1319,10 @@ export function Inspector() {
       )}
 
       {/* ─── Called by (incoming) ─── */}
-      {incomingCalls.length > 0 && (
-        <CollapsibleSection title="Aufgerufen von" icon="bi-telephone-inbound" count={incomingCalls.length} badge="in:calls">
+      {incomingCallItems.length > 0 && (
+        <CollapsibleSection title="Aufgerufen von" icon="bi-telephone-inbound" count={incomingCallItems.length} badge="in:calls">
           <RelationItemList
-            relations={incomingCalls}
-            direction="in"
+            items={incomingCallItems}
             graph={graph}
             showKind
             onSymbolClick={handleSymbolLinkClick}
@@ -1317,11 +1333,10 @@ export function Inspector() {
       )}
 
       {/* ─── Reads ─── */}
-      {reads.length > 0 && (
-        <CollapsibleSection title="Liest" icon="bi-book" count={reads.length} badge="out:reads">
+      {readItems.length > 0 && (
+        <CollapsibleSection title="Liest" icon="bi-book" count={readItems.length} badge="out:reads">
           <RelationItemList
-            relations={reads}
-            direction="out"
+            items={readItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1331,11 +1346,10 @@ export function Inspector() {
       )}
 
       {/* ─── Read by ─── */}
-      {readBy.length > 0 && (
-        <CollapsibleSection title="Gelesen von" icon="bi-book" count={readBy.length} badge="in:reads">
+      {readByItems.length > 0 && (
+        <CollapsibleSection title="Gelesen von" icon="bi-book" count={readByItems.length} badge="in:reads">
           <RelationItemList
-            relations={readBy}
-            direction="in"
+            items={readByItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1345,11 +1359,10 @@ export function Inspector() {
       )}
 
       {/* ─── Writes ─── */}
-      {writes.length > 0 && (
-        <CollapsibleSection title="Schreibt" icon="bi-pencil-square" count={writes.length} badge="out:writes">
+      {writeItems.length > 0 && (
+        <CollapsibleSection title="Schreibt" icon="bi-pencil-square" count={writeItems.length} badge="out:writes">
           <RelationItemList
-            relations={writes}
-            direction="out"
+            items={writeItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1359,11 +1372,10 @@ export function Inspector() {
       )}
 
       {/* ─── Written by ─── */}
-      {writtenBy.length > 0 && (
-        <CollapsibleSection title="Geschrieben von" icon="bi-pencil-square" count={writtenBy.length} badge="in:writes">
+      {writtenByItems.length > 0 && (
+        <CollapsibleSection title="Geschrieben von" icon="bi-pencil-square" count={writtenByItems.length} badge="in:writes">
           <RelationItemList
-            relations={writtenBy}
-            direction="in"
+            items={writtenByItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1373,11 +1385,10 @@ export function Inspector() {
       )}
 
       {/* ─── Imports ─── */}
-      {importsR.length > 0 && (
-        <CollapsibleSection title="Importiert" icon="bi-box-arrow-in-down" count={importsR.length} badge="out:imports" defaultOpen={false}>
+      {importItems.length > 0 && (
+        <CollapsibleSection title="Importiert" icon="bi-box-arrow-in-down" count={importItems.length} badge="out:imports" defaultOpen={false}>
           <RelationItemList
-            relations={importsR}
-            direction="out"
+            items={importItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1387,11 +1398,10 @@ export function Inspector() {
       )}
 
       {/* ─── Imported by ─── */}
-      {importedByR.length > 0 && (
-        <CollapsibleSection title="Importiert von" icon="bi-box-arrow-up" count={importedByR.length} badge="in:imports" defaultOpen={false}>
+      {importedByItems.length > 0 && (
+        <CollapsibleSection title="Importiert von" icon="bi-box-arrow-up" count={importedByItems.length} badge="in:imports" defaultOpen={false}>
           <RelationItemList
-            relations={importedByR}
-            direction="in"
+            items={importedByItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1401,11 +1411,10 @@ export function Inspector() {
       )}
 
       {/* ─── Inherits ─── */}
-      {inheritsR.length > 0 && (
-        <CollapsibleSection title="Erbt von" icon="bi-diagram-3" count={inheritsR.length} badge="out:inherits">
+      {inheritItems.length > 0 && (
+        <CollapsibleSection title="Erbt von" icon="bi-diagram-3" count={inheritItems.length} badge="out:inherits">
           <RelationItemList
-            relations={inheritsR}
-            direction="out"
+            items={inheritItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1415,11 +1424,10 @@ export function Inspector() {
       )}
 
       {/* ─── Inherited by ─── */}
-      {inheritedByR.length > 0 && (
-        <CollapsibleSection title="Vererbt an" icon="bi-diagram-3" count={inheritedByR.length} badge="in:inherits">
+      {inheritedByItems.length > 0 && (
+        <CollapsibleSection title="Vererbt an" icon="bi-diagram-3" count={inheritedByItems.length} badge="in:inherits">
           <RelationItemList
-            relations={inheritedByR}
-            direction="in"
+            items={inheritedByItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1429,11 +1437,10 @@ export function Inspector() {
       )}
 
       {/* ─── Instantiates ─── */}
-      {instantiatesR.length > 0 && (
-        <CollapsibleSection title="Instanziiert" icon="bi-lightning" count={instantiatesR.length} badge="out:instantiates">
+      {instantiateItems.length > 0 && (
+        <CollapsibleSection title="Instanziiert" icon="bi-lightning" count={instantiateItems.length} badge="out:instantiates">
           <RelationItemList
-            relations={instantiatesR}
-            direction="out"
+            items={instantiateItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1443,11 +1450,10 @@ export function Inspector() {
       )}
 
       {/* ─── Instantiated by ─── */}
-      {instantiatedByR.length > 0 && (
-        <CollapsibleSection title="Instanziiert von" icon="bi-lightning" count={instantiatedByR.length} badge="in:instantiates">
+      {instantiatedByItems.length > 0 && (
+        <CollapsibleSection title="Instanziiert von" icon="bi-lightning" count={instantiatedByItems.length} badge="in:instantiates">
           <RelationItemList
-            relations={instantiatedByR}
-            direction="in"
+            items={instantiatedByItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1457,11 +1463,10 @@ export function Inspector() {
       )}
 
       {/* ─── Uses Config ─── */}
-      {usesConfigR.length > 0 && (
-        <CollapsibleSection title="Konfiguration" icon="bi-gear" count={usesConfigR.length} badge="out:uses_config">
+      {usesConfigItems.length > 0 && (
+        <CollapsibleSection title="Konfiguration" icon="bi-gear" count={usesConfigItems.length} badge="out:uses_config">
           <RelationItemList
-            relations={usesConfigR}
-            direction="out"
+            items={usesConfigItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1471,11 +1476,10 @@ export function Inspector() {
       )}
 
       {/* ─── Config used by ─── */}
-      {configUsedByR.length > 0 && (
-        <CollapsibleSection title="Konfig. verwendet von" icon="bi-gear" count={configUsedByR.length} badge="in:uses_config">
+      {configUsedByItems.length > 0 && (
+        <CollapsibleSection title="Konfig. verwendet von" icon="bi-gear" count={configUsedByItems.length} badge="in:uses_config">
           <RelationItemList
-            relations={configUsedByR}
-            direction="in"
+            items={configUsedByItems}
             graph={graph}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
@@ -1490,7 +1494,8 @@ export function Inspector() {
           <ul>
             {otherRelations.map((r) => {
               const isOut = r.source === sym.id;
-              const otherId = isOut ? r.target : r.source;
+              const rawOtherId = isOut ? r.target : r.source;
+              const otherId = graph ? (resolveNavigableSymbolId(graph, rawOtherId) ?? rawOtherId) : rawOtherId;
               const other = graph?.symbols.find((s) => s.id === otherId);
               return (
                 <li key={r.id} className={r.aiGenerated ? "ai-generated-item" : ""}>
@@ -1499,7 +1504,7 @@ export function Inspector() {
                   </span>
                   <SymbolLink symbolId={otherId} label={other?.label ?? otherId} onClick={() => handleSymbolLinkClick(otherId)} />
                   {r.aiGenerated && (
-                    <AiRelationBadge relationId={r.id} onConfirm={confirmAiRelation} onReject={(id) => removeRelation(id)} />
+                    <AiRelationBadge relationIds={[r.id]} onConfirm={confirmAiRelation} onReject={(id) => removeRelation(id)} />
                   )}
                 </li>
               );

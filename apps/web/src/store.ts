@@ -8,6 +8,7 @@ import {
   buildBreadcrumbPath,
   collectNavigableSymbolIds,
   isTechnicalNavigationView,
+  normalizeGraphForFrontend,
   resolveNavigableViewId,
 } from "./viewNavigation";
 import {
@@ -1243,18 +1244,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ validateState: { ...validateState, changes: nextChanges } });
   },
 
-  setGraph: (g) =>
+  setGraph: (g) => {
+    const normalized = normalizeGraphForFrontend(g);
+    const initialViewId = resolveNavigableViewId(normalized, normalized.rootViewId, normalized.rootViewId) ?? normalized.rootViewId;
     set({
-      graph: g,
-      currentViewId: g.rootViewId,
+      graph: normalized,
+      currentViewId: initialViewId,
       selectedSymbolId: null,
       selectedEdgeId: null,
-      breadcrumb: [g.rootViewId],
+      breadcrumb: [initialViewId],
       reviewHighlight: {
         activeItemId: null,
         nodeIds: [],
         primaryNodeId: null,
-        viewId: g.rootViewId,
+        viewId: initialViewId,
         fitView: false,
         seq: 0,
         previewNodeIds: [],
@@ -1263,9 +1266,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       graphHistoryFuture: [],
       historyCanUndo: false,
       historyCanRedo: false,
-    }),
+    });
+  },
 
   updateGraph: (g) => {
+    const normalized = normalizeGraphForFrontend(g);
     const { graph, aiAnalysis, currentViewId, breadcrumb, selectedSymbolId, selectedEdgeId } = get();
     const localUpdateFresh =
       !!aiAnalysis?.running &&
@@ -1278,21 +1283,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     // Keep current view if it still exists, otherwise fall back to root
-    const viewStillExists = g.views.some((v) => v.id === currentViewId);
+    const fallbackViewId =
+      resolveNavigableViewId(normalized, currentViewId, normalized.rootViewId) ?? normalized.rootViewId;
+    const viewStillExists = normalized.views.some((v) => v.id === currentViewId);
     set({
-      graph: g,
-      currentViewId: viewStillExists ? currentViewId : g.rootViewId,
-      breadcrumb: viewStillExists ? breadcrumb : [g.rootViewId],
-      selectedSymbolId: g.symbols.some((s) => s.id === selectedSymbolId) ? selectedSymbolId : null,
-      selectedEdgeId: g.relations.some((r) => r.id === selectedEdgeId) ? selectedEdgeId : null,
+      graph: normalized,
+      currentViewId: viewStillExists ? currentViewId : fallbackViewId,
+      breadcrumb: viewStillExists ? breadcrumb : [fallbackViewId],
+      selectedSymbolId: normalized.symbols.some((s) => s.id === selectedSymbolId) ? selectedSymbolId : null,
+      selectedEdgeId: normalized.relations.some((r) => r.id === selectedEdgeId) ? selectedEdgeId : null,
       reviewHighlight: {
         ...get().reviewHighlight,
-        nodeIds: get().reviewHighlight.nodeIds.filter((id) => g.symbols.some((symbol) => symbol.id === id)),
-        primaryNodeId: get().reviewHighlight.primaryNodeId && g.symbols.some((symbol) => symbol.id === get().reviewHighlight.primaryNodeId)
+        nodeIds: get().reviewHighlight.nodeIds.filter((id) => normalized.symbols.some((symbol) => symbol.id === id)),
+        primaryNodeId: get().reviewHighlight.primaryNodeId && normalized.symbols.some((symbol) => symbol.id === get().reviewHighlight.primaryNodeId)
           ? get().reviewHighlight.primaryNodeId
           : null,
-        viewId: viewStillExists ? get().reviewHighlight.viewId : g.rootViewId,
-        previewNodeIds: get().reviewHighlight.previewNodeIds.filter((id) => g.symbols.some((symbol) => symbol.id === id)),
+        viewId: viewStillExists ? get().reviewHighlight.viewId : fallbackViewId,
+        previewNodeIds: get().reviewHighlight.previewNodeIds.filter((id) => normalized.symbols.some((symbol) => symbol.id === id)),
       },
       graphHistoryPast: [],
       graphHistoryFuture: [],
@@ -1361,6 +1368,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentViewId: targetViewId,
         selectedSymbolId: null,
         selectedEdgeId: null,
+        focusNodeId: null,
         viewFitViewId: targetViewId,
         viewFitSeq: viewFitSeq + 1,
       });
@@ -1375,6 +1383,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         breadcrumb: breadcrumb.slice(0, idx + 1),
         selectedSymbolId: null,
         selectedEdgeId: null,
+        focusNodeId: null,
         viewFitViewId: targetViewId,
         viewFitSeq: viewFitSeq + 1,
       });
@@ -1386,6 +1395,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         breadcrumb: path,
         selectedSymbolId: null,
         selectedEdgeId: null,
+        focusNodeId: null,
         viewFitViewId: targetViewId,
         viewFitSeq: viewFitSeq + 1,
       });
@@ -1395,6 +1405,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         breadcrumb: [...breadcrumb, targetViewId],
         selectedSymbolId: null,
         selectedEdgeId: null,
+        focusNodeId: null,
         viewFitViewId: targetViewId,
         viewFitSeq: viewFitSeq + 1,
       });

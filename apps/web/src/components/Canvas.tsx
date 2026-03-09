@@ -19,7 +19,8 @@ import "@xyflow/react/dist/style.css";
 
 import { useAppStore } from "../store";
 import { UmlNode, UmlClassNode, UmlFunctionNode, UmlArtifactNode, UmlGroupNode } from "./UmlNode";
-import { SymbolHoverCard, setHoverInteractionBlocked } from "./SymbolHoverCard";
+import { SymbolHoverCard } from "./SymbolHoverCard";
+import { setHoverInteractionBlocked } from "./hoverCardController";
 import { layoutNodes, type LayoutResult, type PortInfo } from "../layout";
 import { exportDiagramAsHtml, exportProjectAsHtml } from "../exportHtml";
 import { exportProjectPackage } from "../projectTransfer";
@@ -929,6 +930,17 @@ export function Canvas() {
     reviewHighlight.seq,
     reviewHighlight.viewId,
   ]);
+
+  useEffect(() => {
+    if (!focusNodeId) {
+      document.querySelectorAll(".node-focus-highlight, .node-focus-highlight-dead").forEach((el) => {
+        el.classList.remove("node-focus-highlight", "node-focus-highlight-dead");
+      });
+      focusAppliedRef.current = null;
+      pendingFocusRef.current = null;
+      return;
+    }
+  }, [focusNodeId]);
 
   useEffect(() => {
     if (viewFitSeq <= appliedViewFitSeqRef.current) return;

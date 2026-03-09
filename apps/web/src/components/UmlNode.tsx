@@ -1,7 +1,7 @@
 import { memo, useCallback, useRef, useEffect, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useAppStore } from "../store";
-import { scheduleShowHover, scheduleHideHover } from "./SymbolHoverCard";
+import { scheduleShowHover, scheduleHideHover } from "./hoverCardController";
 import type { Symbol as Sym, SymbolUmlType } from "@dmpg/shared";
 import type { DiagramLabelMode } from "../diagramSettings";
 import type { PortInfo } from "../layout";
