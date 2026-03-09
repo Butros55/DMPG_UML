@@ -1,6 +1,14 @@
-import type { ProjectGraph, Relation, RelationType, Symbol } from "@dmpg/shared";
+import type { DiagramView, ProjectGraph, Relation, RelationType, Symbol } from "@dmpg/shared";
 
-type StageId = "sources" | "connectors" | "extract" | "transform" | "persist" | "simulate";
+type StageId =
+  | "inputs"
+  | "extract"
+  | "transform"
+  | "match"
+  | "distribution"
+  | "simulation"
+  | "outputs";
+
 type ScoreMap = Record<StageId, number>;
 type UmlType =
   | "package"
@@ -14,13 +22,6 @@ type UmlType =
   | "method"
   | "group"
   | "external";
-
-interface DrilldownConfig {
-  viewSearch?: string[];
-  symbolSearch?: string[];
-  preferredViewIds?: string[];
-  preferredSymbolIds?: string[];
-}
 
 interface PositionConfig {
   x: number;
@@ -37,7 +38,6 @@ interface ProcessPackageConfig {
   parentId?: string;
   childViewId?: string;
   position: PositionConfig;
-  drilldown?: DrilldownConfig;
 }
 
 interface ProcessNodeConfig {
@@ -49,7 +49,6 @@ interface ProcessNodeConfig {
   parentId?: string;
   childViewId?: string;
   position: PositionConfig;
-  drilldown?: DrilldownConfig;
 }
 
 interface ProcessEdgeConfig {
@@ -60,21 +59,40 @@ interface ProcessEdgeConfig {
   label?: string;
 }
 
+interface ProcessStageViewConfig {
+  id: string;
+  title: string;
+  scope: DiagramView["scope"];
+  hiddenInSidebar?: boolean;
+  nodeRefs: string[];
+  edgeRefs: string[];
+}
+
+interface ProcessViewAdjustment {
+  id: string;
+  parentViewId?: string | null;
+  hiddenInSidebar?: boolean;
+}
+
 export interface ProcessDiagramConfig {
   viewId: string;
   title: string;
   packages: ProcessPackageConfig[];
   nodes: ProcessNodeConfig[];
   edges: ProcessEdgeConfig[];
+  stageViews?: ProcessStageViewConfig[];
+  viewAdjustments?: ProcessViewAdjustment[];
 }
 
 interface StageDef {
   id: StageId;
   packageId: string;
+  viewId: string;
   label: string;
   x: number;
   y: number;
   width: number;
+  height: number;
 }
 
 interface StageRule {
@@ -83,86 +101,285 @@ interface StageRule {
 }
 
 interface Classification {
-  stage: StageId;
+  primaryStage: StageId;
   score: number;
   scores: ScoreMap;
+}
+
+interface RankedStageNode {
+  symbol: Symbol;
+  classification: Classification;
+  stageScore: number;
+  rank: number;
 }
 
 interface Context {
   symbolById: Map<string, Symbol>;
   relationsBySymbolId: Map<string, Relation[]>;
+  childrenById: Map<string, Symbol[]>;
   ancestorsById: Map<string, string[]>;
   ownTextById: Map<string, string>;
   parentTextById: Map<string, string>;
+  childTextById: Map<string, string>;
   neighborTextById: Map<string, string>;
   textById: Map<string, string>;
   classifications: Map<string, Classification | null>;
 }
 
-interface FlowDef {
-  source: StageId;
-  target: StageId;
-  label: string;
-  fallbackType: RelationType;
-}
-
 const VIEW_ID = "view:process-overview";
-const VIEW_TITLE = "Layer 1 - Process Overview";
+const STAGE_VIEW_PREFIX = "view:process-stage:";
+const VIEW_TITLE = "Layer 1 - Architecture & Dataflow Overview";
+
 const STAGES: readonly StageDef[] = [
-  { id: "sources", packageId: "proc:pkg:sources", label: "SQL-Datenquellen", x: 620, y: 60, width: 360 },
-  { id: "connectors", packageId: "proc:pkg:connectors", label: "Connectoren", x: 620, y: 220, width: 360 },
-  { id: "extract", packageId: "proc:pkg:extract", label: "Data Extraction", x: 620, y: 380, width: 360 },
-  { id: "transform", packageId: "proc:pkg:transform", label: "Transformation / Matching", x: 620, y: 540, width: 360 },
-  { id: "persist", packageId: "proc:pkg:persist", label: "Distribution / Persistenz", x: 620, y: 700, width: 360 },
-  { id: "simulate", packageId: "proc:pkg:simulate", label: "Simulation", x: 620, y: 860, width: 360 },
+  {
+    id: "inputs",
+    packageId: "proc:pkg:inputs",
+    viewId: `${STAGE_VIEW_PREFIX}inputs`,
+    label: "Input Sources",
+    x: 320,
+    y: 220,
+    width: 240,
+    height: 112,
+  },
+  {
+    id: "extract",
+    packageId: "proc:pkg:extract",
+    viewId: `${STAGE_VIEW_PREFIX}extract`,
+    label: "Extraction & Preprocessing",
+    x: 620,
+    y: 220,
+    width: 268,
+    height: 112,
+  },
+  {
+    id: "transform",
+    packageId: "proc:pkg:transform",
+    viewId: `${STAGE_VIEW_PREFIX}transform`,
+    label: "Transformation",
+    x: 950,
+    y: 220,
+    width: 220,
+    height: 112,
+  },
+  {
+    id: "match",
+    packageId: "proc:pkg:match",
+    viewId: `${STAGE_VIEW_PREFIX}match`,
+    label: "Matching & Filtering",
+    x: 1240,
+    y: 220,
+    width: 250,
+    height: 112,
+  },
+  {
+    id: "distribution",
+    packageId: "proc:pkg:distribution",
+    viewId: `${STAGE_VIEW_PREFIX}distribution`,
+    label: "Distribution / KDE / Persistence",
+    x: 1550,
+    y: 220,
+    width: 300,
+    height: 112,
+  },
+  {
+    id: "simulation",
+    packageId: "proc:pkg:simulation",
+    viewId: `${STAGE_VIEW_PREFIX}simulation`,
+    label: "Simulation",
+    x: 1910,
+    y: 220,
+    width: 220,
+    height: 112,
+  },
+  {
+    id: "outputs",
+    packageId: "proc:pkg:outputs",
+    viewId: `${STAGE_VIEW_PREFIX}outputs`,
+    label: "Artefacts / Outputs",
+    x: 2200,
+    y: 220,
+    width: 244,
+    height: 112,
+  },
 ] as const;
-const STAGE_ORDER: Record<StageId, number> = {
-  sources: 0,
-  connectors: 1,
-  extract: 2,
-  transform: 3,
-  persist: 4,
-  simulate: 5,
-};
-const STAGE_FLOW: readonly FlowDef[] = [
-  { source: "sources", target: "connectors", label: "query source systems", fallbackType: "reads" },
-  { source: "connectors", target: "extract", label: "load raw data", fallbackType: "calls" },
-  { source: "extract", target: "transform", label: "prepare / match data", fallbackType: "calls" },
-  { source: "transform", target: "persist", label: "fit / persist", fallbackType: "calls" },
-  { source: "persist", target: "simulate", label: "consume artefacts", fallbackType: "reads" },
-] as const;
+
 const RULES: Record<StageId, readonly StageRule[]> = {
-  sources: [
-    { pattern: /datenquellen|data sources?|source systems?/, score: 14 },
-    { pattern: /\bmes\b|\bdruid\b|\bsap\b/, score: 12 },
-    { pattern: /\bsql\b|\bdatabase\b|\bdb\b|datasource|analytics db|production db/, score: 12 },
-  ],
-  connectors: [
-    { pattern: /connector|connection|cursor|fetchall/, score: 18 },
-    { pattern: /execute query|run query|convert to df|buffer file/, score: 10 },
+  inputs: [
+    { pattern: /\binput\b|\binputs\b|input sources?|data sources?|datenquellen/, score: 18 },
+    { pattern: /\bmes\b|\bdruid\b|\bsap\b|\bapi\b|\bconnector\b|\bingest\b/, score: 18 },
+    { pattern: /\bsql\b|\bdatabase\b|\bdb\b|\bcsv\b|\bxlsx\b|\bxls\b|\bexcel\b/, score: 14 },
   ],
   extract: [
-    { pattern: /data extraction|dataextraction|extract data|get data|load data|read data/, score: 16 },
-    { pattern: /preprocess|vorverarbeitung|setting up times|arrival input|arrival table|is table/, score: 12 },
+    { pattern: /\bextract\b|\bextraction\b|\bdata extraction\b|\bload data\b/, score: 18 },
+    { pattern: /\bpreprocess\b|\bpreprocessing\b|\bprepare\b|\bclean\b|\betl\b/, score: 14 },
+    { pattern: /\barrival\b|\bis table\b|\bwt\b|\bload\b/, score: 10 },
   ],
   transform: [
-    { pattern: /transform|matching|match|cluster|station|route|number of goods/, score: 16 },
-    { pattern: /filter|iqr|fallback|preprocessing after extraction/, score: 14 },
+    { pattern: /\btransform\b|\btransformation\b|\bnormalize\b|\bconvert\b|\benrich\b/, score: 18 },
+    { pattern: /\bcolor\b|\bstatistics\b|\banaly[sz]e\b|\breshape\b|\baggregate\b/, score: 12 },
+    { pattern: /\butil\b|\bhelper\b/, score: 4 },
   ],
-  persist: [
-    { pattern: /distribution|fit dist|fit distribution|calc distribution|kde|kerndichtesch/, score: 16 },
-    { pattern: /persist|save to file|save object|save min max|min max|json|pickle|pkl|efficien/, score: 14 },
+  match: [
+    { pattern: /\bmatch\b|\bmatching\b|\bcluster\b|\bassign\b|\bmap\b/, score: 18 },
+    { pattern: /\bfilter\b|\bfiltering\b|\biqr\b|\boutlier\b|\bremove outliner\b|\bremove outlier\b/, score: 18 },
+    { pattern: /\broute\b|\bstation\b|\border\b/, score: 10 },
   ],
-  simulate: [
-    { pattern: /simulation|simulation model|model py|model\.py|runtime/, score: 16 },
-    { pattern: /get processing time|calc sim time|generate sim data|simulationdatagenerator/, score: 14 },
+  distribution: [
+    { pattern: /\bdistribution\b|\bfit distribution\b|\bparameter\b/, score: 18 },
+    { pattern: /\bkde\b|\bkernel\b|\bkerndichtesch\b/, score: 18 },
+    { pattern: /\bpersist\b|\bpersistence\b|\bpickle\b|\bpkl\b|\bsave object\b|\bsave_object\b/, score: 16 },
+  ],
+  simulation: [
+    { pattern: /\bsimulation\b|\bsimulator\b|\bsim data\b|\bsim\b/, score: 18 },
+    { pattern: /\bgenerator\b|\bruntime\b|\bmodel py\b|\bmodel\.py\b/, score: 14 },
+    { pattern: /\bcalc sim time\b|\bprocessing time\b/, score: 12 },
+  ],
+  outputs: [
+    { pattern: /\boutput\b|\boutputs\b|\bartefact\b|\bartifact\b|\bresult\b|\bresults\b/, score: 18 },
+    { pattern: /\bjson\b|\bcsv\b|\bxlsx\b|\bxls\b|\bexcel\b|\btable\b|\btables\b|\breport\b/, score: 14 },
+    { pattern: /\bexport\b|\bsave\b|\bwrite\b|\bvalidation\b|\btraining\b/, score: 12 },
   ],
 };
+
+const ROOT_ATTACHMENTS: readonly ProcessNodeConfig[] = [
+  {
+    id: "proc:src:db-imports",
+    label: "DB Imports",
+    umlType: "database",
+    stereotype: "<<database>>",
+    position: { x: 40, y: 60, width: 190, height: 84 },
+  },
+  {
+    id: "proc:src:file-inputs",
+    label: "CSV / Excel Inputs",
+    umlType: "artifact",
+    stereotype: "<<artifact>>",
+    position: { x: 40, y: 190, width: 190, height: 84 },
+  },
+  {
+    id: "proc:src:mes-api",
+    label: "MES / API Inputs",
+    umlType: "component",
+    stereotype: "<<component>>",
+    position: { x: 40, y: 320, width: 190, height: 84 },
+  },
+  {
+    id: "proc:out:tables",
+    label: "Generated Tables",
+    umlType: "artifact",
+    stereotype: "<<artifact>>",
+    position: { x: 2520, y: 60, width: 196, height: 84 },
+  },
+  {
+    id: "proc:out:json-models",
+    label: "JSON / KDE Models",
+    umlType: "artifact",
+    stereotype: "<<artifact>>",
+    position: { x: 2520, y: 190, width: 196, height: 84 },
+  },
+  {
+    id: "proc:out:sim-results",
+    label: "Simulation Results",
+    umlType: "artifact",
+    stereotype: "<<artifact>>",
+    position: { x: 2520, y: 320, width: 196, height: 84 },
+  },
+] as const;
+
+const ROOT_ATTACHMENT_EDGES: readonly ProcessEdgeConfig[] = [
+  {
+    id: "attachment:db-imports",
+    source: "proc:src:db-imports",
+    target: "proc:pkg:inputs",
+    type: "reads",
+    label: "database imports",
+  },
+  {
+    id: "attachment:file-inputs",
+    source: "proc:src:file-inputs",
+    target: "proc:pkg:inputs",
+    type: "reads",
+    label: "file inputs",
+  },
+  {
+    id: "attachment:mes-api",
+    source: "proc:src:mes-api",
+    target: "proc:pkg:inputs",
+    type: "reads",
+    label: "connector feeds",
+  },
+  {
+    id: "attachment:tables",
+    source: "proc:pkg:outputs",
+    target: "proc:out:tables",
+    type: "writes",
+    label: "tables",
+  },
+  {
+    id: "attachment:json-models",
+    source: "proc:pkg:outputs",
+    target: "proc:out:json-models",
+    type: "writes",
+    label: "json / kde",
+  },
+  {
+    id: "attachment:sim-results",
+    source: "proc:pkg:outputs",
+    target: "proc:out:sim-results",
+    type: "writes",
+    label: "simulation results",
+  },
+] as const;
+
+const PIPELINE_EDGES: readonly ProcessEdgeConfig[] = [
+  {
+    id: "pipeline:inputs->extract",
+    source: "proc:pkg:inputs",
+    target: "proc:pkg:extract",
+    type: "reads",
+    label: "load inputs",
+  },
+  {
+    id: "pipeline:extract->transform",
+    source: "proc:pkg:extract",
+    target: "proc:pkg:transform",
+    type: "calls",
+    label: "prepare data",
+  },
+  {
+    id: "pipeline:transform->match",
+    source: "proc:pkg:transform",
+    target: "proc:pkg:match",
+    type: "calls",
+    label: "enrich / align",
+  },
+  {
+    id: "pipeline:match->distribution",
+    source: "proc:pkg:match",
+    target: "proc:pkg:distribution",
+    type: "calls",
+    label: "fit / persist inputs",
+  },
+  {
+    id: "pipeline:distribution->simulation",
+    source: "proc:pkg:distribution",
+    target: "proc:pkg:simulation",
+    type: "reads",
+    label: "consume persisted models",
+  },
+  {
+    id: "pipeline:simulation->outputs",
+    source: "proc:pkg:simulation",
+    target: "proc:pkg:outputs",
+    type: "writes",
+    label: "produce artefacts",
+  },
+] as const;
 
 export function buildProcessDiagramConfigFromGraph(graph: ProjectGraph): ProcessDiagramConfig {
   const ctx = buildContext(graph);
   for (const symbol of graph.symbols) {
-    ctx.classifications.set(symbol.id, classifySymbolToProcessStage(symbol, ctx));
+    ctx.classifications.set(symbol.id, classifySymbol(symbol, ctx));
   }
 
   return {
@@ -172,26 +389,33 @@ export function buildProcessDiagramConfigFromGraph(graph: ProjectGraph): Process
       id: stage.packageId,
       label: stage.label,
       stereotype: "<<package>>",
-      drilldown: {
-        preferredViewIds: compact([chooseBestStageDrilldownView(graph, ctx, stage.id)]),
-        preferredSymbolIds: collectStageSymbolIds(ctx, stage.id),
-        viewSearch: viewTerms(stage.id),
-      },
+      childViewId: stage.viewId,
       position: {
         x: stage.x,
         y: stage.y,
         width: stage.width,
-        height: 108,
+        height: stage.height,
       },
     })),
-    nodes: [],
-    edges: aggregateStageEdges(graph, ctx),
+    nodes: [...ROOT_ATTACHMENTS],
+    edges: [...ROOT_ATTACHMENT_EDGES, ...PIPELINE_EDGES],
+    stageViews: STAGES.map((stage) => buildStageViewConfig(graph, ctx, stage)),
+    viewAdjustments: buildViewAdjustments(graph, ctx),
   };
 }
 
 function buildContext(graph: ProjectGraph): Context {
   const symbolById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
   const relationsBySymbolId = new Map<string, Relation[]>();
+  const childrenById = new Map<string, Symbol[]>();
+
+  for (const symbol of graph.symbols) {
+    if (!symbol.parentId) continue;
+    const bucket = childrenById.get(symbol.parentId) ?? [];
+    bucket.push(symbol);
+    childrenById.set(symbol.parentId, bucket);
+  }
+
   for (const relation of graph.relations) {
     if (relation.id.startsWith("process-edge:") || relation.id.startsWith("stub-edge:")) continue;
     const outgoing = relationsBySymbolId.get(relation.source) ?? [];
@@ -205,6 +429,7 @@ function buildContext(graph: ProjectGraph): Context {
   const ancestorsById = buildAncestors(graph.symbols);
   const ownTextById = new Map<string, string>();
   const parentTextById = new Map<string, string>();
+  const childTextById = new Map<string, string>();
   const neighborTextById = new Map<string, string>();
   const textById = new Map<string, string>();
 
@@ -228,9 +453,15 @@ function buildContext(graph: ProjectGraph): Context {
         })
         .join(" "),
     );
+    const childText = normalize(
+      (childrenById.get(symbol.id) ?? [])
+        .slice(0, 32)
+        .map((child) => `${child.label} ${child.location?.file ?? ""}`)
+        .join(" "),
+    );
     const neighborText = normalize(
       (relationsBySymbolId.get(symbol.id) ?? [])
-        .slice(0, 20)
+        .slice(0, 24)
         .map((relation) => {
           const otherId = relation.source === symbol.id ? relation.target : relation.source;
           const other = symbolById.get(otherId);
@@ -238,29 +469,34 @@ function buildContext(graph: ProjectGraph): Context {
         })
         .join(" "),
     );
+
     ownTextById.set(symbol.id, ownText);
     parentTextById.set(symbol.id, parentText);
+    childTextById.set(symbol.id, childText);
     neighborTextById.set(symbol.id, neighborText);
-    textById.set(symbol.id, normalize(`${ownText} ${parentText} ${neighborText}`));
+    textById.set(symbol.id, normalize(`${ownText} ${parentText} ${childText} ${neighborText}`));
   }
 
   return {
     symbolById,
     relationsBySymbolId,
+    childrenById,
     ancestorsById,
     ownTextById,
     parentTextById,
+    childTextById,
     neighborTextById,
     textById,
     classifications: new Map(),
   };
 }
 
-function classifySymbolToProcessStage(symbol: Symbol, ctx: Context): Classification | null {
-  const own = ctx.ownTextById.get(symbol.id) ?? "";
-  if (shouldIgnoreSymbolForLayerOne(symbol, own)) return null;
+function classifySymbol(symbol: Symbol, ctx: Context): Classification | null {
+  if (shouldIgnoreSymbolForArchitectureView(symbol)) return null;
 
+  const own = ctx.ownTextById.get(symbol.id) ?? "";
   const parentText = ctx.parentTextById.get(symbol.id) ?? "";
+  const childText = ctx.childTextById.get(symbol.id) ?? "";
   const neighborText = ctx.neighborTextById.get(symbol.id) ?? "";
   const fileText = normalize(symbol.location?.file ?? "");
   const scores = emptyScores();
@@ -268,170 +504,290 @@ function classifySymbolToProcessStage(symbol: Symbol, ctx: Context): Classificat
   for (const stage of STAGES) {
     for (const rule of RULES[stage.id]) {
       if (rule.pattern.test(own)) scores[stage.id] += rule.score;
-      if (rule.pattern.test(parentText)) scores[stage.id] += Math.round(rule.score * 0.65);
-      if (rule.pattern.test(neighborText)) scores[stage.id] += Math.round(rule.score * 0.4);
+      if (rule.pattern.test(parentText)) scores[stage.id] += Math.round(rule.score * 0.55);
+      if (rule.pattern.test(childText)) scores[stage.id] += Math.round(rule.score * 0.65);
+      if (rule.pattern.test(neighborText)) scores[stage.id] += Math.round(rule.score * 0.35);
     }
   }
 
-  if (fileText.includes("connector")) scores.connectors += 18;
-  if (fileText.includes("extract")) scores.extract += 16;
-  if (fileText.includes("arrival")) {
+  if (fileText.includes("connector")) scores.inputs += 18;
+  if (fileText.includes("extract")) scores.extract += 18;
+  if (fileText.includes("arrival") || fileText.includes("is_table") || fileText.includes("is table")) {
     scores.extract += 10;
-    scores.simulate += 6;
+    scores.match += 14;
+    scores.outputs += 8;
   }
-  if (fileText.includes("filter") || fileText.includes("match") || fileText.includes("cluster")) scores.transform += 14;
-  if (fileText.includes("distribution") || fileText.includes("kde") || fileText.includes("pickle")) scores.persist += 16;
-  if (fileText.includes("simulation") || fileText.endsWith("model py")) scores.simulate += 16;
-  if (looksLikeSqlSource(own) && !own.includes("connector")) scores.sources += 12;
-  if (looksLikePersistedArtifact(own)) scores.persist += 10;
+  if (fileText.includes("color_change")) {
+    scores.transform += 16;
+    scores.match += 8;
+    scores.outputs += 6;
+  }
+  if (fileText.includes("filter")) scores.match += 18;
+  if (fileText.includes("distribution") || fileText.includes("kde") || fileText.includes("pickle")) {
+    scores.distribution += 18;
+    scores.outputs += 8;
+  }
+  if (fileText.includes("simulation") || fileText.endsWith("model py")) {
+    scores.simulation += 18;
+    scores.outputs += 10;
+  }
+  if (fileText.includes("analyzer")) {
+    scores.transform += 10;
+    scores.outputs += 12;
+  }
 
   for (const relation of ctx.relationsBySymbolId.get(symbol.id) ?? []) {
     const otherId = relation.source === symbol.id ? relation.target : relation.source;
     const otherText = ctx.textById.get(otherId) ?? normalize(otherId);
-    if (relation.type === "reads" && looksLikeSqlSource(otherText)) scores.extract += 8;
-    if (relation.type === "writes" && looksLikePersistedArtifact(otherText)) scores.persist += 8;
-    if ((relation.type === "calls" || relation.type === "instantiates") && otherText.includes("connector")) scores.extract += 6;
-    if ((relation.type === "calls" || relation.type === "imports") && (otherText.includes("distribution") || otherText.includes("kde"))) scores.persist += 6;
-    if ((relation.type === "reads" || relation.type === "uses_config") && looksLikePersistedArtifact(otherText)) scores.simulate += 6;
+
+    if (relation.type === "reads" && looksLikeInputSource(otherText)) {
+      scores.inputs += 10;
+      scores.extract += 8;
+    }
+    if (relation.type === "reads" && looksLikePersistedOutput(otherText)) {
+      scores.distribution += 4;
+      scores.simulation += 6;
+      scores.outputs += 6;
+    }
+    if (relation.type === "writes") {
+      scores.outputs += 10;
+      if (looksLikePersistedOutput(otherText)) scores.distribution += 8;
+      if (looksLikeSimulationOutput(otherText)) scores.simulation += 6;
+    }
+    if ((relation.type === "calls" || relation.type === "imports" || relation.type === "instantiates") &&
+        /\bconnector\b|\bmes\b|\bdruid\b|\bapi\b/.test(otherText)) {
+      scores.inputs += 8;
+    }
+    if ((relation.type === "calls" || relation.type === "imports") &&
+        /\btransform\b|\bnormalize\b|\bcolor\b|\bstatistics\b/.test(otherText)) {
+      scores.transform += 8;
+    }
+    if ((relation.type === "calls" || relation.type === "imports") &&
+        /\bfilter\b|\bmatch\b|\bcluster\b|\biqr\b/.test(otherText)) {
+      scores.match += 8;
+    }
+    if ((relation.type === "calls" || relation.type === "imports") &&
+        /\bdistribution\b|\bkde\b|\bpersist\b|\bpickle\b/.test(otherText)) {
+      scores.distribution += 8;
+    }
+    if ((relation.type === "calls" || relation.type === "imports" || relation.type === "uses_config") &&
+        /\bsimulation\b|\bgenerator\b|\bmodel\b/.test(otherText)) {
+      scores.simulation += 8;
+    }
   }
 
-  let bestStage: StageId | null = null;
+  if (symbol.kind === "module") {
+    scores.inputs += 4;
+    scores.extract += 4;
+    scores.transform += 4;
+    scores.match += 4;
+    scores.distribution += 4;
+    scores.simulation += 4;
+    scores.outputs += 4;
+  }
+  if (symbol.kind === "class") {
+    scores.transform += 2;
+    scores.match += 2;
+    scores.distribution += 2;
+    scores.simulation += 2;
+  }
+
+  let primaryStage: StageId | null = null;
   let bestScore = -1;
   for (const stage of STAGES) {
     const score = scores[stage.id];
-    if (score > bestScore || (score === bestScore && tieBreak(stage.id, bestStage ?? stage.id) > 0)) {
-      bestStage = stage.id;
+    if (score > bestScore || (score === bestScore && tieBreak(stage.id, primaryStage ?? stage.id) > 0)) {
+      primaryStage = stage.id;
       bestScore = score;
     }
   }
 
-  const threshold = symbol.kind === "external" ? 14 : 12;
-  return bestStage && bestScore >= threshold ? { stage: bestStage, score: bestScore, scores } : null;
+  if (!primaryStage || bestScore < minimumPrimaryScore(symbol.kind)) {
+    return null;
+  }
+
+  return { primaryStage, score: bestScore, scores };
 }
 
-function aggregateStageEdges(graph: ProjectGraph, ctx: Context): ProcessEdgeConfig[] {
-  const counts = new Map<string, Partial<Record<RelationType, number>>>();
+function buildStageViewConfig(
+  graph: ProjectGraph,
+  ctx: Context,
+  stage: StageDef,
+): ProcessStageViewConfig {
+  const nodeRefs = selectStageNodeRefs(graph, ctx, stage.id);
+  return {
+    id: stage.viewId,
+    title: `Layer 2 - ${stage.label}`,
+    scope: "group",
+    hiddenInSidebar: false,
+    nodeRefs,
+    edgeRefs: collectStageEdgeRefs(graph, ctx, nodeRefs),
+  };
+}
+
+function buildViewAdjustments(graph: ProjectGraph, ctx: Context): ProcessViewAdjustment[] {
+  const ownerSymbolByViewId = new Map<string, Symbol>();
+  for (const symbol of graph.symbols) {
+    if (!symbol.childViewId) continue;
+    const existing = ownerSymbolByViewId.get(symbol.childViewId);
+    if (!existing || compareViewOwnerPriority(symbol, existing) > 0) {
+      ownerSymbolByViewId.set(symbol.childViewId, symbol);
+    }
+  }
+
+  const visibleViewIds = new Set<string>();
+  const stageByViewId = new Map<string, StageId>();
+
+  for (const view of graph.views) {
+    if (view.id === VIEW_ID || view.id.startsWith(STAGE_VIEW_PREFIX)) continue;
+
+    const owner = ownerSymbolByViewId.get(view.id);
+    const viewText = normalize(`${view.id} ${view.title} ${owner?.label ?? ""} ${owner?.location?.file ?? ""}`);
+    const stage = owner ? resolvePreferredStage(owner, ctx, viewText) : chooseBestStageFromText(viewText);
+    if (stage) {
+      stageByViewId.set(view.id, stage);
+    }
+
+    if (shouldShowViewInSidebar(view, owner, viewText)) {
+      visibleViewIds.add(view.id);
+    }
+  }
+
+  return graph.views
+    .filter((view) => view.id !== VIEW_ID && !view.id.startsWith(STAGE_VIEW_PREFIX))
+    .map((view) => {
+      const owner = ownerSymbolByViewId.get(view.id);
+      const visible = visibleViewIds.has(view.id);
+      if (!visible) {
+        return {
+          id: view.id,
+          hiddenInSidebar: true,
+        };
+      }
+
+      const visibleAncestorViewId = owner
+        ? findVisibleAncestorViewId(owner, visibleViewIds, ctx.symbolById)
+        : undefined;
+      const stage = stageByViewId.get(view.id);
+
+      return {
+        id: view.id,
+        parentViewId: visibleAncestorViewId ?? (stage ? stageDef(stage).viewId : view.parentViewId ?? null),
+        hiddenInSidebar: false,
+      };
+    });
+}
+
+function selectStageNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId): string[] {
+  const candidates: RankedStageNode[] = [];
+
+  for (const symbol of graph.symbols) {
+    if (!isStageViewNodeCandidate(symbol)) continue;
+
+    const classification = ctx.classifications.get(symbol.id);
+    if (!classification) continue;
+
+    const stageScore = classification.scores[stage] ?? 0;
+    const threshold = minimumStageScore(stage, symbol.kind);
+    if (stageScore < threshold) continue;
+
+    let rank = stageScore;
+    if (classification.primaryStage === stage) rank += 10;
+    if (symbol.kind === "module") rank += 10;
+    if (symbol.kind === "class") rank += 7;
+    if (symbol.childViewId) rank += 4;
+    if (looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "")) rank -= 10;
+
+    candidates.push({ symbol, classification, stageScore, rank });
+  }
+
+  candidates.sort((a, b) =>
+    b.rank - a.rank ||
+    b.stageScore - a.stageScore ||
+    a.symbol.label.localeCompare(b.symbol.label),
+  );
+
+  const selected: string[] = [];
+  const selectedSet = new Set<string>();
+  const moduleRankById = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    if (selected.length >= maxStageNodeCount(stage)) break;
+
+    const parentId = candidate.symbol.parentId;
+    if (candidate.symbol.kind === "class" && parentId && selectedSet.has(parentId)) {
+      const parentRank = moduleRankById.get(parentId) ?? Number.POSITIVE_INFINITY;
+      if (candidate.rank <= parentRank + 6) continue;
+    }
+
+    selected.push(candidate.symbol.id);
+    selectedSet.add(candidate.symbol.id);
+    if (candidate.symbol.kind === "module") {
+      moduleRankById.set(candidate.symbol.id, candidate.rank);
+    }
+  }
+
+  if (selected.length > 0) {
+    return selected;
+  }
+
+  return fallbackStageNodesByTerms(graph, stage);
+}
+
+function fallbackStageNodesByTerms(graph: ProjectGraph, stage: StageId): string[] {
+  const terms = viewTerms(stage);
+  return graph.symbols
+    .filter((symbol) => isStageViewNodeCandidate(symbol))
+    .map((symbol) => ({
+      symbol,
+      score: scoreByTerms(`${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`, terms),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.symbol.label.localeCompare(b.symbol.label))
+    .slice(0, maxStageNodeCount(stage))
+    .map((entry) => entry.symbol.id);
+}
+
+function collectStageEdgeRefs(
+  graph: ProjectGraph,
+  ctx: Context,
+  nodeRefs: string[],
+): string[] {
+  if (nodeRefs.length === 0) return [];
+
+  const visible = new Set(nodeRefs);
+  const edgeRefs = new Set<string>();
 
   for (const relation of graph.relations) {
-    if (relation.id.startsWith("process-edge:") || relation.id.startsWith("stub-edge:") || relation.type === "contains") continue;
+    if (relation.type === "contains") continue;
+    if (relation.id.startsWith("process-edge:") || relation.id.startsWith("stub-edge:")) continue;
 
-    const sourceStage = resolveRelationStage(relation.source, ctx);
-    const targetStage = resolveRelationStage(relation.target, ctx);
-    if (!sourceStage || !targetStage || sourceStage === targetStage) continue;
-
-    const oriented =
-      STAGE_ORDER[sourceStage] <= STAGE_ORDER[targetStage]
-        ? { source: sourceStage, target: targetStage }
-        : { source: targetStage, target: sourceStage };
-    const key = `${oriented.source}->${oriented.target}`;
-    if (!STAGE_FLOW.some((flow) => flow.source === oriented.source && flow.target === oriented.target)) continue;
-
-    const bucket = counts.get(key) ?? {};
-    bucket[relation.type] = (bucket[relation.type] ?? 0) + 1;
-    counts.set(key, bucket);
+    const source = findNearestVisible(relation.source, visible, ctx.ancestorsById);
+    const target = findNearestVisible(relation.target, visible, ctx.ancestorsById);
+    if (!source || !target || source === target) continue;
+    edgeRefs.add(relation.id);
   }
 
-  return STAGE_FLOW.map((flow) => {
-    const pairKey = `${flow.source}->${flow.target}`;
-    const pairCounts = counts.get(pairKey);
-    return {
-      id: `stage:${flow.source}->${flow.target}`,
-      source: stageDef(flow.source).packageId,
-      target: stageDef(flow.target).packageId,
-      type: dominantType(pairCounts, flow.fallbackType),
-      label: flow.label,
-    };
-  });
+  return [...edgeRefs];
 }
 
-function resolveRelationStage(symbolId: string, ctx: Context): StageId | undefined {
-  const direct = ctx.classifications.get(symbolId);
-  if (direct?.stage) return direct.stage;
-
-  for (const ancestorId of ctx.ancestorsById.get(symbolId) ?? []) {
-    const classification = ctx.classifications.get(ancestorId);
-    if (classification?.stage) return classification.stage;
+function findVisibleAncestorViewId(
+  symbol: Symbol,
+  visibleViewIds: Set<string>,
+  symbolById: Map<string, Symbol>,
+): string | undefined {
+  let cursor = symbol.parentId;
+  let depth = 0;
+  while (cursor && depth < 32) {
+    const ancestor = symbolById.get(cursor);
+    if (!ancestor) break;
+    if (ancestor.childViewId && visibleViewIds.has(ancestor.childViewId)) {
+      return ancestor.childViewId;
+    }
+    cursor = ancestor.parentId;
+    depth += 1;
   }
-
   return undefined;
-}
-
-function collectStageSymbolIds(ctx: Context, stage: StageId): string[] {
-  const ids: string[] = [];
-  const classified = [...ctx.classifications.entries()]
-    .filter((entry): entry is [string, Classification] => Boolean(entry[1] && entry[1].stage === stage))
-    .sort((a, b) => b[1].score - a[1].score);
-
-  for (const [symbolId] of classified) {
-    const chain = ctx.ancestorsById.get(symbolId) ?? [symbolId];
-    const group = chain.find((candidateId) => ctx.symbolById.get(candidateId)?.kind === "group");
-    const module = chain.find((candidateId) => ctx.symbolById.get(candidateId)?.kind === "module");
-    if (group) ids.push(group);
-    if (module) ids.push(module);
-  }
-
-  return compact(ids).slice(0, 20);
-}
-
-function chooseBestStageDrilldownView(graph: ProjectGraph, ctx: Context, stage: StageId): string | undefined {
-  const stageEntries = [...ctx.classifications.entries()]
-    .filter((entry): entry is [string, Classification] => Boolean(entry[1] && entry[1].stage === stage))
-    .sort((a, b) => b[1].score - a[1].score)
-    .slice(0, 60);
-  if (stageEntries.length === 0) return chooseBestStageViewByTerms(graph, stage);
-
-  const stageSymbols = new Set(stageEntries.map(([id]) => id));
-  const stageAncestors = new Set<string>();
-  for (const [symbolId] of stageEntries) {
-    for (const ancestorId of ctx.ancestorsById.get(symbolId) ?? []) {
-      const symbol = ctx.symbolById.get(ancestorId);
-      if (symbol && (symbol.kind === "group" || symbol.kind === "module" || symbol.kind === "class")) {
-        stageAncestors.add(ancestorId);
-      }
-    }
-  }
-
-  let best: { id: string; score: number } | null = null;
-  for (const view of graph.views) {
-    if (view.id === VIEW_ID) continue;
-    if (view.id.startsWith("view:process-stage:")) continue;
-    if (view.scope !== "group" && view.scope !== "module") continue;
-
-    const viewText = normalize(`${view.id} ${view.title}`);
-    if (isExcludedDrilldownView(viewText)) continue;
-
-    let score = view.scope === "group" ? 40 : 24;
-    let hits = 0;
-
-    for (const term of viewTerms(stage)) {
-      if (includes(viewText, term)) score += 10;
-    }
-
-    for (const nodeId of view.nodeRefs) {
-      if (nodeId.startsWith("ext:") || nodeId.startsWith("stub:") || nodeId.startsWith("proc:")) {
-        score -= 6;
-        continue;
-      }
-      if (stageSymbols.has(nodeId)) {
-        score += 22;
-        hits += 2;
-        continue;
-      }
-      if (stageAncestors.has(nodeId)) {
-        score += 12;
-        hits += 1;
-      }
-    }
-
-    if (hits === 0) continue;
-    score += Math.min(hits * 2, 12);
-
-    if (!best || score > best.score) {
-      best = { id: view.id, score };
-    }
-  }
-
-  return best?.id ?? chooseBestStageViewByTerms(graph, stage);
 }
 
 function buildAncestors(symbols: Symbol[]): Map<string, string[]> {
@@ -458,84 +814,123 @@ function buildAncestors(symbols: Symbol[]): Map<string, string[]> {
   return cache;
 }
 
-function dominantType(
-  counts: Partial<Record<RelationType, number>> | undefined,
-  fallback: RelationType,
-): RelationType {
-  if (!counts) return fallback;
-
-  let best = fallback;
-  let bestCount = -1;
-  for (const [type, count] of Object.entries(counts) as Array<[RelationType, number]>) {
-    if (count > bestCount) {
-      best = type;
-      bestCount = count;
-    }
+function findNearestVisible(
+  symbolId: string,
+  visible: Set<string>,
+  ancestorIndex: Map<string, string[]>,
+): string | null {
+  const chain = ancestorIndex.get(symbolId);
+  if (!chain) return null;
+  for (const id of chain) {
+    if (visible.has(id)) return id;
   }
-  return best;
+  return null;
 }
 
-function shouldIgnoreSymbolForLayerOne(symbol: Symbol, ownText: string): boolean {
+function shouldIgnoreSymbolForArchitectureView(symbol: Symbol): boolean {
   if (symbol.tags?.includes("process-overview") || symbol.tags?.includes("external-stub")) return true;
   if (symbol.id.startsWith("proc:") || symbol.id.startsWith("stub:")) return true;
-  if (symbol.kind === "external" && !looksLikeRelevantExternal(ownText)) return true;
-  if (looksLikeArtifactCategory(ownText)) return true;
+  if (symbol.kind === "external") return true;
+  if (symbol.kind !== "group" && symbol.kind !== "module" && symbol.kind !== "class") return true;
+  if (symbol.kind === "group" && looksLikeArtifactCategory(normalize(`${symbol.id} ${symbol.label}`))) return true;
+  if (symbol.kind === "module" && /(^|[.\s])__init__$/.test(symbol.label)) return true;
+  if (looksLikeSupportContainer(normalize(`${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`))) return true;
   return false;
 }
 
-function looksLikeRelevantExternal(text: string): boolean {
-  return /\b(mes|druid|sap|sql|database|db|datasource|csv|xlsx|json|pickle|pkl|model py|model\.py|simulation)\b/.test(text);
+function shouldShowViewInSidebar(
+  view: DiagramView,
+  owner: Symbol | undefined,
+  viewText: string,
+): boolean {
+  if (view.id === "view:root") return false;
+  if (view.id.startsWith("view:artifacts:") || view.id.startsWith("view:art-cat:")) return false;
+  if (!owner) return false;
+  if (owner.kind !== "group" && owner.kind !== "module" && owner.kind !== "class") return false;
+  if (owner.id.startsWith("grp:domain:")) return false;
+  if (owner.id === "grp:dir:__root__") return false;
+  if (owner.id.startsWith("grp:art")) return false;
+  if (owner.id === "grp:dir:constant" || owner.id.startsWith("mod:constant.")) return false;
+  if (looksLikeArtifactCategory(viewText)) return false;
+  if (/\bdata pipeline\b.*\boverview\b/.test(viewText)) return false;
+  return true;
 }
 
-function looksLikeSqlSource(text: string): boolean {
-  return /\b(mes|druid|sap|sql|database|db|datasource|production db|analytics db)\b/.test(text);
+function isStageViewNodeCandidate(symbol: Symbol): boolean {
+  if (shouldIgnoreSymbolForArchitectureView(symbol)) return false;
+  return symbol.kind === "module" || symbol.kind === "class";
 }
 
-function looksLikePersistedArtifact(text: string): boolean {
-  return /\b(json|pickle|pkl|kde|min max|distribution|efficien|arrival)\b/.test(text);
+function looksLikeInputSource(text: string): boolean {
+  return /\bmes\b|\bdruid\b|\bsap\b|\bapi\b|\bsql\b|\bdatabase\b|\bdb\b|\bcsv\b|\bxlsx\b|\bxls\b|\bexcel\b|\binput\b/.test(text);
+}
+
+function looksLikePersistedOutput(text: string): boolean {
+  return /\boutput\b|\bjson\b|\bpickle\b|\bpkl\b|\bkde\b|\btable\b|\btables\b|\bvalidation\b|\btraining\b|\bresult\b/.test(text);
+}
+
+function looksLikeSimulationOutput(text: string): boolean {
+  return /\bsimulation\b|\bsim\b|\bruntime\b|\bresult\b|\bpayload\b/.test(text);
 }
 
 function looksLikeArtifactCategory(text: string): boolean {
-  return /(artifact|data files|libraries|i o operations|other artifacts|types models)/.test(text);
+  return /\bartifact\b|\bdata files\b|\blibraries\b|\bi o operations\b|\bother artifacts\b|\btypes models\b|\bvisualization\b/.test(text);
 }
 
-function isExcludedDrilldownView(text: string): boolean {
-  return /(artifact|data files|libraries|i o operations|other artifacts|types models)/.test(text);
+function looksLikeSupportContainer(text: string): boolean {
+  return /\butilities\b|\bconstant\b|\bconfig\b/.test(text);
 }
 
-function chooseBestStageViewByTerms(graph: ProjectGraph, stage: StageId): string | undefined {
-  let best: { id: string; score: number } | null = null;
-  for (const view of graph.views) {
-    if (view.id === VIEW_ID) continue;
-    if (view.id.startsWith("view:process-stage:")) continue;
-    if (view.scope !== "group" && view.scope !== "module") continue;
+function looksLikeUtilityOnly(text: string): boolean {
+  return /\butil\b|\bhelper\b|\bstatistics\b/.test(text) && !/\btransform\b|\bmatch\b|\bdistribution\b|\bsimulation\b/.test(text);
+}
 
-    const viewText = normalize(`${view.id} ${view.title}`);
-    if (isExcludedDrilldownView(viewText)) continue;
+function minimumPrimaryScore(kind: Symbol["kind"]): number {
+  if (kind === "group") return 22;
+  if (kind === "class") return 18;
+  return 16;
+}
 
-    let score = view.scope === "group" ? 20 : 10;
-    for (const term of viewTerms(stage)) {
-      if (includes(viewText, term)) score += 10;
-    }
-    if (!best || score > best.score) best = { id: view.id, score };
+function minimumStageScore(stage: StageId, kind: Symbol["kind"]): number {
+  const base = stage === "outputs" ? 10 : 12;
+  return kind === "class" ? base - 1 : base;
+}
+
+function maxStageNodeCount(stage: StageId): number {
+  return stage === "outputs" ? 7 : 6;
+}
+
+function resolvePreferredStage(symbol: Symbol, ctx: Context, fallbackText: string): StageId | undefined {
+  const classification = ctx.classifications.get(symbol.id);
+  if (classification?.primaryStage) return classification.primaryStage;
+
+  const childStages = new Map<StageId, number>();
+  for (const child of ctx.childrenById.get(symbol.id) ?? []) {
+    const childClassification = ctx.classifications.get(child.id);
+    const childStage = childClassification?.primaryStage;
+    if (!childStage) continue;
+    childStages.set(childStage, (childStages.get(childStage) ?? 0) + childClassification.score);
   }
-  return best && best.score > 20 ? best.id : undefined;
+  if (childStages.size > 0) {
+    return [...childStages.entries()]
+      .sort((a, b) => b[1] - a[1] || tieBreak(b[0], a[0]))
+      [0]?.[0];
+  }
+
+  return chooseBestStageFromText(fallbackText);
 }
 
-function emptyScores(): ScoreMap {
-  return { sources: 0, connectors: 0, extract: 0, transform: 0, persist: 0, simulate: 0 };
-}
-
-function tieBreak(candidate: StageId, current: StageId): number {
-  const priority: Record<StageId, number> = {
-    sources: 1,
-    connectors: 2,
-    extract: 3,
-    transform: 4,
-    persist: 5,
-    simulate: 6,
-  };
-  return priority[candidate] - priority[current];
+function chooseBestStageFromText(text: string): StageId | undefined {
+  let bestStage: StageId | undefined;
+  let bestScore = 0;
+  for (const stage of STAGES) {
+    const score = scoreByTerms(text, viewTerms(stage.id));
+    if (score > bestScore) {
+      bestStage = stage.id;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? bestStage : undefined;
 }
 
 function stageDef(stage: StageId): StageDef {
@@ -544,21 +939,69 @@ function stageDef(stage: StageId): StageDef {
   return match;
 }
 
+function compareViewOwnerPriority(candidate: Symbol, current: Symbol): number {
+  return ownerPriority(candidate) - ownerPriority(current);
+}
+
+function ownerPriority(symbol: Symbol): number {
+  let score = 0;
+  if (!symbol.id.startsWith("stub:")) score += 100;
+  if (!symbol.id.startsWith("proc:")) score += 40;
+  if (!symbol.tags?.includes("external-stub")) score += 40;
+  if (symbol.kind === "module") score += 30;
+  if (symbol.kind === "class") score += 25;
+  if (symbol.kind === "group") score += 20;
+  if (symbol.kind !== "external") score += 10;
+  return score;
+}
+
+function emptyScores(): ScoreMap {
+  return {
+    inputs: 0,
+    extract: 0,
+    transform: 0,
+    match: 0,
+    distribution: 0,
+    simulation: 0,
+    outputs: 0,
+  };
+}
+
+function tieBreak(candidate: StageId, current: StageId): number {
+  const priority: Record<StageId, number> = {
+    inputs: 1,
+    extract: 2,
+    transform: 3,
+    match: 4,
+    distribution: 5,
+    simulation: 6,
+    outputs: 7,
+  };
+  return priority[candidate] - priority[current];
+}
+
 function viewTerms(stage: StageId): string[] {
   switch (stage) {
-    case "sources":
-      return ["datenquellen", "source", "sources", "sql", "db"];
-    case "connectors":
-      return ["connector", "connectors"];
+    case "inputs":
+      return ["input", "source", "connector", "mes", "druid", "db"];
     case "extract":
-      return ["extract", "extraction", "pipeline", "preprocess", "arrival"];
+      return ["extract", "preprocess", "arrival", "is table", "load"];
     case "transform":
-      return ["transform", "matching", "filter", "cluster"];
-    case "persist":
-      return ["distribution", "persist", "kde"];
-    case "simulate":
-      return ["simulation", "model", "generator"];
+      return ["transform", "color", "normalize", "statistics"];
+    case "match":
+      return ["match", "filter", "cluster", "station", "route"];
+    case "distribution":
+      return ["distribution", "kde", "persist", "pickle", "save"];
+    case "simulation":
+      return ["simulation", "generator", "model", "runtime"];
+    case "outputs":
+      return ["output", "result", "json", "csv", "table", "report"];
   }
+}
+
+function scoreByTerms(value: string, terms: string[]): number {
+  const text = normalize(value);
+  return terms.reduce((score, term) => score + (text.includes(normalize(term)) ? 1 : 0), 0);
 }
 
 function normalize(value: string): string {
@@ -569,13 +1012,4 @@ function normalize(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
-}
-
-function includes(text: string, term: string): boolean {
-  const normalizedTerm = normalize(term);
-  return normalizedTerm.length > 0 && text.includes(normalizedTerm);
-}
-
-function compact(values: Array<string | undefined | null>): string[] {
-  return [...new Set(values.filter((value): value is string => Boolean(value && value.trim())))];
 }

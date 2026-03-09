@@ -54,6 +54,14 @@ function projectDir(hash: string): string {
   return path.join(PROJECTS_DIR, hash);
 }
 
+function graphDisplayName(graph: Pick<ProjectGraph, "projectName" | "projectPath">): string {
+  const explicit = graph.projectName?.trim();
+  if (explicit) return explicit;
+  const fromPath = graph.projectPath?.trim();
+  if (fromPath) return path.basename(fromPath);
+  return "Imported Project";
+}
+
 function loadProjectsIndex(): ProjectsIndex {
   try {
     if (fs.existsSync(META_FILE)) {
@@ -96,7 +104,7 @@ function migrateLegacy(): void {
     if (!idx.projects.find((p) => p.hash === hash)) {
       idx.projects.push({
         projectPath: pp,
-        name: path.basename(pp),
+        name: graphDisplayName(graph),
         symbolCount: graph.symbols.length,
         lastScanned: new Date().toISOString(),
         hash,
@@ -107,7 +115,7 @@ function migrateLegacy(): void {
     // Remove legacy files
     fs.unlinkSync(LEGACY_GRAPH_FILE);
     if (fs.existsSync(LEGACY_AI_FILE)) fs.unlinkSync(LEGACY_AI_FILE);
-    console.log(`[store] Migrated legacy data to project "${path.basename(pp)}" (${hash})`);
+    console.log(`[store] Migrated legacy data to project "${graphDisplayName(graph)}" (${hash})`);
   } catch (err) {
     console.warn("[store] Legacy migration failed:", (err as Error).message);
   }
@@ -249,12 +257,13 @@ export function setGraph(g: ProjectGraph): void {
     const hash = hashPath(g.projectPath);
     const existing = idx.projects.find((p) => p.hash === hash);
     if (existing) {
+      existing.name = graphDisplayName(g);
       existing.symbolCount = g.symbols.length;
       existing.lastScanned = new Date().toISOString();
     } else {
       idx.projects.push({
         projectPath: g.projectPath,
-        name: path.basename(g.projectPath),
+        name: graphDisplayName(g),
         symbolCount: g.symbols.length,
         lastScanned: new Date().toISOString(),
         hash,

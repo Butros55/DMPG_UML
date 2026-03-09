@@ -285,6 +285,22 @@ body,
   margin-top: 8px;
 }
 
+.project-transfer-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.project-transfer-actions .btn {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-import-input {
+  display: none;
+}
+
 /* ── Project Quick-Switch List ── */
 .project-list {
   display: flex;

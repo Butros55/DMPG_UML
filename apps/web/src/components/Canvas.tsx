@@ -22,6 +22,7 @@ import { UmlNode, UmlClassNode, UmlFunctionNode, UmlArtifactNode, UmlGroupNode }
 import { SymbolHoverCard, setHoverInteractionBlocked } from "./SymbolHoverCard";
 import { layoutNodes, type LayoutResult, type PortInfo } from "../layout";
 import { exportDiagramAsHtml, exportProjectAsHtml } from "../exportHtml";
+import { exportProjectPackage } from "../projectTransfer";
 import type { UmlNodeData } from "./UmlNode";
 import type { ProjectedEdge, Relation, RelationType, Symbol as Sym } from "@dmpg/shared";
 import { projectEdgesForView } from "@dmpg/shared";
@@ -1173,8 +1174,13 @@ export function Canvas() {
       const action = detail?.action;
       if (!action) return;
 
-      if (action === "export-project" && graph) {
+      if ((action === "export-project-html" || action === "export-project") && graph) {
         exportProjectAsHtml(graph, diagramSettings);
+        return;
+      }
+
+      if (action === "export-project-package" && graph) {
+        exportProjectPackage(graph);
         return;
       }
 
@@ -1248,11 +1254,20 @@ export function Canvas() {
         <button
           className="export-btn"
           onClick={() => {
+            if (graph) exportProjectPackage(graph);
+          }}
+          title="Komplettes UML-Projekt als importierbares Projektpaket exportieren"
+        >
+          <i className="bi bi-box-arrow-up" /> Projektpaket
+        </button>
+        <button
+          className="export-btn"
+          onClick={() => {
             if (graph) exportProjectAsHtml(graph, diagramSettings);
           }}
           title="Komplettes UML-Projekt als HTML exportieren (alle Views + Navigation)"
         >
-          <i className="bi bi-download" /> Export Projekt
+          <i className="bi bi-filetype-html" /> HTML Projekt
         </button>
         <button
           className="export-btn"
@@ -1262,7 +1277,7 @@ export function Canvas() {
           }}
           title="Nur aktuelle Ansicht als HTML exportieren"
         >
-          <i className="bi bi-file-earmark" /> Export View
+          <i className="bi bi-file-earmark" /> HTML View
         </button>
       </div>
 

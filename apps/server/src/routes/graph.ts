@@ -62,7 +62,7 @@ graphRouter.get("/source/:id", (req, res) => {
     res.status(404).json({ error: "symbol has no file location" });
     return;
   }
-  const scanRoot = getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
+  const scanRoot = g.sourceProjectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
   const absPath = path.isAbsolute(loc.file) ? loc.file : path.join(scanRoot, loc.file);
   try {
     const src = fs.readFileSync(absPath, "utf-8");

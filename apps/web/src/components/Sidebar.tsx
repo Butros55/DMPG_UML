@@ -1,9 +1,23 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore } from "../store";
-import { scanProject, browseFolders, fetchConfig, startAnalysis, cancelAnalysis, pauseAnalysis, fetchAnalyzeStatus, fetchGraph, fetchProjects, switchProject as switchProjectApi, deleteProjectApi } from "../api";
+import {
+  scanProject,
+  browseFolders,
+  fetchConfig,
+  startAnalysis,
+  cancelAnalysis,
+  pauseAnalysis,
+  fetchAnalyzeStatus,
+  fetchGraph,
+  fetchProjects,
+  switchProject as switchProjectApi,
+  deleteProjectApi,
+  replaceGraph,
+} from "../api";
 import type { ProjectMeta } from "../api";
 import type { DiagramView, Symbol as Sym } from "@dmpg/shared";
 import { ReviewHintsPanel } from "./ReviewHintsPanel";
+import { exportProjectPackage, importProjectPackageFile } from "../projectTransfer";
 
 const NODE_KINDS = [
   { kind: "module", label: "Module", color: "#6c8cff" },
@@ -402,6 +416,7 @@ export function Sidebar() {
   const [ollamaModel, setOllamaModel] = useState("");
   const [canResume, setCanResume] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [viewSearchQuery, setViewSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SidebarTab>("views");
 
@@ -429,6 +444,13 @@ export function Sidebar() {
     setSidebarCollapsed(false);
   }, [setSidebarCollapsed]);
 
+  const refreshProjects = useCallback(async () => {
+    const { projects: nextProjects, activeProject } = await fetchProjects();
+    setProjects(nextProjects);
+    setActiveProjectPath(activeProject);
+    return activeProject;
+  }, []);
+
   const handleActivityTabClick = useCallback((tab: SidebarTab) => {
     if (!sidebarCollapsed && activeTab === tab) {
       setSidebarCollapsed(true);
@@ -447,17 +469,14 @@ export function Sidebar() {
       setAiProvider(cfg.aiProvider ?? "cloud");
       setOllamaModel(cfg.ollamaModel ?? "");
     });
-    fetchProjects().then(({ projects: p, activeProject }) => {
-      setProjects(p);
-      setActiveProjectPath(activeProject);
-    }).catch(() => {});
+    refreshProjects().catch(() => {});
     // Check if there is a resumable AI analysis from a previous session
     fetchAnalyzeStatus().then((status) => {
       if (status.canResume && !status.running) {
         setCanResume(true);
       }
     }).catch(() => {});
-  }, []);
+  }, [refreshProjects]);
 
   const handleScan = useCallback(async () => {
     if (!scanPath.trim()) return;
@@ -469,16 +488,34 @@ export function Sidebar() {
       const g = await scanProject(scanPath.trim());
       setGraph(g);
       // Refresh project list after successful scan
-      fetchProjects().then(({ projects: p, activeProject }) => {
-        setProjects(p);
-        setActiveProjectPath(activeProject);
-      }).catch(() => {});
+      await refreshProjects();
     } catch (err: any) {
       setScanError(err.message);
     } finally {
       setScanning(false);
     }
-  }, [scanPath, setGraph, exitValidateMode, resetPlaybackQueue]);
+  }, [scanPath, setGraph, exitValidateMode, refreshProjects, resetPlaybackQueue]);
+
+  const handleImportProject = useCallback(async (file: File) => {
+    setScanning(true);
+    setScanError("");
+    try {
+      exitValidateMode();
+      resetPlaybackQueue();
+      const importedGraph = await importProjectPackageFile(file);
+      await replaceGraph(importedGraph);
+      setGraph(importedGraph);
+      setScanPath(importedGraph.sourceProjectPath ?? "");
+      await refreshProjects();
+    } catch (err: any) {
+      setScanError(err.message ?? "Import failed");
+    } finally {
+      setScanning(false);
+      if (importInputRef.current) {
+        importInputRef.current.value = "";
+      }
+    }
+  }, [exitValidateMode, refreshProjects, resetPlaybackQueue, setGraph]);
 
   const handleSwitchProject = useCallback(async (projectPath: string) => {
     try {
@@ -486,7 +523,7 @@ export function Sidebar() {
       if (g) {
         setGraph(g);
       }
-      setScanPath(projectPath);
+      setScanPath(g?.sourceProjectPath ?? projectPath);
       setActiveProjectPath(projectPath);
       setScanError("");
     } catch (err: any) {
@@ -506,7 +543,7 @@ export function Sidebar() {
       if (result.activeProject && result.graph) {
         // Another project became active — show its graph
         setGraph(result.graph);
-        setScanPath(result.activeProject);
+        setScanPath(result.graph.sourceProjectPath ?? result.activeProject);
       } else {
         // No project left — clear everything
         useAppStore.getState().selectSymbol(null);
@@ -626,6 +663,10 @@ export function Sidebar() {
         case "open-folder-browser":
           activateTab("project");
           setShowBrowser(true);
+          break;
+        case "import-project-package":
+          activateTab("project");
+          importInputRef.current?.click();
           break;
         case "switch-project":
           activateTab("project");
@@ -1235,6 +1276,36 @@ export function Sidebar() {
         <button className="btn" onClick={handleScan} disabled={scanning} style={{ marginTop: 4 }}>
           {scanning ? "Scanning…" : "Scan"}
         </button>
+        <div className="project-transfer-actions">
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() => importInputRef.current?.click()}
+            disabled={scanning}
+            title="Projektpaket (.dmpg-uml.json) importieren"
+          >
+            <i className="bi bi-box-arrow-in-down" /> Import Paket
+          </button>
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() => graph && exportProjectPackage(graph)}
+            disabled={!graph}
+            title="Aktuelles UML-Projekt als importierbares Paket exportieren"
+          >
+            <i className="bi bi-box-arrow-up" /> Export Paket
+          </button>
+        </div>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".dmpg-uml.json,.json,application/json"
+          className="project-import-input"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              void handleImportProject(file);
+            }
+          }}
+        />
         {scanError && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4 }}>{scanError}</div>}
       </div>
       )}

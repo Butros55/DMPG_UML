@@ -46,7 +46,7 @@ app.post("/api/open-in-ide", (req, res) => {
     return;
   }
 
-  const scanRoot = projectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
+  const scanRoot = projectPath ?? getGraph()?.sourceProjectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
   const absFile = path.isAbsolute(file) ? file : path.join(scanRoot, file);
   const lineNum = line ?? 1;
   const openMode = mode ?? "goto";
@@ -96,11 +96,12 @@ app.post("/api/open-in-ide", (req, res) => {
 });
 
 /** Expose non-secret config to the frontend */
-import { getCurrentProjectPath } from "./store.js";
+import { getCurrentProjectPath, getGraph } from "./store.js";
 app.get("/api/config", (_req, res) => {
   const aiConfig = resolveAiConfig();
+  const graph = getGraph();
   res.json({
-    scanProjectPath: getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "",
+    scanProjectPath: graph?.sourceProjectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "",
     aiProvider: aiConfig.provider,
     ollamaModel: aiConfig.model,
     aiModelRouting: getActiveAiModelConfig(aiConfig),

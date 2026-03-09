@@ -329,9 +329,23 @@ export const ProjectGraphSchema = z.object({
   relations: z.array(RelationSchema),
   views: z.array(DiagramViewSchema),
   rootViewId: z.string(),
+  projectName: z.string().optional(),
   projectPath: z.string().optional(),
+  sourceProjectPath: z.string().optional(),
 });
 export type ProjectGraph = z.infer<typeof ProjectGraphSchema>;
+
+export const ProjectPackageSchema = z.object({
+  format: z.literal("dmpg-uml-project"),
+  version: z.literal(1),
+  exportedAt: z.string(),
+  project: z.object({
+    name: z.string().min(1),
+    sourceProjectPath: z.string().optional(),
+    graph: ProjectGraphSchema,
+  }),
+});
+export type ProjectPackage = z.infer<typeof ProjectPackageSchema>;
 
 /* ───────────── AI Doc Request / Response ───────────── */
 

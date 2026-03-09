@@ -755,6 +755,8 @@ function buildGraphFromScan(
     relations: [...allRelations, ...artifactContains],
     views: [...allViewsList, ...artifactViews],
     rootViewId: "view:root",
+    projectName: path.basename(projectPath),
     projectPath,
+    sourceProjectPath: projectPath,
   });
 }

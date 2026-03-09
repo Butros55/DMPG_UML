@@ -72,7 +72,7 @@ export function exportProjectAsHtml(
 ) {
   const data = JSON.stringify(graph);
   const settingsData = JSON.stringify(sanitizeDiagramSettings(settings));
-  const projectName = graph.projectPath?.split(/[\\/]/).pop() ?? "UML Project";
+  const projectName = graph.projectName ?? graph.projectPath?.split(/[\\/]/).pop() ?? "UML Project";
   const exportDate = new Date().toLocaleString("de-DE");
 
   const html = `<!DOCTYPE html>

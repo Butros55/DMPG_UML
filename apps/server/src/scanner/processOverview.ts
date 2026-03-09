@@ -62,12 +62,31 @@ interface ProcessEdgeConfig {
   label?: string;
 }
 
+interface ProcessStageViewConfig {
+  id: string;
+  title: string;
+  parentViewId?: string | null;
+  scope: DiagramView["scope"];
+  hiddenInSidebar?: boolean;
+  nodeRefs: string[];
+  edgeRefs: string[];
+  nodePositions?: DiagramView["nodePositions"];
+}
+
+interface ProcessViewAdjustment {
+  id: string;
+  parentViewId?: string | null;
+  hiddenInSidebar?: boolean;
+}
+
 interface ProcessDiagramConfig {
   viewId: string;
   title: string;
   packages: ProcessPackageConfig[];
   nodes: ProcessNodeConfig[];
   edges: ProcessEdgeConfig[];
+  stageViews?: ProcessStageViewConfig[];
+  viewAdjustments?: ProcessViewAdjustment[];
 }
 
 interface StubAggregate {
@@ -193,6 +212,35 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
 
   graph.views.push(processView);
 
+  if (config.stageViews?.length) {
+    graph.views.push(
+      ...config.stageViews.map((view) => ({
+        id: view.id,
+        title: view.title,
+        parentViewId: view.parentViewId ?? processView.id,
+        scope: view.scope,
+        hiddenInSidebar: view.hiddenInSidebar,
+        nodeRefs: [...view.nodeRefs],
+        edgeRefs: [...view.edgeRefs],
+        nodePositions: view.nodePositions ? [...view.nodePositions] : undefined,
+      })),
+    );
+  }
+
+  if (config.viewAdjustments?.length) {
+    const viewsById = new Map(graph.views.map((view) => [view.id, view]));
+    for (const adjustment of config.viewAdjustments) {
+      const target = viewsById.get(adjustment.id);
+      if (!target) continue;
+      if (Object.prototype.hasOwnProperty.call(adjustment, "parentViewId")) {
+        target.parentViewId = adjustment.parentViewId ?? null;
+      }
+      if (typeof adjustment.hiddenInSidebar === "boolean") {
+        target.hiddenInSidebar = adjustment.hiddenInSidebar;
+      }
+    }
+  }
+
   // Keep the previous graph root reachable from Layer-1.
   const oldRoot = graph.views.find((view) => view.id === oldRootViewId);
   if (oldRoot && oldRoot.id !== processView.id) {
@@ -210,7 +258,7 @@ function addExternalContextStubs(graph: ProjectGraph): ProjectGraph {
   const ancestorIndex = buildAncestorIndex(graph.symbols);
 
   for (const view of graph.views) {
-    if (view.id === PROCESS_VIEW_ID) {
+    if (view.id === PROCESS_VIEW_ID || view.id.startsWith(LEGACY_PROCESS_STAGE_VIEW_PREFIX)) {
       continue;
     }
     const visible = new Set(view.nodeRefs);

@@ -456,7 +456,7 @@ aiRouter.post("/analyze", async (req, res) => {
   res.write(":ok\n\n");
   if (typeof (res as any).flush === "function") (res as any).flush();
 
-  const scanRoot = getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? g.projectPath ?? "";
+  const scanRoot = g.sourceProjectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? g.projectPath ?? "";
   let clientGone = false;
   req.on("close", () => { clientGone = true; console.log("[AI-Analyze] Client disconnected (server continues processing)"); });
 
