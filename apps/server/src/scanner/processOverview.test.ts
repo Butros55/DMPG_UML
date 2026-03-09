@@ -14,7 +14,7 @@ function loadPipelineGraph(): ProjectGraph {
   return JSON.parse(raw) as ProjectGraph;
 }
 
-test("buildProcessDiagramConfigFromGraph produces a scan-driven DMPG pipeline overview", () => {
+test("buildProcessDiagramConfigFromGraph produces a fixed six-stage Layer-1 overview", () => {
   const config = buildProcessDiagramConfigFromGraph(loadPipelineGraph());
 
   assert.deepEqual(
@@ -22,58 +22,32 @@ test("buildProcessDiagramConfigFromGraph produces a scan-driven DMPG pipeline ov
     [
       "SQL-Datenquellen",
       "Connectoren",
-      "Data Extraction & Vorverarbeitung",
-      "Transformation / Matching / Filtering",
-      "Distributionen / KDE / Persistenz",
-      "Simulation (Konsum)",
+      "Data Extraction",
+      "Transformation / Matching",
+      "Distribution / Persistenz",
+      "Simulation",
     ],
   );
 
-  const nodeLabels = new Set(config.nodes.map((node) => node.label));
-  assert.ok(nodeLabels.has("MES / Produktions-DB"));
-  assert.ok(nodeLabels.has("Druid / Analytics-DB"));
-  assert.ok(nodeLabels.has("MESConnector"));
-  assert.ok(nodeLabels.has("Data Extraction"));
-  assert.ok(nodeLabels.has("Matching / Clustering"));
-  assert.ok(nodeLabels.has("Distribution Fit"));
-  assert.ok(nodeLabels.has("Persistierte JSON-Parameter"));
-  assert.ok(nodeLabels.has("KDE / PKL Artefakte"));
-  assert.ok(nodeLabels.has("Arrival Tables (.csv)"));
-  assert.ok(nodeLabels.has("SimulationDataGenerator"));
-
-  const edgeSet = new Set(
-    config.edges.map((edge) => `${edge.source}->${edge.target}:${edge.label ?? ""}`),
-  );
-  assert.ok(
-    [...edgeSet].some((edge) => edge.includes("proc:db:mes->proc:node:connectors:mes:read production data")),
-  );
-  assert.ok(
-    [...edgeSet].some((edge) => edge.includes("proc:node:connectors:mes->proc:node:extract:extract-core:load raw data")),
-  );
-  assert.ok(
-    [...edgeSet].some((edge) => edge.includes("proc:art:matched->proc:node:persist:distribution-fit:fit distributions")),
-  );
-  assert.ok(
-    [...edgeSet].some((edge) => edge.includes("proc:art:json->proc:node:simulate:sim-generator:consume persisted artefacts")),
-  );
-  assert.ok(
-    [...edgeSet].some((edge) => edge.includes("proc:art:arrival->proc:node:simulate:sim-generator:load arrival tables")),
-  );
-
+  assert.equal(config.nodes.length, 0);
   assert.deepEqual(
-    config.stageViews.map((view) => view.id),
+    config.edges.map((edge) => `${edge.source}->${edge.target}:${edge.label ?? ""}`),
     [
-      "view:process-stage:sources",
-      "view:process-stage:connectors",
-      "view:process-stage:extract",
-      "view:process-stage:transform",
-      "view:process-stage:persist",
-      "view:process-stage:simulate",
+      "proc:pkg:sources->proc:pkg:connectors:query source systems",
+      "proc:pkg:connectors->proc:pkg:extract:load raw data",
+      "proc:pkg:extract->proc:pkg:transform:prepare / match data",
+      "proc:pkg:transform->proc:pkg:persist:fit / persist",
+      "proc:pkg:persist->proc:pkg:simulate:consume artefacts",
     ],
   );
+
+  for (const pkg of config.packages) {
+    assert.ok(pkg.drilldown);
+    assert.ok((pkg.drilldown?.preferredViewIds?.length ?? 0) > 0 || (pkg.drilldown?.preferredSymbolIds?.length ?? 0) > 0);
+  }
 });
 
-test("augmentGraphWithUmlOverlays makes the generated process overview the root view", () => {
+test("augmentGraphWithUmlOverlays renders only six process blocks at Layer-1", () => {
   const graph = loadPipelineGraph();
   const augmented = augmentGraphWithUmlOverlays(JSON.parse(JSON.stringify(graph)) as ProjectGraph);
 
@@ -81,40 +55,32 @@ test("augmentGraphWithUmlOverlays makes the generated process overview the root 
 
   const processView = augmented.views.find((view) => view.id === "view:process-overview");
   assert.ok(processView);
-  assert.ok(processView?.nodeRefs.includes("proc:pkg:sources"));
-  assert.ok(processView?.nodeRefs.includes("proc:pkg:simulate"));
-
-  const stagePackages = [
+  assert.deepEqual(processView?.nodeRefs, [
     "proc:pkg:sources",
     "proc:pkg:connectors",
     "proc:pkg:extract",
     "proc:pkg:transform",
     "proc:pkg:persist",
     "proc:pkg:simulate",
-  ];
-  for (const [index, packageId] of stagePackages.entries()) {
-    const processPackage = augmented.symbols.find((symbol) => symbol.id === packageId);
-    const expectedStageId = [
-      "sources",
-      "connectors",
-      "extract",
-      "transform",
-      "persist",
-      "simulate",
-    ][index];
-    assert.equal(processPackage?.childViewId, `view:process-stage:${expectedStageId}`);
+  ]);
+  assert.equal(processView?.edgeRefs.length, 5);
+  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("ext:")));
+  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("stub:")));
+  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:node:")));
+  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:art:")));
+  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:db:")));
+  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:note:")));
+
+  for (const packageId of processView?.nodeRefs ?? []) {
+    const symbol = augmented.symbols.find((candidate) => candidate.id === packageId);
+    assert.equal(symbol?.umlType, "package");
+    assert.ok(symbol?.childViewId);
+    const childView = augmented.views.find((view) => view.id === symbol?.childViewId);
+    assert.ok(childView);
+    assert.ok(childView?.scope === "group" || childView?.scope === "module");
   }
 
   const oldRoot = augmented.views.find((view) => view.id === "view:root");
   assert.equal(oldRoot?.parentViewId, "view:process-overview");
-  assert.equal(oldRoot?.hiddenInSidebar, true);
-
-  const stageViews = augmented.views.filter((view) => view.id.startsWith("view:process-stage:"));
-  assert.equal(stageViews.length, 6);
-  for (const stageView of stageViews) {
-    assert.equal(stageView.parentViewId, "view:process-overview");
-    assert.equal(stageView.hiddenInSidebar, false);
-    assert.ok(stageView.nodeRefs.every((nodeRef) => !nodeRef.startsWith("ext:")));
-    assert.ok(stageView.nodeRefs.every((nodeRef) => !nodeRef.startsWith("stub:")));
-  }
+  assert.equal(augmented.views.filter((view) => view.id.startsWith("view:process-stage:")).length, 0);
 });
