@@ -109,7 +109,7 @@ async function executeAiChatJson(options: ExecuteAiChatJsonOptions): Promise<Par
     `[AI] task=${taskType} provider=${aiConfig.provider} model=${resolvedModel.model} source=${resolvedModel.source}${options.logLabel ? ` ${options.logLabel}` : ""}`,
   );
   console.log(
-    `[Ollama] Request: ${url} (task=${taskType}, model=${resolvedModel.model}, prompt: ${options.userPrompt.slice(0, 120)}...)`,
+    `[Ollama] Request: ${url} (task=${taskType}, model=${resolvedModel.model}, promptChars=${options.userPrompt.length})`,
   );
 
   const ollamaStart = Date.now();
@@ -137,7 +137,7 @@ async function executeAiChatJson(options: ExecuteAiChatJsonOptions): Promise<Par
   const ollamaData = (await ollamaRes.json()) as OllamaChatResponse;
   const elapsedMs = Date.now() - ollamaStart;
   const content = (ollamaData.message?.content ?? "{}").trim();
-  console.log(`[Ollama] Response in ${elapsedMs}ms (raw): ${content.slice(0, 500)}`);
+  console.log(`[Ollama] Response in ${elapsedMs}ms (contentChars=${content.length})`);
 
   return parseAiJsonContent(content, resolvedModel);
 }
@@ -262,3 +262,4 @@ export async function callAiVisionJson(options: CallAiVisionJsonOptions): Promis
     throw error;
   }
 }
+

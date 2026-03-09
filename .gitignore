@@ -1,6 +1,7 @@
 node_modules
 dist
 .env
+apps/server/.env
 *.local
 .turbo
 demo_data
