@@ -21,6 +21,9 @@ export interface UmlNodeData {
   labelsMode?: DiagramLabelMode;
   umlType?: SymbolUmlType;
   location?: { file: string; startLine?: number; endLine?: number };
+  artifactPreviewKind?: "cluster" | "single" | "plain";
+  artifactPreviewItemCount?: number | null;
+  artifactPreviewGroupCount?: number | null;
   /** Dynamic port handles computed by ELK layout */
   dynamicPorts?: PortInfo[];
   [key: string]: unknown;
@@ -30,20 +33,20 @@ export interface UmlNodeData {
 
 /** Badge metadata: keyed by "out:<type>" or "in:<type>" */
 const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: string }> = {
-  "out:calls":       { iconCls: "bi-telephone-outbound", label: "calls",      cls: "calls" },
-  "in:calls":        { iconCls: "bi-telephone-inbound",  label: "called by",  cls: "calls-in" },
-  "out:reads":       { iconCls: "bi-book",               label: "reads",      cls: "reads" },
-  "in:reads":        { iconCls: "bi-book",               label: "read by",    cls: "reads-in" },
-  "out:writes":      { iconCls: "bi-pencil-square",      label: "writes",     cls: "writes" },
-  "in:writes":       { iconCls: "bi-pencil-square",      label: "written by", cls: "writes-in" },
-  "out:imports":     { iconCls: "bi-box-arrow-in-down",  label: "imports",    cls: "imports" },
-  "in:imports":      { iconCls: "bi-box-arrow-in-down",  label: "imported by", cls: "imports-in" },
-  "out:inherits":    { iconCls: "bi-diagram-3",          label: "inherits",   cls: "inherits" },
-  "in:inherits":     { iconCls: "bi-diagram-3",          label: "inherited by", cls: "inherits-in" },
-  "out:instantiates":{ iconCls: "bi-lightning",           label: "creates",    cls: "instantiates" },
-  "in:instantiates": { iconCls: "bi-lightning",           label: "created by", cls: "instantiates-in" },
-  "out:uses_config": { iconCls: "bi-gear",               label: "config",     cls: "uses_config" },
-  "in:uses_config":  { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
+  "out:calls":       { iconCls: "bi-telephone-outbound", label: "ruft auf",         cls: "calls" },
+  "in:calls":        { iconCls: "bi-telephone-inbound",  label: "aufgerufen von",   cls: "calls-in" },
+  "out:reads":       { iconCls: "bi-book",               label: "liest",            cls: "reads" },
+  "in:reads":        { iconCls: "bi-book",               label: "gelesen von",      cls: "reads-in" },
+  "out:writes":      { iconCls: "bi-pencil-square",      label: "schreibt",         cls: "writes" },
+  "in:writes":       { iconCls: "bi-pencil-square",      label: "geschrieben von",  cls: "writes-in" },
+  "out:imports":     { iconCls: "bi-box-arrow-in-down",  label: "importiert",       cls: "imports" },
+  "in:imports":      { iconCls: "bi-box-arrow-in-down",  label: "importiert von",   cls: "imports-in" },
+  "out:inherits":    { iconCls: "bi-diagram-3",          label: "erbt von",         cls: "inherits" },
+  "in:inherits":     { iconCls: "bi-diagram-3",          label: "vererbt an",       cls: "inherits-in" },
+  "out:instantiates":{ iconCls: "bi-lightning",          label: "erstellt",         cls: "instantiates" },
+  "in:instantiates": { iconCls: "bi-lightning",          label: "erstellt von",     cls: "instantiates-in" },
+  "out:uses_config": { iconCls: "bi-gear",               label: "konfiguriert",     cls: "uses_config" },
+  "in:uses_config":  { iconCls: "bi-gear",               label: "konfiguriert von", cls: "uses_config-in" },
 };
 
 function RelationBadges({
@@ -458,10 +461,19 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
   const compactMode = !!d.compactMode;
   const labelsMode = d.labelsMode ?? "detailed";
   const artifactMeta = resolveArtifactMeta(d.umlType, d.label);
+  const artifactPreviewKind = d.artifactPreviewKind === "cluster" || d.artifactPreviewKind === "single"
+    ? d.artifactPreviewKind
+    : null;
+  const artifactPreviewCount = typeof d.artifactPreviewItemCount === "number" ? d.artifactPreviewItemCount : null;
+  const artifactStateLabel = artifactPreviewKind === "cluster"
+    ? `Cluster${artifactPreviewCount != null ? ` · ${artifactPreviewCount}` : ""}`
+    : artifactPreviewKind === "single"
+      ? "Einzelobjekt"
+      : null;
 
   return (
     <div
-      className={`uml-node uml-artifact-node kind-external ${d.umlType ? `uml-type-${d.umlType}` : ""} ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""}`}
+      className={`uml-node uml-artifact-node kind-external ${d.umlType ? `uml-type-${d.umlType}` : ""} ${artifactPreviewKind ? `uml-artifact-node--${artifactPreviewKind}` : ""} ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -476,6 +488,15 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
           <span className="node-label">{d.label}</span>
         </div>
       </div>
+
+      {artifactStateLabel && (
+        <div className="artifact-state-row">
+          <span className={`artifact-state-badge artifact-state-badge--${artifactPreviewKind}`}>
+            <i className={`bi ${artifactPreviewKind === "cluster" ? "bi-collection" : "bi-file-earmark-text"}`} />
+            {artifactStateLabel}
+          </span>
+        </div>
+      )}
 
       <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
 

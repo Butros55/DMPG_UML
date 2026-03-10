@@ -3,10 +3,19 @@ import { useAppStore } from "../store";
 import { summarizeSymbol } from "../api";
 import { scheduleShowHover, scheduleHideHover } from "./hoverCardController";
 import { DiagramSettingsPanel } from "./DiagramSettingsPanel";
-import type { ProjectGraph, Relation, RelationType } from "@dmpg/shared";
+import type { ProjectGraph, Relation, RelationType, Symbol as GraphSymbol } from "@dmpg/shared";
 import type { NavigableRelationItem } from "../relationNavigation";
 import { buildNavigableRelationItems } from "../relationNavigation";
 import { resolveNavigableSymbolId } from "../viewNavigation";
+import {
+  buildArtifactPreview,
+  buildArtifactPreviewMetaChips,
+  translateArtifactPreviewLabel,
+  type ArtifactPreviewData,
+  type ArtifactPreviewItem,
+  PROCESS_STAGE_PACKAGE_IDS,
+} from "../artifactPreview";
+import { resolveArtifactView } from "../artifactVisibility";
 
 const RELATION_TYPES: RelationType[] = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"];
 const SYMBOL_KINDS = ["module", "class", "function", "method", "group", "package", "interface", "variable"] as const;
@@ -59,20 +68,20 @@ const KNOWN_EXTERNAL: ReadonlySet<string> = new Set([
 
 /* ── Badge metadata mapping (same IDs as UmlNode REL_BADGE_META) ── */
 const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: string }> = {
-  "out:calls":        { iconCls: "bi-telephone-outbound", label: "calls",         cls: "calls" },
-  "in:calls":         { iconCls: "bi-telephone-inbound",  label: "called by",     cls: "calls-in" },
-  "out:reads":        { iconCls: "bi-book",               label: "reads",         cls: "reads" },
-  "in:reads":         { iconCls: "bi-book",               label: "read by",       cls: "reads-in" },
-  "out:writes":       { iconCls: "bi-pencil-square",      label: "writes",        cls: "writes" },
-  "in:writes":        { iconCls: "bi-pencil-square",      label: "written by",    cls: "writes-in" },
-  "out:imports":      { iconCls: "bi-box-arrow-in-down",  label: "imports",       cls: "imports" },
-  "in:imports":       { iconCls: "bi-box-arrow-in-down",  label: "imported by",   cls: "imports-in" },
-  "out:inherits":     { iconCls: "bi-diagram-3",          label: "inherits",      cls: "inherits" },
-  "in:inherits":      { iconCls: "bi-diagram-3",          label: "inherited by",  cls: "inherits-in" },
-  "out:instantiates": { iconCls: "bi-lightning",           label: "creates",       cls: "instantiates" },
-  "in:instantiates":  { iconCls: "bi-lightning",           label: "created by",    cls: "instantiates-in" },
-  "out:uses_config":  { iconCls: "bi-gear",               label: "config",        cls: "uses_config" },
-  "in:uses_config":   { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
+  "out:calls":        { iconCls: "bi-telephone-outbound", label: "ruft auf",         cls: "calls" },
+  "in:calls":         { iconCls: "bi-telephone-inbound",  label: "aufgerufen von",   cls: "calls-in" },
+  "out:reads":        { iconCls: "bi-book",               label: "liest",            cls: "reads" },
+  "in:reads":         { iconCls: "bi-book",               label: "gelesen von",      cls: "reads-in" },
+  "out:writes":       { iconCls: "bi-pencil-square",      label: "schreibt",         cls: "writes" },
+  "in:writes":        { iconCls: "bi-pencil-square",      label: "geschrieben von",  cls: "writes-in" },
+  "out:imports":      { iconCls: "bi-box-arrow-in-down",  label: "importiert",       cls: "imports" },
+  "in:imports":       { iconCls: "bi-box-arrow-in-down",  label: "importiert von",   cls: "imports-in" },
+  "out:inherits":     { iconCls: "bi-diagram-3",          label: "erbt von",         cls: "inherits" },
+  "in:inherits":      { iconCls: "bi-diagram-3",          label: "vererbt an",       cls: "inherits-in" },
+  "out:instantiates": { iconCls: "bi-lightning",          label: "erstellt",         cls: "instantiates" },
+  "in:instantiates":  { iconCls: "bi-lightning",          label: "erstellt von",     cls: "instantiates-in" },
+  "out:uses_config":  { iconCls: "bi-gear",               label: "konfiguriert",     cls: "uses_config" },
+  "in:uses_config":   { iconCls: "bi-gear",               label: "konfiguriert von", cls: "uses_config-in" },
 };
 
 /** Small inline badge matching the node relation badges for visual correlation */
@@ -207,6 +216,7 @@ function RelationItemList({
   graph,
   showKind,
   showConfidence,
+  chipClassName,
   onSymbolClick,
   onConfirmAi,
   onRejectAi,
@@ -215,6 +225,7 @@ function RelationItemList({
   graph: ProjectGraph | null;
   showKind?: boolean;
   showConfidence?: boolean;
+  chipClassName?: string;
   onSymbolClick: (id: string) => void;
   onConfirmAi: (id: string) => void;
   onRejectAi: (id: string) => void;
@@ -271,7 +282,12 @@ function RelationItemList({
         key={item.symbolId}
         className={`rel-item ${isOwn ? "rel-own" : "rel-stdlib"} ${item.aiRelationIds.length > 0 ? "ai-generated-item" : ""}`}
       >
-        <SymbolLink symbolId={item.symbolId} label={item.symbol.label} onClick={() => onSymbolClick(item.symbolId)} />
+        <SymbolLink
+          symbolId={item.symbolId}
+          label={item.symbol.label}
+          className={chipClassName ?? "symbol-link"}
+          onClick={() => onSymbolClick(item.symbolId)}
+        />
         {showKind && item.symbol.kind && <span className="rel-kind">({item.symbol.kind})</span>}
         {item.relations.length > 1 && (
           <span className="rel-confidence">{item.relations.length}x</span>
@@ -298,45 +314,133 @@ function RelationItemList({
   );
 }
 
+function chipClassNameForBadge(badgeKey: string): string {
+  if (badgeKey.includes(":reads")) return "shc-link-chip shc-link-read";
+  if (badgeKey.includes(":writes")) return "shc-link-chip shc-link-write";
+  if (badgeKey.includes(":imports")) return "shc-link-chip shc-link-import";
+  if (badgeKey.includes(":inherits")) return "shc-link-chip shc-link-inherit";
+  if (badgeKey.includes(":instantiates")) return "shc-link-chip shc-link-create";
+  if (badgeKey.includes(":uses_config")) return "shc-link-chip shc-link-config";
+  return "shc-link-chip shc-link-call";
+}
+
+function stageIdFromPackageId(symbolId: string | null | undefined): string | null {
+  switch (symbolId) {
+    case "proc:pkg:inputs":
+      return "inputs";
+    case "proc:pkg:extract":
+      return "extract";
+    case "proc:pkg:transform":
+      return "transform";
+    case "proc:pkg:match":
+      return "match";
+    case "proc:pkg:distribution":
+      return "distribution";
+    case "proc:pkg:simulation":
+      return "simulation";
+    default:
+      return null;
+  }
+}
+
+function resolveClusterEdgeItems(
+  relation: Relation,
+  srcSym: { id: string; preview?: { lines?: string[] }; tags?: string[] } | undefined,
+  tgtSym: { id: string; preview?: { lines?: string[] }; tags?: string[] } | undefined,
+) : ArtifactPreviewItem[] {
+  const sourcePreview = srcSym ? buildArtifactPreview(srcSym) : null;
+  const targetPreview = tgtSym ? buildArtifactPreview(tgtSym) : null;
+  const clusterSym = sourcePreview?.kind === "cluster" ? srcSym : targetPreview?.kind === "cluster" ? tgtSym : undefined;
+  const preview = sourcePreview?.kind === "cluster" ? sourcePreview : targetPreview?.kind === "cluster" ? targetPreview : null;
+  if (!clusterSym || !preview) return [];
+
+  const items = preview.itemEntries;
+  if (items.length === 0) return [];
+
+  const sourceStage = stageIdFromPackageId(relation.source);
+  const targetStage = stageIdFromPackageId(relation.target);
+
+  if (relation.type === "writes" && clusterSym.id === relation.target && sourceStage) {
+    return items.filter((item) => item.producerStages.length === 0 || item.producerStages.includes(sourceStage));
+  }
+
+  if (relation.type === "reads" && clusterSym.id === relation.source && targetStage) {
+    return items.filter((item) => item.consumerStages.includes(targetStage));
+  }
+
+  if (relation.type === "writes" && clusterSym.id === relation.source && targetStage) {
+    return items.filter((item) => item.consumerStages.includes(targetStage));
+  }
+
+  if (relation.type === "reads" && clusterSym.id === relation.target && sourceStage) {
+    return items.filter((item) => item.producerStages.includes(sourceStage));
+  }
+
+  return items;
+}
+
 /* ─── Edge Inspector Panel ─── */
 function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void }) {
   const graph = useAppStore((s) => s.graph);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const updateRelation = useAppStore((s) => s.updateRelation);
   const removeRelation = useAppStore((s) => s.removeRelation);
+  const diagramSettings = useAppStore((s) => s.diagramSettings);
   const selectEdge = useAppStore((s) => s.selectEdge);
   const focusSymbolInContext = useAppStore((s) => s.focusSymbolInContext);
 
   // Try direct relation lookup first
   const rel = graph?.relations.find((r) => r.id === selectedEdgeId);
 
-  // If not found, parse as projected edge key: "source|target|type"
+  // If not found, parse as projected edge key: "source|target" / "source|target|type" / "source|target|type|relationId"
   const projectedParts = !rel && selectedEdgeId ? selectedEdgeId.split("|") : null;
-  const isProjected = projectedParts && projectedParts.length === 3;
-  const projSrc = isProjected ? projectedParts[0] : null;
-  const projTgt = isProjected ? projectedParts[1] : null;
-  const projType = isProjected ? projectedParts[2] : null;
+  const validProjectedParts = projectedParts && projectedParts.length >= 2 && projectedParts.length <= 4
+    ? projectedParts
+    : null;
+  const isProjected = Boolean(validProjectedParts);
+  const projSrc = validProjectedParts?.[0] ?? null;
+  const projTgt = validProjectedParts?.[1] ?? null;
+  const projType = validProjectedParts && validProjectedParts.length >= 3 ? validProjectedParts[2] : null;
+  const projRelationId = validProjectedParts && validProjectedParts.length === 4 ? validProjectedParts[3] : null;
 
   // For projected edges, find the underlying relations
   const projectedRelations = isProjected
-    ? (graph?.relations.filter((r) => r.type === projType) ?? []).filter((r) => {
+    ? (graph?.relations ?? []).filter((r) => {
         // Check if source/target ancestors include the projected endpoints
         const srcChain = getAncestorChain(r.source, graph?.symbols ?? []);
         const tgtChain = getAncestorChain(r.target, graph?.symbols ?? []);
-        return srcChain.includes(projSrc!) && tgtChain.includes(projTgt!);
+        return (
+          srcChain.includes(projSrc!) &&
+          tgtChain.includes(projTgt!) &&
+          (!projType || r.type === projType) &&
+          (!projRelationId || r.id === projRelationId)
+        );
       })
     : [];
+  const representativeRelation = rel ?? projectedRelations[0];
 
-  const srcSym = graph?.symbols.find((s) => s.id === (rel?.source ?? projSrc));
-  const tgtSym = graph?.symbols.find((s) => s.id === (rel?.target ?? projTgt));
+  const srcSym = graph?.symbols.find((s) => s.id === (representativeRelation?.source ?? projSrc));
+  const tgtSym = graph?.symbols.find((s) => s.id === (representativeRelation?.target ?? projTgt));
+  const clusterEdgeItems = representativeRelation ? resolveClusterEdgeItems(representativeRelation, srcSym, tgtSym) : [];
+  const projectedTypeSummary = useMemo(() => {
+    if (projectedRelations.length === 0) return projType ?? "";
+    const typeCounts = new Map<RelationType, number>();
+    for (const relation of projectedRelations) {
+      typeCounts.set(relation.type, (typeCounts.get(relation.type) ?? 0) + 1);
+    }
+    return [...typeCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([type, count]) => (count > 1 ? `${count}x ${type}` : type))
+      .join(", ");
+  }, [projType, projectedRelations]);
 
-  const [label, setLabel] = useState(rel?.label ?? projType ?? "");
-  const [relType, setRelType] = useState<RelationType>((rel?.type ?? projType ?? "calls") as RelationType);
+  const [label, setLabel] = useState(representativeRelation?.label ?? projType ?? "");
+  const [relType, setRelType] = useState<RelationType>((representativeRelation?.type ?? projType ?? "calls") as RelationType);
 
   useEffect(() => {
-    setLabel(rel?.label ?? projType ?? "");
-    setRelType((rel?.type ?? projType ?? "calls") as RelationType);
-  }, [rel, projType]);
+    setLabel(representativeRelation?.label ?? projType ?? "");
+    setRelType((representativeRelation?.type ?? projType ?? "calls") as RelationType);
+  }, [representativeRelation, projType]);
 
   if (!rel && !isProjected) return null;
 
@@ -370,25 +474,30 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
 
       <div className="inspector-card">
         <h3 style={{ fontSize: 13 }}>
-          <SymbolLink symbolId={srcSym?.id ?? ""} label={srcSym?.label ?? rel?.source ?? projSrc ?? ""} onClick={() => srcSym && handleSymbolClick(srcSym.id)} />
+          <SymbolLink symbolId={srcSym?.id ?? ""} label={srcSym?.label ?? representativeRelation?.source ?? projSrc ?? ""} onClick={() => srcSym && handleSymbolClick(srcSym.id)} />
           {" → "}
-          <SymbolLink symbolId={tgtSym?.id ?? ""} label={tgtSym?.label ?? rel?.target ?? projTgt ?? ""} onClick={() => tgtSym && handleSymbolClick(tgtSym.id)} />
+          <SymbolLink symbolId={tgtSym?.id ?? ""} label={tgtSym?.label ?? representativeRelation?.target ?? projTgt ?? ""} onClick={() => tgtSym && handleSymbolClick(tgtSym.id)} />
         </h3>
         <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>
-          Type: <strong style={{ color: "var(--accent)" }}>{rel?.type ?? projType}</strong>
+          Typ: <strong style={{ color: "var(--accent)" }}>{rel?.type ?? projectedTypeSummary}</strong>
           {isProjected && projectedRelations.length > 1 && (
             <span> ({projectedRelations.length} aggregated)</span>
           )}
-          {rel?.confidence != null && rel.confidence < 1 && (
-            <span> · Confidence: {Math.round(rel.confidence * 100)}%</span>
+          {representativeRelation?.confidence != null && representativeRelation.confidence < 1 && (
+            <span> · Confidence: {Math.round(representativeRelation.confidence * 100)}%</span>
           )}
         </div>
+        {representativeRelation?.label && (
+          <div style={{ fontSize: 12, marginTop: 8, color: "var(--text)" }}>
+            {representativeRelation.label}
+          </div>
+        )}
       </div>
 
       {/* Show underlying relations for projected edges */}
       {isProjected && projectedRelations.length > 0 && (
         <div className="inspector-card">
-          <div className="field-label">Underlying Relations</div>
+          <div className="field-label">Enthaltene Relationen</div>
           <ul>
             {projectedRelations.slice(0, 20).map((r) => {
               const s = graph?.symbols.find((sym) => sym.id === r.source);
@@ -405,6 +514,22 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
               );
             })}
           </ul>
+        </div>
+      )}
+
+      {clusterEdgeItems.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label">Cluster-Elemente auf dieser Kante</div>
+          <div className="inspector-cluster-member-list">
+            {clusterEdgeItems.map((item) => (
+              <div key={`${item.label}-${item.paths[0] ?? "none"}`} className="inspector-cluster-member">
+                <div className="inspector-cluster-member__title">{item.label}</div>
+                {item.paths.length > 0 && (
+                  <div className="inspector-cluster-member__meta">{item.paths.join(", ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -443,7 +568,7 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
 
           <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
             <button className="btn btn-sm btn-danger" onClick={() => { removeRelation(rel.id); selectEdge(null); }}>
-              <i className="bi bi-trash" /> Delete Edge
+              <i className="bi bi-trash" /> Kante löschen
             </button>
           </div>
         </>
@@ -465,19 +590,270 @@ function getAncestorChain(symId: string, symbols: { id: string; parentId?: strin
   return chain;
 }
 
-/* ─── Hoverable Symbol Link — shows HoverCard on hover, navigates on click ─── */
-function SymbolLink({ symbolId, label, onClick }: { symbolId: string; label: string; onClick: () => void }) {
+interface ArtifactLinkRef {
+  key: string;
+  label: string;
+  symbolId: string | null;
+  kind: string | null;
+}
+
+function normalizeSymbolReference(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._:/\\()[\]-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function findSymbolByReference(graph: ProjectGraph | null, reference: string): ArtifactLinkRef | null {
+  if (!graph || !reference.trim()) return null;
+
+  const exact = graph.symbols.find((symbol) => symbol.id === reference || symbol.label === reference);
+  if (exact) {
+    return {
+      key: `exact:${exact.id}`,
+      label: exact.label,
+      symbolId: exact.id,
+      kind: exact.kind,
+    };
+  }
+
+  const normalizedReference = normalizeSymbolReference(reference);
+  if (!normalizedReference) return null;
+
+  const exactNormalized = graph.symbols.find(
+    (symbol) => normalizeSymbolReference(symbol.label) === normalizedReference,
+  );
+  if (exactNormalized) {
+    return {
+      key: `norm:${exactNormalized.id}`,
+      label: exactNormalized.label,
+      symbolId: exactNormalized.id,
+      kind: exactNormalized.kind,
+    };
+  }
+
+  const lastSegment = graph.symbols.find((symbol) => {
+    const tail = symbol.label.split(".").pop() ?? symbol.label;
+    return normalizeSymbolReference(tail) === normalizedReference;
+  });
+  if (lastSegment) {
+    return {
+      key: `tail:${lastSegment.id}`,
+      label: lastSegment.label,
+      symbolId: lastSegment.id,
+      kind: lastSegment.kind,
+    };
+  }
+
+  return null;
+}
+
+function toArtifactLinkRefs(items: NavigableRelationItem[]): ArtifactLinkRef[] {
+  return items.map((item) => ({
+    key: `nav:${item.symbolId}`,
+    label: item.symbol.label,
+    symbolId: item.symbolId,
+    kind: item.symbol.kind,
+  }));
+}
+
+function mergeArtifactLinkRefs(...groups: ArtifactLinkRef[][]): ArtifactLinkRef[] {
+  const merged = new Map<string, ArtifactLinkRef>();
+  for (const group of groups) {
+    for (const item of group) {
+      const key = item.symbolId ?? `label:${item.label}`;
+      if (!merged.has(key)) {
+        merged.set(key, item);
+      }
+    }
+  }
+  return [...merged.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function stageLinkRefs(graph: ProjectGraph | null, stageIds: string[], keyPrefix: string): ArtifactLinkRef[] {
+  if (!graph) return [];
+  const refs: ArtifactLinkRef[] = [];
+  for (const stageId of stageIds) {
+    const packageId = PROCESS_STAGE_PACKAGE_IDS[stageId];
+    if (!packageId) continue;
+    const symbol = graph.symbols.find((entry) => entry.id === packageId);
+    if (!symbol) continue;
+    refs.push({
+      key: `${keyPrefix}:${packageId}`,
+      label: symbol.label,
+      symbolId: symbol.id,
+      kind: symbol.kind,
+    });
+  }
+  return refs;
+}
+
+function symbolIdLinkRefs(graph: ProjectGraph | null, ids: string[], keyPrefix: string): ArtifactLinkRef[] {
+  if (!graph) return [];
+  const refs: ArtifactLinkRef[] = [];
+  for (const id of ids) {
+    const symbol = graph.symbols.find((entry) => entry.id === id);
+    if (!symbol) continue;
+    refs.push({
+      key: `${keyPrefix}:${id}`,
+      label: symbol.label,
+      symbolId: symbol.id,
+      kind: symbol.kind,
+    });
+  }
+  return refs;
+}
+
+function symbolLabelLinkRefs(graph: ProjectGraph | null, labels: string[], keyPrefix: string): ArtifactLinkRef[] {
+  return labels.map((label, index) => {
+    const resolved = findSymbolByReference(graph, label);
+    if (resolved) {
+      return {
+        key: `${keyPrefix}:${resolved.symbolId ?? index}`,
+        label: resolved.label,
+        symbolId: resolved.symbolId,
+        kind: resolved.kind,
+      };
+    }
+    return {
+      key: `${keyPrefix}:raw:${index}:${label}`,
+      label,
+      symbolId: null,
+      kind: null,
+    };
+  });
+}
+
+function resolveArtifactSymbolIds(graph: ProjectGraph | null, item: ArtifactPreviewItem): string[] {
+  if (!graph) return [];
+
+  const directIds = item.artifactIds.filter((artifactId) =>
+    graph.symbols.some((symbol) => symbol.id === artifactId),
+  );
+  if (directIds.length > 0) {
+    return [...new Set(directIds)];
+  }
+
+  const exactLabelMatches = graph.symbols
+    .filter((symbol) => symbol.id.startsWith("proc:artifact:") && symbol.label === item.label)
+    .map((symbol) => symbol.id);
+  if (exactLabelMatches.length > 0) {
+    return [...new Set(exactLabelMatches)];
+  }
+
+  const pathMatches = graph.symbols
+    .filter((symbol) =>
+      symbol.id.startsWith("proc:artifact:") &&
+      symbol.preview?.lines?.some((line) => item.paths.some((path) => line.includes(path))),
+    )
+    .map((symbol) => symbol.id);
+  if (pathMatches.length > 0) {
+    return [...new Set(pathMatches)];
+  }
+
+  const normalizedLabel = normalizeSymbolReference(item.label);
+  return [
+    ...new Set(
+      graph.symbols
+        .filter((symbol) =>
+          symbol.id.startsWith("proc:artifact:") &&
+          normalizeSymbolReference(symbol.label) === normalizedLabel,
+        )
+        .map((symbol) => symbol.id),
+    ),
+  ];
+}
+
+function buildArtifactItemRelations(
+  graph: ProjectGraph | null,
+  item: ArtifactPreviewItem,
+): {
+  reads: ArtifactLinkRef[];
+  readBy: ArtifactLinkRef[];
+  writes: ArtifactLinkRef[];
+  writtenBy: ArtifactLinkRef[];
+} {
+  if (!graph) {
+    return { reads: [], readBy: [], writes: [], writtenBy: [] };
+  }
+
+  const artifactIds = resolveArtifactSymbolIds(graph, item);
+  const relations = graph.relations.filter((relation) =>
+    artifactIds.includes(relation.source) || artifactIds.includes(relation.target),
+  );
+
+  const actualReads = toArtifactLinkRefs(
+    buildNavigableRelationItems(
+      graph,
+      relations.filter((relation) => artifactIds.includes(relation.source) && relation.type === "reads"),
+      "out",
+    ),
+  );
+  const actualReadBy = toArtifactLinkRefs(
+    buildNavigableRelationItems(
+      graph,
+      relations.filter((relation) => artifactIds.includes(relation.target) && relation.type === "reads"),
+      "in",
+    ),
+  );
+  const actualWrites = toArtifactLinkRefs(
+    buildNavigableRelationItems(
+      graph,
+      relations.filter((relation) => artifactIds.includes(relation.source) && relation.type === "writes"),
+      "out",
+    ),
+  );
+  const actualWrittenBy = toArtifactLinkRefs(
+    buildNavigableRelationItems(
+      graph,
+      relations.filter((relation) => artifactIds.includes(relation.target) && relation.type === "writes"),
+      "in",
+    ),
+  );
+
+  const previewReadBy = mergeArtifactLinkRefs(
+    symbolIdLinkRefs(graph, item.consumerIds, "consumer-id"),
+    symbolLabelLinkRefs(graph, item.consumers, "consumer-label"),
+    stageLinkRefs(graph, item.consumerStages, "consumer-stage"),
+  );
+  const previewWrittenBy = mergeArtifactLinkRefs(
+    symbolIdLinkRefs(graph, item.producerIds, "producer-id"),
+    symbolLabelLinkRefs(graph, item.producers, "producer-label"),
+    stageLinkRefs(graph, item.producerStages, "producer-stage"),
+  );
+
+  return {
+    reads: actualReads,
+    readBy: mergeArtifactLinkRefs(actualReadBy, previewReadBy),
+    writes: actualWrites,
+    writtenBy: mergeArtifactLinkRefs(actualWrittenBy, previewWrittenBy),
+  };
+}
+
+function InspectorHoverSymbolLink({
+  symbolId,
+  label,
+  onClick,
+  className = "symbol-link",
+}: {
+  symbolId: string;
+  label: string;
+  onClick: () => void;
+  className?: string;
+}) {
   const handleMouseEnter = useCallback(
     (e: React.MouseEvent<HTMLSpanElement>) => {
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      scheduleShowHover(symbolId, rect);
+      scheduleShowHover(symbolId, rect, { source: "inspector" });
     },
     [symbolId],
   );
 
   return (
     <span
-      className="symbol-link"
+      className={className}
       onClick={onClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={() => scheduleHideHover()}
@@ -485,6 +861,282 @@ function SymbolLink({ symbolId, label, onClick }: { symbolId: string; label: str
       {label}
     </span>
   );
+}
+
+function ArtifactRelationSection({
+  title,
+  badgeKey,
+  items,
+  onSymbolClick,
+}: {
+  title: string;
+  badgeKey: string;
+  items: ArtifactLinkRef[];
+  onSymbolClick: (symbolId: string) => void;
+}) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="artifact-preview-relation-section">
+      <div className="artifact-preview-relation-header">
+        <div className="shc-preview-subsection-label">{title} ({items.length})</div>
+        <RelBadgeTag badgeKey={badgeKey} />
+      </div>
+      <ul className="artifact-preview-relation-list">
+        {items.map((item) => (
+          <li
+            key={item.key}
+            className={`rel-item ${item.symbolId ? "rel-own" : "artifact-preview-relation-item--static"}`}
+          >
+            {item.symbolId ? (
+              <>
+                <InspectorHoverSymbolLink
+                  symbolId={item.symbolId}
+                  label={item.label}
+                  onClick={() => onSymbolClick(item.symbolId!)}
+                />
+                {item.kind && <span className="artifact-preview-kind">{item.kind}</span>}
+              </>
+            ) : (
+              <>
+                <span className="artifact-preview-static-label">{item.label}</span>
+                {item.kind && <span className="artifact-preview-kind">{item.kind}</span>}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ArtifactPreviewItemCard({
+  item,
+  itemKeyPrefix,
+  graph,
+  onSymbolClick,
+}: {
+  item: ArtifactPreviewItem;
+  itemKeyPrefix: string;
+  graph: ProjectGraph | null;
+  onSymbolClick: (symbolId: string) => void;
+}) {
+  const relationLinks = useMemo(() => buildArtifactItemRelations(graph, item), [graph, item]);
+
+  return (
+    <div className="shc-preview-item">
+      <div className="shc-preview-item-header">
+        <div className="shc-preview-item-title">{item.label}</div>
+        <div className="shc-preview-metrics">
+          {item.writeCount != null && (
+            <span className="shc-preview-metric shc-preview-metric--write">W {item.writeCount}</span>
+          )}
+          {item.readCount != null && (
+            <span className="shc-preview-metric shc-preview-metric--read">R {item.readCount}</span>
+          )}
+        </div>
+      </div>
+
+      {item.paths.length > 0 && (
+        <div className="shc-preview-subsection">
+          <div className="shc-preview-subsection-label">Pfade</div>
+          <div className="shc-preview-chip-row">
+            {item.paths.map((path, index) => (
+              <span key={`${itemKeyPrefix}-path-${index}`} className="shc-preview-chip shc-preview-chip--path">
+                {path}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <ArtifactRelationSection
+        title="Liest"
+        badgeKey="out:reads"
+        items={relationLinks.reads}
+        onSymbolClick={onSymbolClick}
+      />
+
+      <ArtifactRelationSection
+        title="Gelesen von"
+        badgeKey="in:reads"
+        items={relationLinks.readBy}
+        onSymbolClick={onSymbolClick}
+      />
+
+      <ArtifactRelationSection
+        title="Schreibt"
+        badgeKey="out:writes"
+        items={relationLinks.writes}
+        onSymbolClick={onSymbolClick}
+      />
+
+      <ArtifactRelationSection
+        title="Geschrieben von"
+        badgeKey="in:writes"
+        items={relationLinks.writtenBy}
+        onSymbolClick={onSymbolClick}
+      />
+    </div>
+  );
+}
+
+function ArtifactPreviewInspectorSection({
+  preview,
+  symbolId,
+  graph,
+  showState,
+  onSymbolClick,
+}: {
+  preview: ArtifactPreviewData;
+  symbolId: string;
+  graph: ProjectGraph | null;
+  showState: boolean;
+  onSymbolClick: (symbolId: string) => void;
+}) {
+  const metaChips = buildArtifactPreviewMetaChips(preview);
+  const primaryItem = preview.itemEntries[0] ?? null;
+  const title = "Artefaktdetails";
+  const stateLabel = !showState
+    ? null
+    : preview.kind === "cluster"
+    ? `Cluster${preview.itemCount != null ? ` · ${preview.itemCount}` : ""}`
+    : preview.kind === "single"
+      ? "Einzelobjekt"
+      : "Detailinfo";
+
+  return (
+    <div className="inspector-card">
+      <div className="field-label">
+        <i className={`bi ${preview.kind === "cluster" ? "bi-collection" : "bi-file-earmark-text"}`} /> {title}
+      </div>
+
+      <div className="shc-preview-summary-block">
+        {stateLabel && (
+          <div className={`artifact-state-pill artifact-state-pill--${preview.kind === "cluster" ? "cluster" : "single"}`}>
+            <i className={`bi ${preview.kind === "cluster" ? "bi-collection" : "bi-file-earmark-text"}`} />
+            {stateLabel}
+          </div>
+        )}
+
+        {preview.kind === "cluster" ? (
+          <>
+            <div className="shc-preview-count">
+              <i className="bi bi-collection" />
+              {preview.itemCount ?? preview.itemEntries.length} Artefakte
+              {preview.groupCount != null && preview.itemCount != null && preview.groupCount !== preview.itemCount && (
+                <span className="shc-dim"> in {preview.groupCount} Gruppen</span>
+              )}
+            </div>
+            {preview.summaryItems.length > 0 && (
+              <div className="shc-preview-summary">
+                <span className="shc-preview-summary-label">Beispiele:</span>
+                <span className="shc-preview-summary-text">{preview.summaryItems.join(" · ")}</span>
+                {(preview.itemCount ?? 0) > preview.summaryItems.length && (
+                  <span className="shc-dim"> +{(preview.itemCount ?? 0) - preview.summaryItems.length} weitere</span>
+                )}
+              </div>
+            )}
+          </>
+        ) : primaryItem ? (
+          <div className="shc-preview-count">
+            <i className="bi bi-file-earmark-text" />
+            {primaryItem.label}
+          </div>
+        ) : null}
+      </div>
+
+      {metaChips.length > 0 && (
+        <div className="shc-preview-meta-list">
+          {metaChips.map((chip, index) => (
+            <span key={`${symbolId}-artifact-chip-${index}`} className="shc-preview-meta-chip">
+              {chip}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {preview.detailRows.length > 0 && (
+        <div className="shc-preview-detail-list">
+          {preview.detailRows.map((row, index) => (
+            <div key={`${symbolId}-artifact-detail-${index}`} className="shc-preview-detail-row">
+              <div className="shc-preview-detail-label">{translateArtifactPreviewLabel(row.label)}</div>
+              <div className="shc-preview-detail-value">
+                <div className="shc-preview-chip-row">
+                  {(row.values.length > 1 ? row.values : [row.value]).map((value, valueIndex) => {
+                    const resolved = findSymbolByReference(graph, value);
+                    return resolved?.symbolId ? (
+                      <InspectorHoverSymbolLink
+                        key={`${symbolId}-artifact-detail-value-${index}-${valueIndex}`}
+                        symbolId={resolved.symbolId}
+                        label={resolved.label}
+                        className="shc-preview-chip shc-preview-chip--link"
+                        onClick={() => onSymbolClick(resolved.symbolId!)}
+                      />
+                    ) : (
+                      <span key={`${symbolId}-artifact-detail-value-${index}-${valueIndex}`} className="shc-preview-chip">
+                        {value}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {preview.kind === "cluster" && preview.itemEntries.length > 0 && (
+        <div className="shc-preview-box inspector-artifact-list">
+          {preview.itemEntries.map((item, index) => (
+            <ArtifactPreviewItemCard
+              key={`${symbolId}-artifact-item-${item.label}-${index}`}
+              item={item}
+              itemKeyPrefix={`${symbolId}-artifact-item-${index}`}
+              graph={graph}
+              onSymbolClick={onSymbolClick}
+            />
+          ))}
+        </div>
+      )}
+
+      {preview.kind === "single" && primaryItem && (
+        <div className="inspector-artifact-single">
+          <ArtifactPreviewItemCard
+            item={primaryItem}
+            itemKeyPrefix={`${symbolId}-artifact-single`}
+            graph={graph}
+            onSymbolClick={onSymbolClick}
+          />
+        </div>
+      )}
+
+      {preview.rawLines.length > 0 && (
+        <div className="shc-preview-box inspector-artifact-raw">
+          {preview.rawLines.map((line, index) => (
+            <div key={`${symbolId}-artifact-raw-${index}`} className="shc-preview-line">
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Hoverable Symbol Link — shows HoverCard on hover, navigates on click ─── */
+function SymbolLink({
+  symbolId,
+  label,
+  onClick,
+  className,
+}: {
+  symbolId: string;
+  label: string;
+  onClick: () => void;
+  className?: string;
+}) {
+  return <InspectorHoverSymbolLink symbolId={symbolId} label={label} onClick={onClick} className={className} />;
 }
 
 /* ─── AI Inspector Animation Hook ─── */
@@ -535,6 +1187,7 @@ export function Inspector() {
   const confirmAiRelation = useAppStore((s) => s.confirmAiRelation);
   const openSourceViewer = useAppStore((s) => s.openSourceViewer);
   const removeRelation = useAppStore((s) => s.removeRelation);
+  const diagramSettings = useAppStore((s) => s.diagramSettings);
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -565,7 +1218,21 @@ export function Inspector() {
   const [connLabel, setConnLabel] = useState("calls");
   const [showDiagramSettings, setShowDiagramSettings] = useState(false);
 
-  const sym = graph?.symbols.find((s) => s.id === selectedSymbolId);
+  const currentView = currentViewId && graph ? graph.views.find((view) => view.id === currentViewId) ?? null : null;
+  const resolvedArtifactView = useMemo(
+    () =>
+      graph && currentView
+        ? resolveArtifactView(graph, currentView, {
+            input: diagramSettings.inputArtifactMode,
+            generated: diagramSettings.generatedArtifactMode,
+          })
+        : null,
+    [currentView, diagramSettings.generatedArtifactMode, diagramSettings.inputArtifactMode, graph],
+  );
+  const symbolOverrides = resolvedArtifactView?.symbolOverrides ?? new Map<string, GraphSymbol>();
+  const sym = selectedSymbolId
+    ? symbolOverrides.get(selectedSymbolId) ?? graph?.symbols.find((s) => s.id === selectedSymbolId)
+    : undefined;
   const inspectorAnimClass = useAiInspectorAnimation(sym);
 
   // Reset edit form when symbol changes
@@ -839,7 +1506,9 @@ export function Inspector() {
 
   const doc = sym?.doc;
   const relations = sym
-    ? graph?.relations.filter((r) => r.source === sym.id || r.target === sym.id) ?? []
+    ? resolvedArtifactView?.relations.filter((r) => r.source === sym.id || r.target === sym.id) ??
+      graph?.relations.filter((r) => r.source === sym.id || r.target === sym.id) ??
+      []
     : [];
 
   // Enriched info — compute from graph relations
@@ -857,8 +1526,12 @@ export function Inspector() {
   const instantiatedByR = sym ? relations.filter((r) => r.target === sym.id && r.type === "instantiates") : [];
   const usesConfigR = sym ? relations.filter((r) => r.source === sym.id && r.type === "uses_config") : [];
   const configUsedByR = sym ? relations.filter((r) => r.target === sym.id && r.type === "uses_config") : [];
-  const parentSym = sym?.parentId ? graph?.symbols.find((s) => s.id === sym.parentId) : null;
-  const children = sym ? graph?.symbols.filter((s) => s.parentId === sym.id) ?? [] : [];
+  const parentSym = sym?.parentId
+    ? symbolOverrides.get(sym.parentId) ?? graph?.symbols.find((s) => s.id === sym.parentId) ?? null
+    : null;
+  const children = sym
+    ? graph?.symbols.filter((s) => s.parentId === sym.id) ?? []
+    : [];
   const lineCount = sym?.location?.startLine != null && sym.location?.endLine != null
     ? sym.location.endLine - sym.location.startLine + 1
     : null;
@@ -876,6 +1549,18 @@ export function Inspector() {
   const instantiatedByItems = buildNavigableRelationItems(graph, instantiatedByR, "in");
   const usesConfigItems = buildNavigableRelationItems(graph, usesConfigR, "out");
   const configUsedByItems = buildNavigableRelationItems(graph, configUsedByR, "in");
+  const artifactPreview = sym ? buildArtifactPreview(sym) : null;
+  const artifactStateKind = artifactPreview?.kind === "cluster" || artifactPreview?.kind === "single"
+    ? artifactPreview.kind
+    : null;
+  const showArtifactState = diagramSettings.generatedArtifactMode !== "individual";
+  const artifactStateLabel = !showArtifactState
+    ? null
+    : artifactStateKind === "cluster"
+    ? `Cluster${artifactPreview?.itemCount != null ? ` · ${artifactPreview.itemCount}` : ""}`
+    : artifactStateKind === "single"
+      ? "Einzelobjekt"
+      : null;
 
   // Build signature
   const sigParams = doc?.inputs?.map((p) => `${p.name}${p.type ? `: ${p.type}` : ""}`).join(", ") ?? "";
@@ -950,6 +1635,12 @@ export function Inspector() {
                 {sym.kind}
               </span>
               {sym.label}
+              {artifactStateLabel && (
+                <span className={`artifact-state-pill artifact-state-pill--${artifactStateKind} inspector-artifact-pill`}>
+                  <i className={`bi ${artifactStateKind === "cluster" ? "bi-collection" : "bi-file-earmark-text"}`} />
+                  {artifactStateLabel}
+                </span>
+              )}
               {editMode && (
                 <button
                   className="btn-icon"
@@ -1080,6 +1771,16 @@ export function Inspector() {
           </div>
           <div className="summary">{doc.summary}</div>
         </div>
+      )}
+
+      {artifactPreview && (
+        <ArtifactPreviewInspectorSection
+          preview={artifactPreview}
+          symbolId={sym.id}
+          graph={graph}
+          showState={showArtifactState}
+          onSymbolClick={handleSymbolLinkClick}
+        />
       )}
 
       {/* ─── Signature (for functions/methods) ─── */}
@@ -1311,6 +2012,7 @@ export function Inspector() {
             graph={graph}
             showKind
             showConfidence
+            chipClassName={chipClassNameForBadge("out:calls")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1325,6 +2027,7 @@ export function Inspector() {
             items={incomingCallItems}
             graph={graph}
             showKind
+            chipClassName={chipClassNameForBadge("in:calls")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1338,6 +2041,7 @@ export function Inspector() {
           <RelationItemList
             items={readItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("out:reads")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1351,6 +2055,7 @@ export function Inspector() {
           <RelationItemList
             items={readByItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("in:reads")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1364,6 +2069,7 @@ export function Inspector() {
           <RelationItemList
             items={writeItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("out:writes")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1377,6 +2083,7 @@ export function Inspector() {
           <RelationItemList
             items={writtenByItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("in:writes")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1390,6 +2097,7 @@ export function Inspector() {
           <RelationItemList
             items={importItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("out:imports")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1403,6 +2111,7 @@ export function Inspector() {
           <RelationItemList
             items={importedByItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("in:imports")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1416,6 +2125,7 @@ export function Inspector() {
           <RelationItemList
             items={inheritItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("out:inherits")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1429,6 +2139,7 @@ export function Inspector() {
           <RelationItemList
             items={inheritedByItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("in:inherits")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1442,6 +2153,7 @@ export function Inspector() {
           <RelationItemList
             items={instantiateItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("out:instantiates")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1455,6 +2167,7 @@ export function Inspector() {
           <RelationItemList
             items={instantiatedByItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("in:instantiates")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1468,6 +2181,7 @@ export function Inspector() {
           <RelationItemList
             items={usesConfigItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("out:uses_config")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}
@@ -1481,6 +2195,7 @@ export function Inspector() {
           <RelationItemList
             items={configUsedByItems}
             graph={graph}
+            chipClassName={chipClassNameForBadge("in:uses_config")}
             onSymbolClick={handleSymbolLinkClick}
             onConfirmAi={confirmAiRelation}
             onRejectAi={(id) => removeRelation(id)}

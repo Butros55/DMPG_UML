@@ -3,6 +3,7 @@ import {
   ReactFlow,
   Background,
   Controls,
+  ControlButton,
   MiniMap,
   useNodesState,
   useEdgesState,
@@ -31,8 +32,11 @@ import {
   EDGE_ANIMATED_BY_RELATION,
   EDGE_CLASS_BY_RELATION,
   RELATION_VERBS,
+  type DiagramArtifactMode,
   type DiagramLabelMode,
 } from "../diagramSettings";
+import { resolveArtifactView } from "../artifactVisibility";
+import { buildArtifactPreview } from "../artifactPreview";
 
 const nodeTypes = {
   uml: UmlNode,
@@ -43,6 +47,35 @@ const nodeTypes = {
 };
 
 const proOptions = { hideAttribution: true };
+
+const INPUT_ARTIFACT_MODE_ORDER: DiagramArtifactMode[] = ["hidden", "grouped"];
+const ARTIFACT_MODE_ORDER: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
+const OUTPUT_ARTIFACT_MODE_TEXT: Record<DiagramArtifactMode, string> = {
+  hidden: "Aus",
+  grouped: "Gruppiert",
+  individual: "Einzeln",
+};
+const INPUT_ARTIFACT_MODE_TEXT: Record<DiagramArtifactMode, string> = {
+  hidden: "Aus",
+  grouped: "An",
+  individual: "An",
+};
+
+function nextArtifactMode(
+  currentMode: DiagramArtifactMode,
+  order: readonly DiagramArtifactMode[],
+): DiagramArtifactMode {
+  const currentIndex = order.indexOf(currentMode);
+  return order[(currentIndex + 1) % order.length] ?? order[0] ?? "grouped";
+}
+
+function artifactControlLabel(
+  prefix: string,
+  mode: DiagramArtifactMode,
+  labels: Record<DiagramArtifactMode, string>,
+): string {
+  return `${prefix}: ${labels[mode]}`;
+}
 
 function positionFromHandle(handle: string): Position {
   const normalized = handle.toLowerCase();
@@ -241,17 +274,6 @@ function neighborhoodNodeIds(rootId: string, edges: PreparedProjectedEdge[], dep
   return seen;
 }
 
-function isArtifactLikeSymbol(symbol: Pick<Sym, "kind" | "umlType">): boolean {
-  return (
-    symbol.kind === "external" ||
-    symbol.umlType === "artifact" ||
-    symbol.umlType === "database" ||
-    symbol.umlType === "component" ||
-    symbol.umlType === "note" ||
-    symbol.umlType === "external"
-  );
-}
-
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
@@ -275,6 +297,7 @@ export function Canvas() {
   const saveNodePositions = useAppStore((s) => s.saveNodePositions);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
   const layoutVersion = useAppStore((s) => s.diagramLayoutVersion);
+  const updateDiagramSettings = useAppStore((s) => s.updateDiagramSettings);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -290,13 +313,20 @@ export function Canvas() {
     !!currentViewId &&
     viewRestoreViewId === currentViewId &&
     viewRestoreSeq > appliedViewRestoreSeqRef.current;
-  const persistCurrentViewport = useCallback(() => {
+  const persistCurrentViewport = useCallback((expectedViewId?: string | null) => {
     if (!currentViewId) return;
+    if (expectedViewId && expectedViewId !== currentViewId) return;
     const viewport = reactFlowInstance.getViewport();
     saveCurrentViewSnapshot({
       viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
     });
   }, [currentViewId, reactFlowInstance, saveCurrentViewSnapshot]);
+  const scheduleViewportPersist = useCallback((delayMs: number, expectedViewId: string | null = currentViewId) => {
+    if (!expectedViewId) return;
+    setTimeout(() => {
+      persistCurrentViewport(expectedViewId);
+    }, delayMs);
+  }, [currentViewId, persistCurrentViewport]);
 
   // Dynamic port handle mapping from ELK layout (persists across layout passes)
   const edgeHandlesRef = useRef<Map<string, { sourceHandle: string; targetHandle: string }>>(new Map());
@@ -324,6 +354,16 @@ export function Canvas() {
   const [connectDialog, setConnectDialog] = useState<{ source: string; target: string } | null>(null);
   const [connectType, setConnectType] = useState<string>("calls");
   const CONNECT_TYPES = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"] as const;
+  const cycleInputArtifactMode = useCallback(() => {
+    updateDiagramSettings({
+      inputArtifactMode: nextArtifactMode(diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_ORDER),
+    });
+  }, [diagramSettings.inputArtifactMode, updateDiagramSettings]);
+  const cycleGeneratedArtifactMode = useCallback(() => {
+    updateDiagramSettings({
+      generatedArtifactMode: nextArtifactMode(diagramSettings.generatedArtifactMode, ARTIFACT_MODE_ORDER),
+    });
+  }, [diagramSettings.generatedArtifactMode, updateDiagramSettings]);
 
   useEffect(() => {
     return () => {
@@ -339,15 +379,19 @@ export function Canvas() {
     if (!view) return { viewNodes: [] as Node[], viewEdges: [] as Edge[] };
 
     const scope = (view as any).scope as string | undefined;
-    const hiddenSymbolIds = diagramSettings.showArtifacts
-      ? new Set<string>()
-      : new Set(graph.symbols.filter((symbol) => isArtifactLikeSymbol(symbol)).map((symbol) => symbol.id));
-    const visibleViewNodeRefs = view.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    const resolvedArtifactView = resolveArtifactView(graph, view, {
+      input: diagramSettings.inputArtifactMode,
+      generated: diagramSettings.generatedArtifactMode,
+    });
+    const symbolOverrides = resolvedArtifactView.symbolOverrides;
+    const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
+    const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
     const visibleViewNodeRefSet = new Set(visibleViewNodeRefs);
-    const visibleRelations = graph.relations.filter(
+    const visibleRelations = resolvedArtifactView.relations.filter(
       (rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target),
     );
-    const relationMap = new Map(graph.relations.map((rel) => [rel.id, rel]));
+    const relationMap = new Map(visibleRelations.map((rel) => [rel.id, rel]));
+    const badgeRelations = visibleRelations;
     const persistentReviewNodeIds = reviewHighlight.viewId === view.id
       ? reviewHighlight.nodeIds.filter((id) => visibleViewNodeRefSet.has(id))
       : [];
@@ -362,7 +406,7 @@ export function Canvas() {
     // Pre-compute relation badges per symbol: which relation types touch each symbol?
     // Badges are directional: "out:<type>" for source, "in:<type>" for target
     const relBadgeMap = new Map<string, Set<string>>();
-    for (const rel of visibleRelations) {
+    for (const rel of badgeRelations) {
       if (rel.type === "contains") continue;
       if (!diagramSettings.relationFilters[rel.type]) continue;
       const srcSet = relBadgeMap.get(rel.source) ?? new Set();
@@ -374,8 +418,9 @@ export function Canvas() {
     }
 
     const allNodes: Node[] = visibleViewNodeRefs.map((symId, i) => {
-      const sym = graph.symbols.find((s) => s.id === symId);
+      const sym = symbolOverrides.get(symId) ?? graph.symbols.find((s) => s.id === symId);
       if (!sym) return null;
+      const artifactPreview = buildArtifactPreview(sym);
 
       const savedPos = view.nodePositions?.find((p) => p.symbolId === symId);
 
@@ -425,7 +470,7 @@ export function Canvas() {
           if (cb) cb.forEach((t) => childBadges.add(t));
         }
       }
-      const relationBadges = Array.from(childBadges).filter((t) => !t.endsWith(":imports"));
+      const relationBadges = Array.from(childBadges);
 
       return {
         id: sym.id,
@@ -448,6 +493,9 @@ export function Canvas() {
           location: sym.location,
           compactMode: diagramSettings.nodeCompactMode,
           labelsMode: diagramSettings.labels,
+          artifactPreviewKind: diagramSettings.generatedArtifactMode === "individual" ? undefined : artifactPreview?.kind,
+          artifactPreviewItemCount: artifactPreview?.itemCount ?? null,
+          artifactPreviewGroupCount: artifactPreview?.groupCount ?? null,
         } satisfies UmlNodeData,
       } satisfies Node;
     }).filter(Boolean) as Node[];
@@ -552,7 +600,7 @@ export function Canvas() {
 
     return { viewNodes: scopedNodes, viewEdges: vEdges };
   }, [
-    graph,
+      graph,
     currentViewId,
     diagramSettings,
     selectedEdgeId,
@@ -703,8 +751,9 @@ export function Canvas() {
       setEdges((prev) => withDynamicHandles(prev, edgeHandles));
       if (!pendingRestoreForCurrentView || !currentViewSnapshot?.viewport) {
         setTimeout(() => {
+          const expectedViewId = currentViewId;
           reactFlowInstance.fitView({ padding: 0.12, duration: 300 });
-          setTimeout(() => persistCurrentViewport(), 360);
+          scheduleViewportPersist(360, expectedViewId);
         }, 60);
       }
     });
@@ -720,7 +769,7 @@ export function Canvas() {
     diagramSettings.nodeCompactMode,
     currentViewSnapshot?.viewport,
     pendingRestoreForCurrentView,
-    persistCurrentViewport,
+    scheduleViewportPersist,
   ]);
 
   // Fit view after first layout pass
@@ -731,11 +780,12 @@ export function Canvas() {
         return;
       }
       setTimeout(() => {
+        const expectedViewId = currentViewId;
         reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
-        setTimeout(() => persistCurrentViewport(), 360);
+        scheduleViewportPersist(360, expectedViewId);
       }, 50);
     }
-  }, [currentViewSnapshot?.viewport, layoutDone, pendingRestoreForCurrentView, persistCurrentViewport, reactFlowInstance]);
+  }, [currentViewId, currentViewSnapshot?.viewport, layoutDone, pendingRestoreForCurrentView, reactFlowInstance, scheduleViewportPersist]);
 
   // AI highlight: When highlightSymbolId changes (or seq increments for same symbol),
   // flash the node if it exists in the current view. This is a lightweight visual cue;
@@ -805,7 +855,7 @@ export function Canvas() {
       const cx = absPos.x + w / 2;
       const cy = absPos.y + h / 2;
       reactFlowInstance.setCenter(cx, cy, { zoom: 1.5, duration: 500 });
-      setTimeout(() => persistCurrentViewport(), 560);
+      scheduleViewportPersist(560);
     } else {
       reactFlowInstance.fitView({
         nodes: [{ id: nodeId }],
@@ -813,7 +863,7 @@ export function Canvas() {
         padding: 0.1,
         maxZoom: 2,
       });
-      setTimeout(() => persistCurrentViewport(), 560);
+      scheduleViewportPersist(560);
     }
     setTimeout(() => {
       // Clear ALL previous focus highlights — only one node should be highlighted at a time
@@ -834,7 +884,7 @@ export function Canvas() {
       }
       acknowledgeAiNavigationSettled(nodeId);
     }, 520);
-  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph, persistCurrentViewport]);
+  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph, scheduleViewportPersist]);
 
   const applyReviewFit = useCallback((nodeIds: string[]) => {
     const uniqueNodeIds = Array.from(new Set(nodeIds));
@@ -984,15 +1034,15 @@ export function Canvas() {
 
     requestAnimationFrame(() => {
       void reactFlowInstance.setViewport(viewport, { duration: 320 });
-      setTimeout(() => persistCurrentViewport(), 380);
+      scheduleViewportPersist(380);
     });
   }, [
     currentViewId,
     currentViewSnapshot?.viewport,
     layoutDone,
     nodesInitialized,
-    persistCurrentViewport,
     reactFlowInstance,
+    scheduleViewportPersist,
     viewRestoreSeq,
     viewRestoreViewId,
   ]);
@@ -1006,7 +1056,7 @@ export function Canvas() {
     appliedViewFitSeqRef.current = viewFitSeq;
     requestAnimationFrame(() => {
       reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
-      setTimeout(() => persistCurrentViewport(), 360);
+      scheduleViewportPersist(360);
     });
   }, [
     currentViewId,
@@ -1014,8 +1064,8 @@ export function Canvas() {
     nodes.length,
     nodesInitialized,
     pendingRestoreForCurrentView,
-    persistCurrentViewport,
     reactFlowInstance,
+    scheduleViewportPersist,
     viewFitSeq,
     viewFitViewId,
   ]);
@@ -1340,7 +1390,26 @@ export function Canvas() {
         proOptions={proOptions}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#2d3148" />
-        <Controls />
+        <Controls>
+          <ControlButton
+            className={`canvas-control-button canvas-control-button--artifact-mode canvas-control-button--artifact-input canvas-control-button--mode-${diagramSettings.inputArtifactMode}`}
+            onClick={cycleInputArtifactMode}
+            title={artifactControlLabel("Inputs", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}
+            aria-label={artifactControlLabel("Inputs", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}
+          >
+            <i className="bi bi-download" />
+            <span>{artifactControlLabel("Inputs", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}</span>
+          </ControlButton>
+          <ControlButton
+            className={`canvas-control-button canvas-control-button--artifact-mode canvas-control-button--artifact-generated canvas-control-button--mode-${diagramSettings.generatedArtifactMode}`}
+            onClick={cycleGeneratedArtifactMode}
+            title={artifactControlLabel("Outputs", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}
+            aria-label={artifactControlLabel("Outputs", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}
+          >
+            <i className="bi bi-upload" />
+            <span>{artifactControlLabel("Outputs", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}</span>
+          </ControlButton>
+        </Controls>
         <MiniMap
           nodeStrokeColor="#6c8cff"
           nodeColor={(n) => {
@@ -1462,3 +1531,6 @@ export function Canvas() {
     </div>
   );
 }
+
+
+

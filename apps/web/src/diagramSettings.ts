@@ -4,6 +4,7 @@ export type DiagramEdgeType = "step" | "smoothstep" | "straight";
 export type DiagramRouting = "ORTHOGONAL" | "POLYLINE" | "SPLINES";
 export type DiagramLayoutDirection = "DOWN" | "RIGHT";
 export type DiagramLabelMode = "off" | "compact" | "detailed";
+export type DiagramArtifactMode = "hidden" | "grouped" | "individual";
 export type DiagramPresetId = "uml_clean" | "dense" | "exploration";
 
 export const ALL_RELATION_TYPES: RelationType[] = [
@@ -21,6 +22,7 @@ const EDGE_TYPES: DiagramEdgeType[] = ["step", "smoothstep", "straight"];
 const ROUTING_TYPES: DiagramRouting[] = ["ORTHOGONAL", "POLYLINE", "SPLINES"];
 const LAYOUT_DIRECTIONS: DiagramLayoutDirection[] = ["DOWN", "RIGHT"];
 const LABEL_MODES: DiagramLabelMode[] = ["off", "compact", "detailed"];
+const ARTIFACT_MODES: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
 const PRESET_IDS: Array<DiagramPresetId | "custom"> = ["uml_clean", "dense", "exploration", "custom"];
 
 export const RELATION_VERBS: Record<RelationType, string> = {
@@ -73,7 +75,8 @@ export interface DiagramSettings {
   edgeType: DiagramEdgeType;
   edgeStrokeWidth: number;
   labels: DiagramLabelMode;
-  showArtifacts: boolean;
+  inputArtifactMode: DiagramArtifactMode;
+  generatedArtifactMode: DiagramArtifactMode;
   nodeCompactMode: boolean;
   edgeAggregation: boolean;
   autoLayout: boolean;
@@ -127,7 +130,8 @@ export const DEFAULT_DIAGRAM_SETTINGS: DiagramSettings = {
   edgeType: "step",
   edgeStrokeWidth: 1.8,
   labels: "detailed",
-  showArtifacts: true,
+  inputArtifactMode: "grouped",
+  generatedArtifactMode: "grouped",
   nodeCompactMode: false,
   edgeAggregation: true,
   autoLayout: true,
@@ -214,6 +218,18 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function asArtifactMode(value: unknown): DiagramArtifactMode | null {
+  return typeof value === "string" && ARTIFACT_MODES.includes(value as DiagramArtifactMode)
+    ? (value as DiagramArtifactMode)
+    : null;
+}
+
+function asInputArtifactMode(value: unknown): DiagramArtifactMode | null {
+  const mode = asArtifactMode(value);
+  if (mode === "individual") return "grouped";
+  return mode;
+}
+
 export function cloneDiagramSettings(settings: DiagramSettings = DEFAULT_DIAGRAM_SETTINGS): DiagramSettings {
   return {
     ...settings,
@@ -271,13 +287,23 @@ export function sanitizeDiagramSettings(raw: unknown): DiagramSettings {
   const edgeType = EDGE_TYPES.includes(merged.edgeType) ? merged.edgeType : DEFAULT_DIAGRAM_SETTINGS.edgeType;
   const labels = LABEL_MODES.includes(merged.labels) ? merged.labels : DEFAULT_DIAGRAM_SETTINGS.labels;
   const activePreset = PRESET_IDS.includes(merged.activePreset) ? merged.activePreset : "custom";
+  const legacyGeneratedArtifactMode =
+    asArtifactMode((raw as { artifactMode?: unknown }).artifactMode) ??
+    (asBoolean((raw as { showArtifacts?: unknown }).showArtifacts, true) ? "grouped" : "hidden");
+  const inputArtifactMode =
+    asInputArtifactMode((raw as { inputArtifactMode?: unknown }).inputArtifactMode) ??
+    DEFAULT_DIAGRAM_SETTINGS.inputArtifactMode;
+  const generatedArtifactMode =
+    asArtifactMode((raw as { generatedArtifactMode?: unknown }).generatedArtifactMode) ??
+    legacyGeneratedArtifactMode;
 
   return {
     activePreset,
     edgeType,
     edgeStrokeWidth: asNumber(merged.edgeStrokeWidth, DEFAULT_DIAGRAM_SETTINGS.edgeStrokeWidth, 0.8, 4),
     labels,
-    showArtifacts: asBoolean(merged.showArtifacts, DEFAULT_DIAGRAM_SETTINGS.showArtifacts),
+    inputArtifactMode,
+    generatedArtifactMode,
     nodeCompactMode: asBoolean(merged.nodeCompactMode, DEFAULT_DIAGRAM_SETTINGS.nodeCompactMode),
     edgeAggregation: asBoolean(merged.edgeAggregation, DEFAULT_DIAGRAM_SETTINGS.edgeAggregation),
     autoLayout: asBoolean(merged.autoLayout, DEFAULT_DIAGRAM_SETTINGS.autoLayout),
@@ -292,3 +318,4 @@ export function sanitizeDiagramSettings(raw: unknown): DiagramSettings {
 export function getDiagramPreset(presetId: DiagramPresetId): DiagramPresetDefinition | undefined {
   return PRESET_BY_ID.get(presetId);
 }
+

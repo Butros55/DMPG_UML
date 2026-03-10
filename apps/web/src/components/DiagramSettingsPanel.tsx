@@ -4,6 +4,7 @@ import { useAppStore } from "../store";
 import {
   ALL_RELATION_TYPES,
   DIAGRAM_PRESETS,
+  type DiagramArtifactMode,
   type DiagramEdgeType,
   type DiagramLabelMode,
   type DiagramLayoutDirection,
@@ -12,6 +13,18 @@ import {
 
 const EDGE_TYPES: DiagramEdgeType[] = ["step", "smoothstep", "straight"];
 const LABEL_MODES: DiagramLabelMode[] = ["off", "compact", "detailed"];
+const INPUT_ARTIFACT_MODES: DiagramArtifactMode[] = ["hidden", "grouped"];
+const GENERATED_ARTIFACT_MODES: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
+const INPUT_ARTIFACT_MODE_LABEL: Record<DiagramArtifactMode, string> = {
+  hidden: "off",
+  grouped: "on",
+  individual: "on",
+};
+const GENERATED_ARTIFACT_MODE_LABEL: Record<DiagramArtifactMode, string> = {
+  hidden: "hidden",
+  grouped: "grouped",
+  individual: "individual",
+};
 const ROUTING_OPTIONS: DiagramRouting[] = ["ORTHOGONAL", "POLYLINE", "SPLINES"];
 const DIRECTION_OPTIONS: DiagramLayoutDirection[] = ["DOWN", "RIGHT"];
 
@@ -79,7 +92,8 @@ export function DiagramSettingsPanel() {
     settings.layout.edgeEdgeSpacing,
     settings.layout.componentComponentSpacing,
     settings.layout.thoroughness,
-    settings.showArtifacts,
+    settings.inputArtifactMode,
+    settings.generatedArtifactMode,
     settings.nodeCompactMode,
     applyDiagramLayout,
   ]);
@@ -260,14 +274,35 @@ export function DiagramSettingsPanel() {
       </label>
 
       <div className="field-label">Visibility</div>
-      <label className="diagram-settings-check">
-        <input
-          type="checkbox"
-          checked={settings.showArtifacts}
-          onChange={(event) => updateDiagramSettings({ showArtifacts: event.target.checked })}
-        />
-        <span>Show artifacts</span>
-      </label>
+      <div className="diagram-settings-row">
+        <span>Input artifacts</span>
+        <select
+          className="inspector-select"
+          value={settings.inputArtifactMode}
+          onChange={(event) => updateDiagramSettings({ inputArtifactMode: event.target.value as DiagramArtifactMode })}
+        >
+          {INPUT_ARTIFACT_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {INPUT_ARTIFACT_MODE_LABEL[mode]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="diagram-settings-row">
+        <span>Outputs / flow</span>
+        <select
+          className="inspector-select"
+          value={settings.generatedArtifactMode}
+          onChange={(event) => updateDiagramSettings({ generatedArtifactMode: event.target.value as DiagramArtifactMode })}
+        >
+          {GENERATED_ARTIFACT_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {GENERATED_ARTIFACT_MODE_LABEL[mode]}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <label className="diagram-settings-check">
         <input

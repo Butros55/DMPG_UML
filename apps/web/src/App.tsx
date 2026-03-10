@@ -214,12 +214,12 @@ export function App() {
         <div style={{ flex: 1 }} />
         {graph && (
           <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
-            {graph.symbols.length} symbols · {graph.relations.length} relations · {graph.views.length} views
+            {graph.symbols.length} Symbole · {graph.relations.length} Relationen · {graph.views.length} Ansichten
           </span>
         )}
         <button
           className="debug-transport-toggle"
-          title="Toggle Transport Debug"
+          title="Transport-Debug ein-/ausblenden"
           onClick={toggleDebugTransport}
         >
           <i className="bi bi-bug" />
@@ -277,3 +277,4 @@ export function App() {
     </div>
   );
 }
+

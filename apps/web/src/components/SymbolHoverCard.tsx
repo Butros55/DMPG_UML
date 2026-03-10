@@ -1,8 +1,9 @@
-import { useCallback, useLayoutEffect, useRef, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useMemo, useState } from "react";
 import { useAppStore } from "../store";
 import { projectEdgesForView, type Symbol as Sym, type Relation, type ProjectGraph } from "@dmpg/shared";
 import { buildNavigableRelationItems } from "../relationNavigation";
-import { scheduleHideHover, setMouseOverCard } from "./hoverCardController";
+import { clearLinkedNodeHighlight, scheduleHideHover, setLinkedNodeHighlight, setMouseOverCard } from "./hoverCardController";
+import { resolveArtifactView } from "../artifactVisibility";
 import {
   HOVER_CARD_VIEWPORT_MARGIN,
   HOVER_CARD_WIDTH,
@@ -12,6 +13,7 @@ import {
   type RectBox,
 } from "../hoverCardPlacement";
 import { resolveNavigableSymbolId } from "../viewNavigation";
+import { buildArtifactPreview, buildArtifactPreviewMetaChips, translateArtifactPreviewLabel } from "../artifactPreview";
 
 /* ── Enriched symbol info (computed from graph relations) ── */
 
@@ -35,6 +37,54 @@ interface EnrichedInfo {
   configUsedBy: Array<{ rel: Relation; source: Sym | undefined }>;
   lineCount: number | null;
 }
+
+interface PreviewSectionData {
+  title: string;
+  allLines: string[];
+  meta: PreviewMetaData | null;
+  itemEntries: PreviewDetailItem[];
+  detailRows: PreviewDetailRow[];
+  rawLines: string[];
+  isCluster: boolean;
+  itemCount: number | null;
+  groupCount: number | null;
+  summaryItems: string[];
+}
+
+interface PreviewMetaData {
+  mode?: "single" | "cluster";
+  stageId?: string;
+  stageLabel?: string;
+  flow?: string;
+  category?: string;
+  groupKind?: string;
+  groupCount?: number;
+  pathCount?: number;
+}
+
+interface PreviewDetailItem {
+  label: string;
+  paths: string[];
+  writeCount: number | null;
+  readCount: number | null;
+  producers: string[];
+  consumers: string[];
+  producerStages: string[];
+  consumerStages: string[];
+  category?: string;
+  groupKind?: string;
+}
+
+interface PreviewDetailRow {
+  label: string;
+  value: string;
+  values: string[];
+}
+
+const PREVIEW_COLLAPSED_LINE_LIMIT = 8;
+const PREVIEW_SUMMARY_ITEM_LIMIT = 3;
+const PREVIEW_META_PREFIX = "@preview ";
+const PREVIEW_ITEM_PREFIX = "@item ";
 
 function enrichSymbol(sym: Sym, graph: ProjectGraph): EnrichedInfo {
   const findSym = (id: string) => graph.symbols.find((s) => s.id === id);
@@ -143,32 +193,21 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: string }> = {
-  "out:calls":        { iconCls: "bi-telephone-outbound", label: "calls",         cls: "calls" },
-  "in:calls":         { iconCls: "bi-telephone-inbound",  label: "called by",     cls: "calls-in" },
-  "out:reads":        { iconCls: "bi-book",               label: "reads",         cls: "reads" },
-  "in:reads":         { iconCls: "bi-book",               label: "read by",       cls: "reads-in" },
-  "out:writes":       { iconCls: "bi-pencil-square",      label: "writes",        cls: "writes" },
-  "in:writes":        { iconCls: "bi-pencil-square",      label: "written by",    cls: "writes-in" },
-  "out:imports":      { iconCls: "bi-box-arrow-in-down",  label: "imports",       cls: "imports" },
-  "in:imports":       { iconCls: "bi-box-arrow-in-down",  label: "imported by",   cls: "imports-in" },
-  "out:inherits":     { iconCls: "bi-diagram-3",          label: "inherits",      cls: "inherits" },
-  "in:inherits":      { iconCls: "bi-diagram-3",          label: "inherited by",  cls: "inherits-in" },
-  "out:instantiates": { iconCls: "bi-lightning",          label: "creates",       cls: "instantiates" },
-  "in:instantiates":  { iconCls: "bi-lightning",          label: "created by",    cls: "instantiates-in" },
-  "out:uses_config":  { iconCls: "bi-gear",               label: "config",        cls: "uses_config" },
-  "in:uses_config":   { iconCls: "bi-gear",               label: "configured by", cls: "uses_config-in" },
+  "out:calls":        { iconCls: "bi-telephone-outbound", label: "ruft auf",         cls: "calls" },
+  "in:calls":         { iconCls: "bi-telephone-inbound",  label: "aufgerufen von",   cls: "calls-in" },
+  "out:reads":        { iconCls: "bi-book",               label: "liest",            cls: "reads" },
+  "in:reads":         { iconCls: "bi-book",               label: "gelesen von",      cls: "reads-in" },
+  "out:writes":       { iconCls: "bi-pencil-square",      label: "schreibt",         cls: "writes" },
+  "in:writes":        { iconCls: "bi-pencil-square",      label: "geschrieben von",  cls: "writes-in" },
+  "out:imports":      { iconCls: "bi-box-arrow-in-down",  label: "importiert",       cls: "imports" },
+  "in:imports":       { iconCls: "bi-box-arrow-in-down",  label: "importiert von",   cls: "imports-in" },
+  "out:inherits":     { iconCls: "bi-diagram-3",          label: "erbt von",         cls: "inherits" },
+  "in:inherits":      { iconCls: "bi-diagram-3",          label: "vererbt an",       cls: "inherits-in" },
+  "out:instantiates": { iconCls: "bi-lightning",          label: "erstellt",         cls: "instantiates" },
+  "in:instantiates":  { iconCls: "bi-lightning",          label: "erstellt von",     cls: "instantiates-in" },
+  "out:uses_config":  { iconCls: "bi-gear",               label: "konfiguriert",     cls: "uses_config" },
+  "in:uses_config":   { iconCls: "bi-gear",               label: "konfiguriert von", cls: "uses_config-in" },
 };
-
-function isArtifactLikeSymbol(symbol: Pick<Sym, "kind" | "umlType">): boolean {
-  return (
-    symbol.kind === "external" ||
-    symbol.umlType === "artifact" ||
-    symbol.umlType === "database" ||
-    symbol.umlType === "component" ||
-    symbol.umlType === "note" ||
-    symbol.umlType === "external"
-  );
-}
 
 function getNodeRect(nodeId: string): RectBox | null {
   const el = document.querySelector(`[data-id="${CSS.escape(nodeId)}"]`);
@@ -236,6 +275,195 @@ function getHighlightedEdgeRects(): RectBox[] {
   return rects;
 }
 
+function isClusterSymbol(sym: Pick<Sym, "id" | "tags">): boolean {
+  return (
+    sym.id.startsWith("proc:artifact-cluster:") ||
+    sym.id.startsWith("proc:artgrp:") ||
+    sym.id.startsWith("proc:output:") ||
+    sym.tags?.includes("artifact-cluster") === true ||
+    sym.tags?.includes("artifact-group") === true
+  );
+}
+
+function splitPreviewList(value: string): string[] {
+  return value
+    .split(/\s*,\s*/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && entry !== "-");
+}
+
+function normalizePreviewText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function normalizePreviewNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizePreviewArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => normalizePreviewText(entry))
+    .filter((entry): entry is string => Boolean(entry));
+}
+
+function parseStructuredPreviewMeta(line: string): PreviewMetaData | null {
+  if (!line.startsWith(PREVIEW_META_PREFIX)) return null;
+
+  try {
+    const payload = JSON.parse(line.slice(PREVIEW_META_PREFIX.length)) as Record<string, unknown>;
+    return {
+      mode: payload.mode === "cluster" || payload.mode === "single" ? payload.mode : undefined,
+      stageId: normalizePreviewText(payload.stageId),
+      stageLabel: normalizePreviewText(payload.stageLabel),
+      flow: normalizePreviewText(payload.flow),
+      category: normalizePreviewText(payload.category),
+      groupKind: normalizePreviewText(payload.groupKind),
+      groupCount: normalizePreviewNumber(payload.groupCount) ?? undefined,
+      pathCount: normalizePreviewNumber(payload.pathCount) ?? undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseStructuredPreviewItem(line: string): PreviewDetailItem | null {
+  if (!line.startsWith(PREVIEW_ITEM_PREFIX)) return null;
+
+  try {
+    const payload = JSON.parse(line.slice(PREVIEW_ITEM_PREFIX.length)) as Record<string, unknown>;
+    const label = normalizePreviewText(payload.label);
+    if (!label) return null;
+    return {
+      label,
+      paths: normalizePreviewArray(payload.paths),
+      writeCount: normalizePreviewNumber(payload.writeCount),
+      readCount: normalizePreviewNumber(payload.readCount),
+      producers: normalizePreviewArray(payload.producers),
+      consumers: normalizePreviewArray(payload.consumers),
+      producerStages: normalizePreviewArray(payload.producerStages),
+      consumerStages: normalizePreviewArray(payload.consumerStages),
+      category: normalizePreviewText(payload.category),
+      groupKind: normalizePreviewText(payload.groupKind),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parsePreviewDetailRow(line: string): PreviewDetailRow | null {
+  const match = line.match(/^([^:]+):\s*(.+)$/);
+  if (!match) return null;
+  const [, label, value] = match;
+  return {
+    label: label.trim(),
+    value: value.trim(),
+    values: splitPreviewList(value),
+  };
+}
+
+function summarizePreviewItem(item: PreviewDetailItem): string {
+  return item.label.length > 48 ? `${item.label.slice(0, 45)}...` : item.label;
+}
+
+function buildPreviewSectionData(sym: Sym): PreviewSectionData | null {
+  const allLines = (sym.preview?.lines ?? []).map((line) => line.trim()).filter(Boolean);
+  if (allLines.length === 0) return null;
+
+  let meta: PreviewMetaData | null = null;
+  const itemEntries: PreviewDetailItem[] = [];
+  const detailRows: PreviewDetailRow[] = [];
+  const rawLines: string[] = [];
+
+  for (const line of allLines) {
+    const structuredMeta = parseStructuredPreviewMeta(line);
+    if (structuredMeta) {
+      meta = structuredMeta;
+      continue;
+    }
+
+    const structuredItem = parseStructuredPreviewItem(line);
+    if (structuredItem) {
+      itemEntries.push(structuredItem);
+      continue;
+    }
+
+    const detailRow = parsePreviewDetailRow(line);
+    if (detailRow) {
+      detailRows.push(detailRow);
+      continue;
+    }
+
+    rawLines.push(line);
+  }
+
+  const cluster = meta?.mode === "cluster" || isClusterSymbol(sym);
+  const summarySource = itemEntries
+    .slice(0, PREVIEW_SUMMARY_ITEM_LIMIT)
+    .map((entry) => summarizePreviewItem(entry));
+  const resolvedItemCount =
+    meta?.pathCount ??
+    (itemEntries.length > 0
+      ? itemEntries.reduce((sum, entry) => sum + Math.max(1, entry.paths.length), 0)
+      : null);
+
+  return {
+    title: cluster ? "Contained Artifacts" : "Details",
+    allLines,
+    meta,
+    itemEntries,
+    detailRows,
+    rawLines,
+    isCluster: cluster,
+    itemCount: cluster ? resolvedItemCount : resolvedItemCount,
+    groupCount: cluster ? meta?.groupCount ?? itemEntries.length : meta?.groupCount ?? null,
+    summaryItems: cluster ? summarySource : [],
+  };
+}
+
+function humanizePreviewValue(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (part) => part.toUpperCase());
+}
+
+function normalizeSymbolReference(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._:/\\()[\]-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function resolvePreviewReference(
+  graph: ProjectGraph | null,
+  reference: string,
+): { symbolId: string; label: string } | null {
+  if (!graph || !reference.trim()) return null;
+
+  const exact = graph.symbols.find((symbol) => symbol.id === reference || symbol.label === reference);
+  if (exact) {
+    return { symbolId: exact.id, label: exact.label };
+  }
+
+  const normalizedReference = normalizeSymbolReference(reference);
+  if (!normalizedReference) return null;
+
+  const exactNormalized = graph.symbols.find(
+    (symbol) => normalizeSymbolReference(symbol.label) === normalizedReference,
+  );
+  if (exactNormalized) {
+    return { symbolId: exactNormalized.id, label: exactNormalized.label };
+  }
+
+  const lastSegment = graph.symbols.find((symbol) => {
+    const tail = symbol.label.split(".").pop() ?? symbol.label;
+    return normalizeSymbolReference(tail) === normalizedReference;
+  });
+  return lastSegment ? { symbolId: lastSegment.id, label: lastSegment.label } : null;
+}
+
 /* ── The Hover Card Component ── */
 
 export function SymbolHoverCard() {
@@ -248,27 +476,49 @@ export function SymbolHoverCard() {
   const openSourceViewer = useAppStore((s) => s.openSourceViewer);
   const cardRef = useRef<HTMLDivElement>(null);
   const [resolvedPosition, setResolvedPosition] = useState<{ symbolId: string; x: number; y: number } | null>(null);
+  const hoverSource = hoverPosition?.source ?? "canvas";
+  const currentView = currentViewId && graph ? graph.views.find((entry) => entry.id === currentViewId) ?? null : null;
+  const resolvedArtifactView = useMemo(
+    () =>
+      graph && currentView
+        ? resolveArtifactView(graph, currentView, {
+            input: diagramSettings.inputArtifactMode,
+            generated: diagramSettings.generatedArtifactMode,
+          })
+        : null,
+    [currentView, diagramSettings.generatedArtifactMode, diagramSettings.inputArtifactMode, graph],
+  );
+  const viewGraph = useMemo(() => {
+    if (!graph || !resolvedArtifactView) return graph;
+    const symbolOverrides = resolvedArtifactView.symbolOverrides;
+    return {
+      ...graph,
+      symbols: graph.symbols.map((symbol) => symbolOverrides.get(symbol.id) ?? symbol),
+      relations: resolvedArtifactView.relations,
+    };
+  }, [graph, resolvedArtifactView]);
 
   const info = useMemo(() => {
-    if (!hoverSymbolId || !graph) return null;
-    const sym = graph.symbols.find((s) => s.id === hoverSymbolId);
+    if (!hoverSymbolId || !viewGraph) return null;
+    const sym = viewGraph.symbols.find((s) => s.id === hoverSymbolId);
     if (!sym) return null;
-    return enrichSymbol(sym, graph);
-  }, [hoverSymbolId, graph]);
-  const outgoingCallItems = useMemo(() => buildNavigableRelationItems(graph, info?.outgoingCalls.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
-  const incomingCallItems = useMemo(() => buildNavigableRelationItems(graph, info?.incomingCalls.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
-  const readItems = useMemo(() => buildNavigableRelationItems(graph, info?.reads.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
-  const readByItems = useMemo(() => buildNavigableRelationItems(graph, info?.readBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
-  const writeItems = useMemo(() => buildNavigableRelationItems(graph, info?.writes.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
-  const writtenByItems = useMemo(() => buildNavigableRelationItems(graph, info?.writtenBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
-  const importItems = useMemo(() => buildNavigableRelationItems(graph, info?.imports.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
-  const importedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.importedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
-  const inheritItems = useMemo(() => buildNavigableRelationItems(graph, info?.inherits.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
-  const inheritedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.inheritedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
-  const instantiateItems = useMemo(() => buildNavigableRelationItems(graph, info?.instantiates.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
-  const instantiatedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.instantiatedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
-  const usesConfigItems = useMemo(() => buildNavigableRelationItems(graph, info?.usesConfig.map(({ rel }) => rel) ?? [], "out"), [graph, info]);
-  const configUsedByItems = useMemo(() => buildNavigableRelationItems(graph, info?.configUsedBy.map(({ rel }) => rel) ?? [], "in"), [graph, info]);
+    return enrichSymbol(sym, viewGraph);
+  }, [hoverSymbolId, viewGraph]);
+  const outgoingCallItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.outgoingCalls.map(({ rel }) => rel) ?? [], "out"), [viewGraph, info]);
+  const incomingCallItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.incomingCalls.map(({ rel }) => rel) ?? [], "in"), [viewGraph, info]);
+  const readItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.reads.map(({ rel }) => rel) ?? [], "out"), [viewGraph, info]);
+  const readByItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.readBy.map(({ rel }) => rel) ?? [], "in"), [viewGraph, info]);
+  const writeItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.writes.map(({ rel }) => rel) ?? [], "out"), [viewGraph, info]);
+  const writtenByItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.writtenBy.map(({ rel }) => rel) ?? [], "in"), [viewGraph, info]);
+  const importItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.imports.map(({ rel }) => rel) ?? [], "out"), [viewGraph, info]);
+  const importedByItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.importedBy.map(({ rel }) => rel) ?? [], "in"), [viewGraph, info]);
+  const inheritItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.inherits.map(({ rel }) => rel) ?? [], "out"), [viewGraph, info]);
+  const inheritedByItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.inheritedBy.map(({ rel }) => rel) ?? [], "in"), [viewGraph, info]);
+  const instantiateItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.instantiates.map(({ rel }) => rel) ?? [], "out"), [viewGraph, info]);
+  const instantiatedByItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.instantiatedBy.map(({ rel }) => rel) ?? [], "in"), [viewGraph, info]);
+  const usesConfigItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.usesConfig.map(({ rel }) => rel) ?? [], "out"), [viewGraph, info]);
+  const configUsedByItems = useMemo(() => buildNavigableRelationItems(viewGraph, info?.configUsedBy.map(({ rel }) => rel) ?? [], "in"), [viewGraph, info]);
+  const previewData = useMemo(() => (info ? buildArtifactPreview(info.sym) : null), [info]);
 
   const relatedNodeIds = useMemo(() => {
     if (!graph || !currentViewId || !hoverSymbolId) return [] as string[];
@@ -276,14 +526,16 @@ export function SymbolHoverCard() {
     const view = graph.views.find((entry) => entry.id === currentViewId);
     if (!view) return [] as string[];
 
-    const hiddenSymbolIds = diagramSettings.showArtifacts
-      ? new Set<string>()
-      : new Set(graph.symbols.filter((symbol) => isArtifactLikeSymbol(symbol)).map((symbol) => symbol.id));
-    const visibleNodeRefs = view.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
-    const visibleRelations = graph.relations.filter(
+    const activeArtifactView = resolvedArtifactView ?? resolveArtifactView(graph, view, {
+      input: diagramSettings.inputArtifactMode,
+      generated: diagramSettings.generatedArtifactMode,
+    });
+    const hiddenSymbolIds = activeArtifactView.hiddenSymbolIds;
+    const visibleNodeRefs = activeArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    const visibleRelations = activeArtifactView.relations.filter(
       (rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target),
     );
-    const relationMap = new Map(graph.relations.map((rel) => [rel.id, rel]));
+    const relationMap = new Map(visibleRelations.map((rel) => [rel.id, rel]));
     const projectedEdges = projectEdgesForView(
       { ...view, nodeRefs: visibleNodeRefs },
       graph.symbols,
@@ -303,10 +555,42 @@ export function SymbolHoverCard() {
 
     ids.delete(hoverSymbolId);
     return Array.from(ids);
-  }, [currentViewId, diagramSettings.relationFilters, diagramSettings.showArtifacts, graph, hoverSymbolId]);
+  }, [
+    currentViewId,
+    diagramSettings.generatedArtifactMode,
+    diagramSettings.inputArtifactMode,
+    diagramSettings.relationFilters,
+    graph,
+    hoverSymbolId,
+    resolvedArtifactView,
+  ]);
 
   useLayoutEffect(() => {
     if (!cardRef.current || !hoverSymbolId || !hoverPosition) return;
+
+    if (hoverSource === "inspector") {
+      const inspectorEl = document.querySelector(".inspector");
+      const inspectorRect = inspectorEl instanceof HTMLElement ? inspectorEl.getBoundingClientRect() : null;
+      const cardRect = cardRef.current.getBoundingClientRect();
+      const boundedY = inspectorRect
+        ? Math.max(
+            inspectorRect.top + 8,
+            Math.min(
+              hoverPosition.y,
+              Math.min(
+                inspectorRect.bottom - cardRect.height - 8,
+                window.innerHeight - cardRect.height - HOVER_CARD_VIEWPORT_MARGIN,
+              ),
+            ),
+          )
+        : hoverPosition.y;
+      setResolvedPosition({
+        symbolId: hoverSymbolId,
+        x: hoverPosition.x,
+        y: boundedY,
+      });
+      return;
+    }
 
     const updatePlacement = () => {
       if (!cardRef.current) return;
@@ -353,13 +637,14 @@ export function SymbolHoverCard() {
       resizeObserver.disconnect();
       window.removeEventListener("resize", updatePlacement);
     };
-  }, [hoverPosition, hoverSymbolId, info, relatedNodeIds]);
+  }, [hoverPosition, hoverSource, hoverSymbolId, info, relatedNodeIds]);
 
   const handleNavigate = useCallback(
     (symId: string) => {
       if (!graph) return;
       const resolvedId = resolveNavigableSymbolId(graph, symId);
       if (!resolvedId) return;
+      clearLinkedNodeHighlight();
       focusSymbolInContext(resolvedId);
       // Close hover card
       setMouseOverCard(false);
@@ -370,6 +655,7 @@ export function SymbolHoverCard() {
 
   const handleOpenSource = useCallback(() => {
     if (!info) return;
+    clearLinkedNodeHighlight();
     openSourceViewer(info.sym.id, info.sym.label);
     setMouseOverCard(false);
     useAppStore.getState().setHoverSymbol(null);
@@ -421,26 +707,54 @@ export function SymbolHoverCard() {
     }
     return "Das Symbol trägt das Dead-Code-Tag, aber es liegt keine detaillierte LLM-Begründung vor.";
   })();
+  const previewMetaChips = previewData ? buildArtifactPreviewMetaChips(previewData) : [];
+  const previewPrimaryItem = previewData?.itemEntries[0] ?? null;
+  const previewPlainRows = previewData?.detailRows.slice(0, 2) ?? [];
+  const previewPlainLines = previewData?.rawLines.slice(0, 2) ?? [];
+  const showArtifactState = diagramSettings.generatedArtifactMode !== "individual";
+  const renderPreviewValueChip = (value: string, key: string) => {
+    const resolved = resolvePreviewReference(viewGraph, value);
+    if (!resolved) {
+      return <span key={key} className="shc-preview-chip">{value}</span>;
+    }
+    return (
+      <span
+        key={key}
+        className="shc-preview-chip shc-preview-chip--link"
+        onClick={() => handleNavigate(resolved.symbolId)}
+        onMouseEnter={() => setLinkedNodeHighlight(resolved.symbolId)}
+        onMouseLeave={() => clearLinkedNodeHighlight()}
+        title={resolved.label}
+      >
+        {resolved.label}
+      </span>
+    );
+  };
+  const renderLinkChip = (symbolId: string, label: string, className: string, title?: string) => (
+    <span
+      key={symbolId}
+      className={className}
+      onClick={() => handleNavigate(symbolId)}
+      onMouseEnter={() => setLinkedNodeHighlight(symbolId)}
+      onMouseLeave={() => clearLinkedNodeHighlight()}
+      title={title}
+    >
+      {label}
+    </span>
+  );
   const renderRelationChips = (items: ReturnType<typeof buildNavigableRelationItems>, className = "shc-link-chip") => (
     items.map((item) => (
-      <span
-        key={item.symbolId}
-        className={className}
-        onClick={() => handleNavigate(item.symbolId)}
-        title={item.symbol.doc?.summary}
-      >
-        {item.symbol.label}
-      </span>
+      renderLinkChip(item.symbolId, item.symbol.label, className, item.symbol.doc?.summary)
     ))
   );
 
   return (
     <div
       ref={cardRef}
-      className="symbol-hover-card"
+      className={`symbol-hover-card${hoverSource === "inspector" ? " symbol-hover-card--inspector" : ""}`}
       style={{ left: cardPosition.x, top: cardPosition.y }}
       onMouseEnter={() => setMouseOverCard(true)}
-      onMouseLeave={() => { setMouseOverCard(false); scheduleHideHover(); }}
+      onMouseLeave={() => { clearLinkedNodeHighlight(); setMouseOverCard(false); scheduleHideHover(); }}
     >
       {/* ── Header ── */}
       <div className="shc-header">
@@ -473,7 +787,12 @@ export function SymbolHoverCard() {
       {info.parent && (
         <div className="shc-parent">
           <i className="bi bi-box" /> in:{" "}
-          <span className="shc-link" onClick={() => handleNavigate(info.parent!.id)}>
+          <span
+            className="shc-link"
+            onClick={() => handleNavigate(info.parent!.id)}
+            onMouseEnter={() => setLinkedNodeHighlight(info.parent!.id)}
+            onMouseLeave={() => clearLinkedNodeHighlight()}
+          >
             {info.parent.label}
           </span>
           <span className="shc-dim"> ({info.parent.kind})</span>
@@ -524,6 +843,111 @@ export function SymbolHoverCard() {
         <div className="shc-section">
           <div className="shc-section-label">Beschreibung</div>
           <div className="shc-summary">{doc.summary}</div>
+        </div>
+      )}
+
+      {previewData && (
+        <div className="shc-section">
+          <div className="shc-section-label">Artefakt</div>
+
+          <div className="shc-preview-summary-block">
+            {showArtifactState && (previewData.kind === "cluster" || previewData.kind === "single") && (
+              <div className={`artifact-state-pill artifact-state-pill--${previewData.kind === "cluster" ? "cluster" : "single"} shc-artifact-pill`}>
+                <i className={`bi ${previewData.kind === "cluster" ? "bi-collection" : "bi-file-earmark-text"}`} />
+                {previewData.kind === "cluster" ? "Cluster" : "Einzelobjekt"}
+              </div>
+            )}
+
+            {previewData.kind === "cluster" ? (
+              <>
+                <div className="shc-preview-count">
+                  <i className="bi bi-collection" />
+                  {previewData.itemCount ?? previewData.itemEntries.length} Artefakte
+                  {previewData.groupCount != null && previewData.itemCount != null && previewData.groupCount !== previewData.itemCount && (
+                    <span className="shc-dim"> in {previewData.groupCount} Gruppen</span>
+                  )}
+                </div>
+                {previewData.summaryItems.length > 0 && (
+                  <div className="shc-preview-summary">
+                    <span className="shc-preview-summary-label">Beispiele:</span>
+                    <span className="shc-preview-summary-text">{previewData.summaryItems.join(" · ")}</span>
+                    {(previewData.itemCount ?? 0) > previewData.summaryItems.length && (
+                      <span className="shc-dim"> +{(previewData.itemCount ?? 0) - previewData.summaryItems.length} weitere</span>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : previewPrimaryItem ? (
+              <>
+                <div className="shc-preview-count">
+                  <i className="bi bi-file-earmark-text" />
+                  {previewPrimaryItem.label}
+                  <div className="shc-preview-metrics">
+                    {previewPrimaryItem.writeCount != null && (
+                      <span className="shc-preview-metric shc-preview-metric--write">W {previewPrimaryItem.writeCount}</span>
+                    )}
+                    {previewPrimaryItem.readCount != null && (
+                      <span className="shc-preview-metric shc-preview-metric--read">R {previewPrimaryItem.readCount}</span>
+                    )}
+                  </div>
+                </div>
+                {previewPrimaryItem.paths.length > 0 && (
+                  <div className="shc-preview-chip-row">
+                    {previewPrimaryItem.paths.slice(0, 2).map((path, index) => (
+                      <span key={`${sym.id}-preview-primary-path-${index}`} className="shc-preview-chip shc-preview-chip--path">
+                        {path}
+                      </span>
+                    ))}
+                    {previewPrimaryItem.paths.length > 2 && (
+                      <span className="shc-dim">+{previewPrimaryItem.paths.length - 2} weitere Pfade</span>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : null}
+          </div>
+
+          {previewMetaChips.length > 0 && (
+            <div className="shc-preview-meta-list">
+              {previewMetaChips.map((line, index) => (
+                <span key={`${sym.id}-preview-meta-${index}`} className="shc-preview-meta-chip">
+                  {line}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {previewData.kind === "plain" && previewPlainRows.length > 0 && (
+            <div className="shc-preview-detail-list">
+              {previewPlainRows.map((row, index) => (
+                <div key={`${sym.id}-preview-detail-${index}`} className="shc-preview-detail-row">
+                  <div className="shc-preview-detail-label">{translateArtifactPreviewLabel(row.label)}</div>
+                  <div className="shc-preview-detail-value">
+                    <div className="shc-preview-chip-row">
+                      {(row.values.length > 1 ? row.values : [row.value]).map((value, valueIndex) =>
+                        renderPreviewValueChip(
+                          value,
+                          `${sym.id}-preview-detail-value-${index}-${valueIndex}`,
+                        ),
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {previewData.kind === "plain" && previewPlainLines.length > 0 && (
+            <div className="shc-preview-box">
+              {previewPlainLines.map((line, index) => (
+                <div key={`${sym.id}-preview-line-${index}`} className="shc-preview-line">
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="shc-preview-note">Klick auf die Node fuer die komplette Detailansicht im Inspector.</div>
         </div>
       )}
 
@@ -627,7 +1051,7 @@ export function SymbolHoverCard() {
       {inheritItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-diagram-3" /> Erbt von</div>
-          <div className="shc-links">{renderRelationChips(inheritItems)}</div>
+          <div className="shc-links">{renderRelationChips(inheritItems, "shc-link-chip shc-link-inherit")}</div>
         </div>
       )}
 
@@ -635,7 +1059,7 @@ export function SymbolHoverCard() {
       {inheritedByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-diagram-3" /> Vererbt an</div>
-          <div className="shc-links">{renderRelationChips(inheritedByItems)}</div>
+          <div className="shc-links">{renderRelationChips(inheritedByItems, "shc-link-chip shc-link-inherit")}</div>
         </div>
       )}
 
@@ -643,7 +1067,7 @@ export function SymbolHoverCard() {
       {instantiateItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-lightning" /> Instanziiert</div>
-          <div className="shc-links">{renderRelationChips(instantiateItems)}</div>
+          <div className="shc-links">{renderRelationChips(instantiateItems, "shc-link-chip shc-link-create")}</div>
         </div>
       )}
 
@@ -651,7 +1075,7 @@ export function SymbolHoverCard() {
       {instantiatedByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-lightning" /> Instanziiert von</div>
-          <div className="shc-links">{renderRelationChips(instantiatedByItems)}</div>
+          <div className="shc-links">{renderRelationChips(instantiatedByItems, "shc-link-chip shc-link-create")}</div>
         </div>
       )}
 
@@ -659,7 +1083,7 @@ export function SymbolHoverCard() {
       {usesConfigItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-gear" /> Konfiguration</div>
-          <div className="shc-links">{renderRelationChips(usesConfigItems)}</div>
+          <div className="shc-links">{renderRelationChips(usesConfigItems, "shc-link-chip shc-link-config")}</div>
         </div>
       )}
 
@@ -667,7 +1091,7 @@ export function SymbolHoverCard() {
       {configUsedByItems.length > 0 && (
         <div className="shc-section">
           <div className="shc-section-label"><i className="bi bi-gear" /> Konfig. verwendet von</div>
-          <div className="shc-links">{renderRelationChips(configUsedByItems)}</div>
+          <div className="shc-links">{renderRelationChips(configUsedByItems, "shc-link-chip shc-link-config")}</div>
         </div>
       )}
 
@@ -695,6 +1119,8 @@ export function SymbolHoverCard() {
                 key={child.id}
                 className="shc-link-chip"
                 onClick={() => handleNavigate(child.id)}
+                onMouseEnter={() => setLinkedNodeHighlight(child.id)}
+                onMouseLeave={() => clearLinkedNodeHighlight()}
                 title={child.doc?.summary}
               >
                 <small style={{ opacity: 0.6, marginRight: 2 }}>{child.kind[0]}</small>
@@ -737,3 +1163,5 @@ export function SymbolHoverCard() {
     </div>
   );
 }
+
+

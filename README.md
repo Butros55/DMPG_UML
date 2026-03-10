@@ -95,8 +95,7 @@ Der technische Ablauf beim Scan:
 - rechte Inspector-Ansicht fuer Symbol-Details, Relationen, Seiteneffekte und Source-Zugriff
 - Breadcrumb-Navigation und Drilldown in Child-Views
 - Demo-Graph beim Erststart, falls noch kein Projekt geladen ist
-- Command Palette mit `Ctrl+P`
-- Action Palette mit `Ctrl+Shift+P`
+- Einheitliche Command Palette: `Ctrl+P` fuer Symbolsuche, `Ctrl+Shift+P` fuer Aktionen
 - Undo/Redo fuer Graph-Aenderungen
 - HTML-Export fuer einzelne Views oder ganze Projekte
 - Import/Export von Projektpaketen als `.dmpg-uml.json`
@@ -302,7 +301,7 @@ Moeglichkeiten:
 - Doppelklick oder Drilldown oeffnet Child-Views
 - Breadcrumb bringt dich wieder nach oben
 - `Ctrl+P` oeffnet die Symbolsuche
-- `Ctrl+Shift+P` oeffnet globale Aktionen
+- `Ctrl+Shift+P` oeffnet den Aktionsmodus der Command Palette
 
 ### 3. Bearbeiten und pruefen
 
@@ -490,3 +489,4 @@ Die UML-/AI-Logik arbeitet zwar auf dem allgemeinen Graph-Modell, der automatisc
 ### Weitere Doku
 
 Fachliche und experimentelle Zusatzdokumente liegen unter `docs/`.
+

@@ -85,6 +85,7 @@ interface ProcessDiagramConfig {
   packages: ProcessPackageConfig[];
   nodes: ProcessNodeConfig[];
   edges: ProcessEdgeConfig[];
+  supportNodes?: ProcessNodeConfig[];
   stageViews?: ProcessStageViewConfig[];
   viewAdjustments?: ProcessViewAdjustment[];
 }
@@ -179,6 +180,10 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
     processSymbols.push(makeSymbol(node, node.umlType, kindFromUmlType(node.umlType)));
     processNodeIds.push(node.id);
     processPositions.push(toNodePosition(node));
+  }
+
+  for (const node of config.supportNodes ?? []) {
+    processSymbols.push(makeSymbol(node, node.umlType, kindFromUmlType(node.umlType)));
   }
 
   // Upsert process symbols to avoid duplicates if overlays are regenerated.

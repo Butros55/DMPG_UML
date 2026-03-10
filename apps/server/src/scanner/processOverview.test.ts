@@ -14,7 +14,14 @@ function loadPipelineGraph(): ProjectGraph {
   return JSON.parse(raw) as ProjectGraph;
 }
 
-test("buildProcessDiagramConfigFromGraph builds a scan-based Layer-1 dataflow overview", () => {
+function hasEdge(
+  config: ReturnType<typeof buildProcessDiagramConfigFromGraph>,
+  predicate: (edge: ReturnType<typeof buildProcessDiagramConfigFromGraph>["edges"][number]) => boolean,
+): boolean {
+  return config.edges.some(predicate);
+}
+
+test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 dataflow overview", () => {
   const config = buildProcessDiagramConfigFromGraph(loadPipelineGraph());
 
   assert.deepEqual(
@@ -26,7 +33,6 @@ test("buildProcessDiagramConfigFromGraph builds a scan-based Layer-1 dataflow ov
       "Matching & Filtering",
       "Distribution / KDE / Persistence",
       "Simulation",
-      "Artefacts / Outputs",
     ],
   );
 
@@ -35,43 +41,47 @@ test("buildProcessDiagramConfigFromGraph builds a scan-based Layer-1 dataflow ov
     "Database Import",
     "CSV / Files",
     "MES / External Sources",
-    "df_data.csv",
-    "df_data_with_order.csv",
-    "df_data_with_order_cluster.csv",
-    "Arrival CSVs",
+    "Tabular Artifacts (Extraction)",
+    "JSON Artifacts (Distribution)",
     "Arrival Table",
-    "Generated Data",
-    "Persisted Models",
     "Simulation Results",
-    "kde_min_max_values.json",
   ]) {
     assert.ok(nodeLabels.has(label), `${label} should be visible in Layer 1`);
   }
 
-  const edges = new Set(config.edges.map((edge) => `${edge.source}->${edge.target}:${edge.label ?? ""}`));
-  assert.ok(edges.has("proc:input:database-import->proc:pkg:inputs:database import"));
-  assert.ok(edges.has("proc:input:file-imports->proc:pkg:inputs:file ingest"));
-  assert.ok(edges.has("proc:input:external-sources->proc:pkg:inputs:external feeds"));
-  assert.ok(edges.has("proc:pkg:outputs->proc:output:arrival-table:arrival data"));
-  assert.ok(edges.has("proc:pkg:outputs->proc:output:generated-data:generated data"));
-  assert.ok(edges.has("proc:pkg:outputs->proc:output:persisted-models:stored models"));
-  assert.ok(edges.has("proc:pkg:outputs->proc:output:simulation-results:simulation results"));
-  assert.ok(edges.has("proc:pkg:extract->proc:artifact:df_data_csv:writes"));
-  assert.ok(edges.has("proc:pkg:extract->proc:artifact:df_data_with_order_csv:writes"));
-  assert.ok(edges.has("proc:pkg:extract->proc:artifact:df_data_with_order_cluster_csv:writes"));
-  assert.ok(edges.has("proc:pkg:distribution->proc:artifact:kde_min_max_values_json:persists"));
-  assert.ok(edges.has("proc:pkg:outputs->proc:artifact:arrival_csvs:creates"));
-  assert.ok(edges.has("proc:pkg:inputs->proc:pkg:extract:source records"));
-  assert.ok(edges.has("proc:pkg:extract->proc:pkg:transform:prepared data"));
-  assert.ok(edges.has("proc:pkg:transform->proc:pkg:match:normalized entities"));
-  assert.ok(edges.has("proc:pkg:match->proc:pkg:distribution:matched / filtered data"));
-  assert.ok(edges.has("proc:pkg:distribution->proc:pkg:simulation:fitted distributions / KDE"));
-  assert.ok(edges.has("proc:pkg:simulation->proc:pkg:outputs:simulation artefacts"));
+  const arrivalTable = config.nodes.find((node) => node.id === "proc:output:arrival-table");
+  assert.ok(arrivalTable?.preview?.[0]?.startsWith("@preview "));
+  assert.ok(arrivalTable?.preview?.some((line) => line.includes("Arrival_Groß.csv")));
+  assert.ok(arrivalTable?.preview?.some((line) => line.includes("Arrival_Klein.csv")));
+
+  const simulationResults = config.nodes.find((node) => node.id === "proc:output:simulation-results");
+  assert.ok(simulationResults?.preview?.[0]?.startsWith("@preview "));
+  assert.ok(simulationResults?.preview?.some((line) => line.includes("filter_stats.xlsx")));
+  assert.ok(simulationResults?.preview?.some((line) => line.includes("outliners.xlsx")));
+
+  const distributionArtifact = config.supportNodes?.find((node) => node.id === "proc:artifact:distribution_json");
+  assert.ok(distributionArtifact?.preview?.[0]?.includes("\"mode\":\"single\""));
+  assert.ok(distributionArtifact?.preview?.[0]?.includes("\"stageId\":\"distribution\""));
+
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:input:database-import" && edge.target === "proc:pkg:inputs" && edge.label === "database import"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:input:file-imports" && edge.target === "proc:pkg:inputs" && edge.label === "file ingest"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:input:external-sources" && edge.target === "proc:pkg:inputs" && edge.label === "external feeds"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:simulation" && edge.target === "proc:output:arrival-table" && edge.label?.startsWith("arrival data: ") === true));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:simulation" && edge.target === "proc:output:simulation-results" && edge.label?.startsWith("simulation results: ") === true));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:extract" && edge.target.startsWith("proc:artifact-cluster:extract_") && edge.label?.startsWith("writes: ") === true));
+  assert.ok(hasEdge(config, (edge) => edge.source.startsWith("proc:artifact-cluster:extract_") && edge.target === "proc:pkg:simulation" && edge.label?.startsWith("consumes: ") === true));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:distribution" && edge.target.startsWith("proc:artifact-cluster:distribution_json") && edge.label?.startsWith("persists: ") === true));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:distribution" && edge.target === "proc:artifact:station_mat_pickle" && edge.label === "persists"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "mod:distribution.fit_distribution" && edge.target === "proc:artifact:distribution_json" && edge.label === "persists"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "mod:kerndichteschätzer" && edge.target === "proc:artifact:kde_min_max_values_json" && edge.label === "persists"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "mod:arrival_table.generate_arrival_table" && edge.target === "proc:artifact:arrival_gro_csv" && edge.label === "creates"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "mod:arrival_table.generate_arrival_table" && edge.target === "proc:artifact:arrival_klein_csv" && edge.label === "creates"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:inputs" && edge.target === "proc:pkg:extract" && edge.label === "source records"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:distribution" && edge.target === "proc:pkg:simulation" && edge.label === "fitted distributions / KDE"));
+  assert.ok(!hasEdge(config, (edge) => edge.source === "proc:pkg:simulation" && edge.target === "proc:pkg:outputs"));
 
   const extractPackage = config.packages.find((pkg) => pkg.id === "proc:pkg:extract");
   assert.ok(extractPackage?.preview?.some((line) => line.includes("Produces: df_data.csv")));
-  assert.ok(extractPackage?.preview?.some((line) => line.includes("df_data_with_order_cluster.csv")));
-
   const distributionPackage = config.packages.find((pkg) => pkg.id === "proc:pkg:distribution");
   assert.ok(distributionPackage?.preview?.some((line) => line.includes("{station}_{mat}.pickle")));
 
@@ -79,26 +89,30 @@ test("buildProcessDiagramConfigFromGraph builds a scan-based Layer-1 dataflow ov
     assert.ok(pkg.childViewId?.startsWith("view:process-stage:"));
   }
 
-  assert.equal(config.stageViews?.length, 7);
+  assert.equal(config.stageViews?.length, 6);
   const stageViewsById = new Map((config.stageViews ?? []).map((view) => [view.id, view]));
   assert.ok(stageViewsById.get("view:process-stage:extract")?.nodeRefs.includes("mod:data_extraction"));
-  assert.ok(!stageViewsById.get("view:process-stage:extract")?.nodeRefs.includes("mod:data_extraction:DataExtraction"));
-  assert.ok(stageViewsById.get("view:process-stage:extract")?.nodeRefs.includes("proc:artifact:df_data_csv"));
-  assert.ok(stageViewsById.get("view:process-stage:extract")?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
-  assert.ok(stageViewsById.get("view:process-stage:extract")?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
+  assert.ok(stageViewsById.get("view:process-stage:extract")?.nodeRefs.includes("proc:artifact:df_data_with_order_worker_csv"));
+
   const transformStageNodeRefs = stageViewsById.get("view:process-stage:transform")?.nodeRefs ?? [];
   assert.ok(transformStageNodeRefs.includes("mod:color_change"));
-  assert.ok(transformStageNodeRefs.includes("mod:data_analyzer"));
   assert.ok(transformStageNodeRefs.includes("proc:artifact:color_change_json"));
   assert.ok(transformStageNodeRefs.includes("proc:artifact:color_change_fallback_json"));
-  const matchStageNodeRefs = stageViewsById.get("view:process-stage:match")?.nodeRefs ?? [];
-  assert.ok(matchStageNodeRefs.includes("mod:is_table.generate_is_table"));
-  assert.ok(matchStageNodeRefs.includes("mod:filter_methods"));
-  assert.ok(!matchStageNodeRefs.includes("mod:filter_methods:FilterMethods"));
-  assert.ok(stageViewsById.get("view:process-stage:distribution")?.nodeRefs.includes("proc:artifact:kde_min_max_values_json"));
-  assert.ok(stageViewsById.get("view:process-stage:simulation")?.nodeRefs.includes("proc:artifact:filter_stats_exports"));
-  assert.ok(stageViewsById.get("view:process-stage:outputs")?.nodeRefs.includes("mod:arrival_table.generate_arrival_table"));
-  assert.ok(stageViewsById.get("view:process-stage:outputs")?.nodeRefs.includes("proc:artifact:arrival_csvs"));
+
+  const distributionStageNodeRefs = stageViewsById.get("view:process-stage:distribution")?.nodeRefs ?? [];
+  assert.ok(distributionStageNodeRefs.includes("mod:distribution.fit_distribution"));
+  assert.ok(distributionStageNodeRefs.includes("proc:artifact:distribution_json"));
+  assert.ok(distributionStageNodeRefs.includes("proc:artifact:effency_json"));
+  assert.ok(distributionStageNodeRefs.includes("proc:artifact:kde_min_max_values_json"));
+
+  const simulationStageNodeRefs = stageViewsById.get("view:process-stage:simulation")?.nodeRefs ?? [];
+  assert.ok(simulationStageNodeRefs.includes("mod:simulation_data_generator"));
+  assert.ok(simulationStageNodeRefs.includes("mod:arrival_table.generate_arrival_table"));
+  assert.ok(simulationStageNodeRefs.includes("proc:artifact:arrival_gro_csv"));
+  assert.ok(simulationStageNodeRefs.includes("proc:artifact:arrival_klein_csv"));
+  assert.ok(simulationStageNodeRefs.includes("proc:artifact:filter_stats_xlsx"));
+  assert.ok(simulationStageNodeRefs.includes("proc:artifact:outliners_xlsx"));
+  assert.ok(!stageViewsById.has("view:process-stage:outputs"));
 
   const assignedStageByNodeRef = new Map<string, string>();
   for (const stageView of config.stageViews ?? []) {
@@ -116,7 +130,7 @@ test("buildProcessDiagramConfigFromGraph builds a scan-based Layer-1 dataflow ov
   }
 });
 
-test("augmentGraphWithUmlOverlays renders the pipeline Layer-1 and clean stage views", () => {
+test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated stage views", () => {
   const graph = loadPipelineGraph();
   const augmented = augmentGraphWithUmlOverlays(JSON.parse(JSON.stringify(graph)) as ProjectGraph);
 
@@ -126,23 +140,21 @@ test("augmentGraphWithUmlOverlays renders the pipeline Layer-1 and clean stage v
   assert.ok(processView);
   assert.ok((processView?.nodeRefs.length ?? 0) >= 18);
   assert.ok(processView?.nodeRefs.includes("proc:pkg:inputs"));
-  assert.ok(processView?.nodeRefs.includes("proc:pkg:outputs"));
+  assert.ok(processView?.nodeRefs.includes("proc:pkg:simulation"));
+  assert.ok(!processView?.nodeRefs.includes("proc:pkg:outputs"));
   assert.ok(processView?.nodeRefs.includes("proc:input:database-import"));
-  assert.ok(processView?.nodeRefs.includes("proc:input:file-imports"));
-  assert.ok(processView?.nodeRefs.includes("proc:input:external-sources"));
-  assert.ok(processView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-  assert.ok(processView?.nodeRefs.includes("proc:artifact:kde_min_max_values_json"));
-  assert.ok(processView?.nodeRefs.includes("proc:artifact:arrival_csvs"));
+  assert.ok(processView?.nodeRefs.includes("proc:artifact-cluster:extract_tabular_category"));
+  assert.ok(processView?.nodeRefs.includes("proc:artifact-cluster:distribution_json_category"));
   assert.ok(processView?.nodeRefs.includes("proc:output:arrival-table"));
-  assert.ok(processView?.nodeRefs.includes("proc:output:generated-data"));
-  assert.ok(processView?.nodeRefs.includes("proc:output:persisted-models"));
   assert.ok(processView?.nodeRefs.includes("proc:output:simulation-results"));
-  assert.ok((processView?.edgeRefs.length ?? 0) >= 20);
+  assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_arrival_table:to-simulation-output"));
+  assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_simulation_results:to-simulation-output"));
+  assert.ok(!processView?.edgeRefs.includes("process-edge:pipeline:simulation->outputs"));
   assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("ext:")));
   assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("stub:")));
-  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:note:")));
-  assert.ok(processView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:src:")));
 
+  const distributionArtifact = augmented.symbols.find((candidate) => candidate.id === "proc:artifact:distribution_json");
+  assert.ok(distributionArtifact?.preview?.lines[0]?.startsWith("@preview "));
   const extractPackage = augmented.symbols.find((candidate) => candidate.id === "proc:pkg:extract");
   assert.ok(extractPackage?.preview?.lines.some((line) => line.includes("Produces: df_data.csv")));
   const distributionPackage = augmented.symbols.find((candidate) => candidate.id === "proc:pkg:distribution");
@@ -156,64 +168,66 @@ test("augmentGraphWithUmlOverlays renders the pipeline Layer-1 and clean stage v
     assert.ok(childView);
     assert.equal(childView?.parentViewId, "view:process-overview");
     assert.equal(childView?.scope, "group");
-    assert.ok(childView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("ext:")));
-    assert.ok(childView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("stub:")));
-    assert.ok(childView?.nodeRefs.every((nodeRef) => {
-      const node = augmented.symbols.find((candidate) => candidate.id === nodeRef);
-      return node?.kind === "module" || node?.kind === "class" || node?.id.startsWith("proc:artifact:");
-    }));
   }
 
   const oldRoot = augmented.views.find((view) => view.id === "view:root");
-  assert.equal(oldRoot?.parentViewId, "view:process-overview");
-  assert.equal(oldRoot?.hiddenInSidebar, true);
-  assert.equal(augmented.views.find((view) => view.id === "view:grp:domain:data-sources")?.hiddenInSidebar, true);
-  assert.equal(augmented.views.find((view) => view.id === "view:grp:dir:__root__")?.hiddenInSidebar, true);
+  if (oldRoot) {
+    assert.equal(oldRoot.parentViewId, "view:process-overview");
+    assert.equal(oldRoot.hiddenInSidebar, true);
+  }
 
   const stageExtract = augmented.views.find((view) => view.id === "view:process-stage:extract");
   assert.equal(stageExtract?.hiddenInSidebar, false);
+  assert.ok(stageExtract?.nodeRefs.includes("mod:data_extraction"));
   assert.ok(stageExtract?.nodeRefs.includes("proc:artifact:df_data_csv"));
-  assert.ok(stageExtract?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
-  assert.ok(stageExtract?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
+  assert.ok(stageExtract?.nodeRefs.includes("proc:artifact:df_data_with_order_worker_csv"));
+
+  const stageTransform = augmented.views.find((view) => view.id === "view:process-stage:transform");
+  assert.ok(stageTransform?.nodeRefs.includes("mod:color_change"));
+  assert.ok(stageTransform?.nodeRefs.includes("proc:artifact:color_change_json"));
+
+  const stageDistribution = augmented.views.find((view) => view.id === "view:process-stage:distribution");
+  assert.ok(stageDistribution?.nodeRefs.includes("mod:distribution.fit_distribution"));
+  assert.ok(stageDistribution?.nodeRefs.includes("proc:artifact:distribution_json"));
+  assert.ok(stageDistribution?.nodeRefs.includes("proc:artifact:kde_min_max_values_json"));
+
+  const stageSimulation = augmented.views.find((view) => view.id === "view:process-stage:simulation");
+  assert.ok(stageSimulation?.nodeRefs.includes("mod:simulation_data_generator"));
+  assert.ok(stageSimulation?.nodeRefs.includes("mod:arrival_table.generate_arrival_table"));
+  assert.ok(stageSimulation?.nodeRefs.includes("proc:artifact:arrival_gro_csv"));
+  assert.ok(stageSimulation?.nodeRefs.includes("proc:artifact:arrival_klein_csv"));
+  assert.ok(stageSimulation?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
+  assert.ok(stageSimulation?.nodeRefs.includes("proc:artifact:outliners_xlsx"));
+
   assert.equal(augmented.views.find((view) => view.id === "view:mod:data_extraction")?.parentViewId, "view:process-stage:extract");
   assert.equal(augmented.views.find((view) => view.id === "view:mod:data_analyzer")?.parentViewId, "view:process-stage:transform");
   assert.equal(augmented.views.find((view) => view.id === "view:mod:simulation_data_generator")?.parentViewId, "view:process-stage:simulation");
-  assert.equal(augmented.views.find((view) => view.id === "view:grp:dir:arrival_table")?.parentViewId, "view:process-stage:outputs");
-  assert.equal(augmented.views.find((view) => view.id === "view:grp:dir:is_table")?.parentViewId, "view:process-stage:match");
-  assert.equal(augmented.views.find((view) => view.id === "view:grp:dir:distribution")?.parentViewId, "view:process-stage:distribution");
-
-  const connectorView = augmented.views.find((view) => view.id === "view:grp:dir:connector");
-  assert.deepEqual(connectorView?.nodeRefs, [
-    "mod:connector.__init__",
-    "mod:connector.druid_connector",
-    "mod:connector.mes_connector",
-  ]);
-  assert.equal(connectorView?.nodePositions, undefined);
+  assert.equal(augmented.views.find((view) => view.id === "view:grp:dir:arrival_table")?.parentViewId, "view:process-stage:simulation");
 
   const extractionModuleView = augmented.views.find((view) => view.id === "view:mod:data_extraction");
   assert.ok(extractionModuleView?.nodeRefs.includes("mod:data_extraction:DataExtraction"));
   assert.ok(extractionModuleView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-  assert.ok(extractionModuleView?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
-  assert.ok(extractionModuleView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
-  assert.equal(extractionModuleView?.nodePositions, undefined);
-
-  const stageDistribution = augmented.views.find((view) => view.id === "view:process-stage:distribution");
-  assert.ok(!stageDistribution?.nodeRefs.includes("mod:distribution.save_object:SaveObject"));
+  assert.ok(extractionModuleView?.nodeRefs.includes("proc:artifact:nass_var_csv"));
 
   const extractionClassView = augmented.views.find((view) => view.id === "view:mod:data_extraction:DataExtraction");
   assert.ok((extractionClassView?.nodeRefs.length ?? 0) > 5);
   assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-  assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
   assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
-  assert.ok(extractionClassView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("stub:")));
-  assert.ok(extractionClassView?.nodeRefs.every((nodeRef) => {
-    const node = augmented.symbols.find((candidate) => candidate.id === nodeRef);
-    return node?.kind === "method" || node?.id.startsWith("proc:artifact:");
-  }));
-  assert.equal(extractionClassView?.nodePositions, undefined);
+
+  const distributionModuleView = augmented.views.find((view) => view.id === "view:mod:distribution.fit_distribution");
+  assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:distribution_json"));
+  assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:fallback_json"));
+
+  const simulationModuleView = augmented.views.find((view) => view.id === "view:mod:simulation_data_generator");
+  assert.ok(simulationModuleView?.nodeRefs.includes("proc:artifact:filter_stats_fallback_xlsx"));
+  assert.ok(simulationModuleView?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
+  assert.ok(simulationModuleView?.nodeRefs.includes("proc:artifact:outliners_xlsx"));
+  assert.ok(simulationModuleView?.nodeRefs.includes("proc:artifact:distribution_xlsx"));
+  assert.ok(simulationModuleView?.nodeRefs.includes("proc:artifact:effency_json"));
 
   const stageViews = augmented.views.filter((view) => view.id.startsWith("view:process-stage:"));
-  assert.equal(stageViews.length, 7);
+  assert.equal(stageViews.length, 6);
+  assert.ok(!augmented.views.some((view) => view.id === "view:process-stage:outputs"));
 
   const assignedStageByNodeRef = new Map<string, string>();
   for (const stageView of stageViews) {

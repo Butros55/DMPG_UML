@@ -179,8 +179,11 @@ export interface AppState {
 
   // Hover card
   hoverSymbolId: string | null;
-  hoverPosition: { x: number; y: number } | null;
-  setHoverSymbol: (id: string | null, pos?: { x: number; y: number } | null) => void;
+  hoverPosition: { x: number; y: number; source?: "canvas" | "inspector" } | null;
+  setHoverSymbol: (
+    id: string | null,
+    pos?: { x: number; y: number; source?: "canvas" | "inspector" } | null,
+  ) => void;
 
   // Focus-navigate: zoom to a specific node after view change
   focusNodeId: string | null;

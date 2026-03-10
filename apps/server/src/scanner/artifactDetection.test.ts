@@ -116,24 +116,40 @@ def export_results(df):
     assert.ok(hasWriteEdge(graph, "mod:simulation_data_generator:export_results", "outputs/simulation.json"));
 
     const processView = graph.views.find((view) => view.id === "view:process-overview");
+    assert.ok(processView?.nodeRefs.includes("proc:output:arrival-table"));
+    assert.ok(processView?.nodeRefs.includes("proc:output:generated-simulation-data"));
+    assert.ok(processView?.nodeRefs.includes("proc:output:simulation-results"));
     assert.ok(processView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-    assert.ok(processView?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
-    assert.ok(processView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
-    assert.ok(processView?.nodeRefs.includes("proc:artifact:distribution_json"));
+    assert.ok(processView?.nodeRefs.some((nodeRef) => nodeRef.startsWith("proc:artifact-cluster:distribution_json")));
     assert.ok(processView?.nodeRefs.includes("proc:artifact:model_pickle"));
-    assert.ok(processView?.nodeRefs.includes("proc:artifact:arrival_csvs"));
+    assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_arrival_table:to-simulation-output"));
+    assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_generated_simulation_data:to-simulation-output"));
 
     const extractStageView = graph.views.find((view) => view.id === "view:process-stage:extract");
-    assert.ok(extractStageView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-    assert.ok(extractStageView?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
-    assert.ok(extractStageView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
+    assert.deepEqual(extractStageView?.nodeRefs, [
+      "mod:data_extraction",
+      "proc:artifact:df_data_with_order_cluster_csv",
+      "proc:artifact:df_data_with_order_csv",
+      "proc:artifact:df_data_csv",
+    ]);
 
     const distributionStageView = graph.views.find((view) => view.id === "view:process-stage:distribution");
-    assert.ok(distributionStageView?.nodeRefs.includes("proc:artifact:distribution_json"));
-    assert.ok(distributionStageView?.nodeRefs.includes("proc:artifact:model_pickle"));
+    assert.deepEqual(distributionStageView?.nodeRefs, [
+      "mod:distribution.fit_distribution",
+      "proc:artifact:distribution_json",
+      "proc:artifact:fallback_json",
+      "proc:artifact:kde_min_max_values_json",
+      "proc:artifact:model_pickle",
+    ]);
 
-    const outputsStageView = graph.views.find((view) => view.id === "view:process-stage:outputs");
-    assert.ok(outputsStageView?.nodeRefs.includes("proc:artifact:arrival_csvs"));
+    const simulationStageView = graph.views.find((view) => view.id === "view:process-stage:simulation");
+    assert.ok(simulationStageView?.nodeRefs.includes("mod:simulation_data_generator"));
+    assert.ok(simulationStageView?.nodeRefs.includes("mod:arrival_table.generate_arrival_table"));
+    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:arrival_gro_csv"));
+    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:arrival_klein_csv"));
+    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
+    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:outliners_xlsx"));
+    assert.equal(graph.views.find((view) => view.id === "view:process-stage:outputs"), undefined);
 
     const distributionModuleView = graph.views.find((view) => view.id === "view:mod:distribution.fit_distribution");
     assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:distribution_json"));
@@ -156,7 +172,9 @@ def export_results(df):
     assert.ok(stageWriteTargets.has("proc:artifact:df_data_csv"));
     assert.ok(stageWriteTargets.has("proc:artifact:distribution_json"));
     assert.ok(stageWriteTargets.has("proc:artifact:model_pickle"));
-    assert.ok(stageWriteTargets.has("proc:artifact:arrival_csvs"));
+    assert.ok(stageWriteTargets.has("proc:artifact:arrival_gro_csv"));
+    assert.ok(stageWriteTargets.has("proc:artifact:arrival_klein_csv"));
+    assert.ok(stageWriteTargets.has("proc:artifact:filter_stats_xlsx"));
   } finally {
     fs.rmSync(projectDir, { recursive: true, force: true });
   }

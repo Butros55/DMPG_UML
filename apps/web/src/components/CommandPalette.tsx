@@ -264,7 +264,7 @@ export function CommandPalette() {
       },
       {
         id: "undo",
-        label: "Undo (Canvas)",
+        label: "Rückgängig (Canvas)",
         kind: "edit",
         keywords: ["undo", "rückgängig", "ctrl z"],
         disabled: !historyCanUndo,
@@ -272,7 +272,7 @@ export function CommandPalette() {
       },
       {
         id: "redo",
-        label: "Redo (Canvas)",
+        label: "Wiederholen (Canvas)",
         kind: "edit",
         keywords: ["redo", "wiederholen", "ctrl shift z"],
         disabled: !historyCanRedo,
@@ -280,7 +280,7 @@ export function CommandPalette() {
       },
       {
         id: "delete-selected-symbol",
-        label: "Selektierten Node löschen",
+        label: "Ausgewählten Knoten löschen",
         kind: "edit",
         keywords: ["delete", "node", "symbol"],
         disabled: !selectedSymbolId,
@@ -326,7 +326,7 @@ export function CommandPalette() {
       },
       {
         id: "open-settings",
-        label: "Diagram Settings öffnen",
+        label: "Diagramm-Einstellungen öffnen",
         kind: "ui",
         keywords: ["settings", "inspector", "diagram"],
         run: () => {
@@ -345,7 +345,7 @@ export function CommandPalette() {
       },
       {
         id: "reset-diagram-settings",
-        label: "Diagram Settings zurücksetzen",
+        label: "Diagramm-Einstellungen zurücksetzen",
         kind: "layout",
         keywords: ["settings", "reset", "default"],
         run: () => resetDiagramSettings(),
@@ -563,3 +563,4 @@ export function CommandPalette() {
     </div>
   );
 }
+
