@@ -2749,11 +2749,44 @@ body,
   font-size: 11px;
 }
 
+.ai-provider-picker {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+}
+
+.ai-provider-select {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ai-provider-select:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.ai-provider-select__icon {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 .ai-provider-badge {
   padding: 2px 8px;
   border-radius: 4px;
   font-weight: 600;
   font-size: 11px;
+  flex-shrink: 0;
 }
 
 .ai-provider-badge--local {
@@ -2770,6 +2803,105 @@ body,
   color: var(--text-dim);
   font-size: 10px;
   font-family: monospace;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-provider-model--empty {
+  color: var(--yellow);
+}
+
+.ai-provider-hint {
+  margin-top: -2px;
+  margin-bottom: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.ai-provider-hint--error {
+  color: var(--yellow);
+}
+
+.ai-provider-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(22, 26, 42, 0.98);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
+}
+
+.ai-provider-menu__item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ai-provider-menu__item:hover {
+  background: rgba(108, 140, 255, 0.08);
+  border-color: rgba(108, 140, 255, 0.18);
+}
+
+.ai-provider-menu__item--active {
+  background: rgba(128, 224, 160, 0.08);
+  border-color: rgba(128, 224, 160, 0.22);
+}
+
+.ai-provider-menu__name {
+  font-size: 11px;
+  color: var(--text);
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+
+.ai-provider-menu__meta,
+.ai-provider-menu__footer,
+.ai-provider-menu__status {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.ai-provider-menu__status {
+  padding: 6px 8px;
+}
+
+.ai-provider-menu__status--error {
+  color: var(--red);
+}
+
+.ai-provider-menu__status--warning {
+  color: var(--yellow);
+}
+
+.ai-provider-menu__footer {
+  padding: 4px 8px 2px;
+}
+
+.ai-provider-menu__spinner {
+  display: inline-block;
+  animation: ai-provider-spin 0.8s linear infinite;
+}
+
+@keyframes ai-provider-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* ─── AI Scope Toggle ────────────────────────── */
@@ -2845,6 +2977,37 @@ body,
   margin-bottom: 10px;
 }
 
+.ai-workspace__summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ai-workspace__summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(108, 140, 255, 0.14);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(108, 140, 255, 0.08), rgba(12, 16, 30, 0.74));
+}
+
+.ai-workspace__summary-card strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ai-workspace__summary-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 .ai-workspace__config-card,
 .ai-workspace-result-card {
   border: 1px solid var(--border);
@@ -2893,11 +3056,93 @@ body,
   color: var(--text-dim);
 }
 
+.ai-log-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .ai-workspace-result-card__header {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.ai-code-hygiene {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-code-hygiene__sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-code-hygiene__section {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+}
+
+.ai-code-hygiene__toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.ai-code-hygiene__toggle-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ai-code-hygiene__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 10px 10px;
+}
+
+.ai-code-hygiene__item {
+  border: 1px solid rgba(255, 107, 107, 0.18);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(255, 107, 107, 0.08), rgba(255, 255, 255, 0.02));
+}
+
+.ai-code-hygiene__item--commented {
+  border-color: rgba(255, 216, 102, 0.18);
+  background: linear-gradient(180deg, rgba(255, 216, 102, 0.08), rgba(255, 255, 255, 0.02));
+}
+
+.ai-code-hygiene__preview {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(7, 10, 18, 0.9);
+  color: #d6e0ff;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
 }
 
 /* ─── Review Hints Panel ─────────────────────── */
@@ -3244,6 +3489,12 @@ body,
   margin-top: 10px;
 }
 
+.review-item__action-buttons {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .review-item__focus-btn,
 .review-item__status-btn {
   border: 1px solid var(--border);
@@ -3482,6 +3733,10 @@ body,
 .ai-log-phase--dead-code { color: var(--red); }
 .ai-log-phase--structure { color: #b48cff; }
 .ai-log-phase--summaries { color: var(--green); }
+.ai-log-phase--uml_reference_compare { color: #7ec8ff; }
+.ai-log-phase--structure_review { color: #b48cff; }
+.ai-log-phase--external_context_review { color: #94e2b1; }
+.ai-log-phase--label_improvement { color: var(--yellow); }
 
 .ai-log-text {
   flex: 1;
@@ -3506,7 +3761,7 @@ body,
 
 .ai-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin-top: 8px;
 }
@@ -3525,6 +3780,13 @@ body,
 .ai-stat .num {
   font-weight: 700;
   color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .ai-workspace__summary-grid,
+  .ai-stats {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── AI Processing Pulse on Canvas Nodes (kind-colored) ── */

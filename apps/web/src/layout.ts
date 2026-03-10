@@ -50,6 +50,13 @@ export interface LayoutResult {
   routesByEdge: Map<string, EdgeRoute>;
 }
 
+type PortDefinition = {
+  elkId: string;
+  handleId: string;
+  side: PortInfo["side"];
+  portType: "source" | "target";
+};
+
 /* ── Dynamic node sizing based on content ──────── */
 const LINE_HEIGHT = 20;
 const HEADER_HEIGHT = 40;
@@ -228,6 +235,154 @@ function buildEdgeRoute(edge: ElkExtendedEdge): EdgeRoute | null {
   };
 }
 
+function relationPortSides(relationType: string): { sourceSide: PortInfo["side"]; targetSide: PortInfo["side"] } {
+  if (relationType === "imports") {
+    return { sourceSide: "NORTH", targetSide: "WEST" };
+  }
+  if (relationType === "reads" || relationType === "writes") {
+    return { sourceSide: "SOUTH", targetSide: "SOUTH" };
+  }
+  return { sourceSide: "EAST", targetSide: "WEST" };
+}
+
+function buildPortAssignments(
+  nodes: Node[],
+  edges: Edge[],
+): {
+  sortedEdges: Edge[];
+  nodePortDefs: Map<string, PortDefinition[]>;
+  edgeHandleMap: Map<string, { sourceHandle: string; targetHandle: string }>;
+} {
+  const nodeIdSet = new Set(nodes.map((n) => n.id));
+  const srcCounts = new Map<string, Map<PortInfo["side"], number>>();
+  const tgtCounts = new Map<string, Map<PortInfo["side"], number>>();
+  const nodePortDefs = new Map<string, PortDefinition[]>();
+
+  for (const node of nodes) {
+    srcCounts.set(node.id, new Map());
+    tgtCounts.set(node.id, new Map());
+    nodePortDefs.set(node.id, []);
+  }
+
+  const validEdges = edges.filter((edge) => nodeIdSet.has(edge.source) && nodeIdSet.has(edge.target));
+  const sortedEdges = [...validEdges].sort((a, b) => {
+    if (a.source !== b.source) return a.source.localeCompare(b.source);
+    if (a.target !== b.target) return a.target.localeCompare(b.target);
+    const aType = (a.data as { relationType?: string } | undefined)?.relationType ?? "calls";
+    const bType = (b.data as { relationType?: string } | undefined)?.relationType ?? "calls";
+    if (aType !== bType) return aType.localeCompare(bType);
+    return a.id.localeCompare(b.id);
+  });
+
+  const edgeHandleMap = new Map<string, { sourceHandle: string; targetHandle: string }>();
+
+  for (const edge of sortedEdges) {
+    const relationType = (edge.data as { relationType?: string } | undefined)?.relationType ?? "calls";
+    const { sourceSide, targetSide } = relationPortSides(relationType);
+
+    const srcSideCounts = srcCounts.get(edge.source)!;
+    const srcIndex = srcSideCounts.get(sourceSide) ?? 0;
+    srcSideCounts.set(sourceSide, srcIndex + 1);
+
+    const tgtSideCounts = tgtCounts.get(edge.target)!;
+    const tgtIndex = tgtSideCounts.get(targetSide) ?? 0;
+    tgtSideCounts.set(targetSide, tgtIndex + 1);
+
+    const sourceHandle = `src-${sourceSide.toLowerCase()}-${srcIndex}`;
+    const targetHandle = `tgt-${targetSide.toLowerCase()}-${tgtIndex}`;
+
+    nodePortDefs.get(edge.source)!.push({
+      elkId: `${edge.source}:${sourceHandle}`,
+      handleId: sourceHandle,
+      side: sourceSide,
+      portType: "source",
+    });
+    nodePortDefs.get(edge.target)!.push({
+      elkId: `${edge.target}:${targetHandle}`,
+      handleId: targetHandle,
+      side: targetSide,
+      portType: "target",
+    });
+
+    edgeHandleMap.set(edge.id, { sourceHandle, targetHandle });
+  }
+
+  return { sortedEdges, nodePortDefs, edgeHandleMap };
+}
+
+function distributeOffset(index: number, total: number, span: number, inset: number): number {
+  if (total <= 1) return span / 2;
+  const usable = Math.max(0, span - inset * 2);
+  return inset + usable * (index / Math.max(1, total - 1));
+}
+
+function fallbackPortCoordinates(
+  side: PortInfo["side"],
+  index: number,
+  total: number,
+  width: number,
+  height: number,
+): { x: number; y: number } {
+  const horizontalInset = Math.min(32, Math.max(16, width * 0.14));
+  const verticalInset = Math.min(28, Math.max(14, height * 0.18));
+
+  switch (side) {
+    case "NORTH":
+      return { x: distributeOffset(index, total, width, horizontalInset), y: 0 };
+    case "SOUTH":
+      return { x: distributeOffset(index, total, width, horizontalInset), y: height };
+    case "EAST":
+      return { x: width, y: distributeOffset(index, total, height, verticalInset) };
+    case "WEST":
+      return { x: 0, y: distributeOffset(index, total, height, verticalInset) };
+    default:
+      return { x: width / 2, y: height };
+  }
+}
+
+export function buildFallbackPorts(
+  nodes: Node[],
+  edges: Edge[],
+  compactMode = false,
+): Pick<LayoutResult, "portsByNode" | "edgeHandles"> {
+  const { nodePortDefs, edgeHandleMap } = buildPortAssignments(nodes, edges);
+  const portsByNode = new Map<string, PortInfo[]>();
+
+  for (const node of nodes) {
+    const defs = nodePortDefs.get(node.id) ?? [];
+    if (defs.length === 0) {
+      portsByNode.set(node.id, []);
+      continue;
+    }
+
+    const { width, height } = estimateNodeSize(node, compactMode);
+    const defsBySide = new Map<PortInfo["side"], PortDefinition[]>();
+    for (const def of defs) {
+      const entries = defsBySide.get(def.side) ?? [];
+      entries.push(def);
+      defsBySide.set(def.side, entries);
+    }
+
+    const ports: PortInfo[] = [];
+    for (const defsForSide of defsBySide.values()) {
+      defsForSide.forEach((def, index) => {
+        const coords = fallbackPortCoordinates(def.side, index, defsForSide.length, width, height);
+        ports.push({
+          id: def.handleId,
+          x: coords.x,
+          y: coords.y,
+          side: def.side,
+          type: def.portType,
+        });
+      });
+    }
+
+    portsByNode.set(node.id, ports);
+  }
+
+  return { portsByNode, edgeHandles: edgeHandleMap };
+}
+
 export async function layoutNodes(
   nodes: Node[],
   edges: Edge[],
@@ -239,69 +394,7 @@ export async function layoutNodes(
     ...layoutSettings,
   } satisfies DiagramLayoutSettings;
 
-  const nodeIdSet = new Set(nodes.map((n) => n.id));
-
-  /* ── Build per-edge dynamic ports ────────────────────────────── */
-  // Count ports per node per side for sequential naming
-  const srcCounts = new Map<string, Map<string, number>>(); // nodeId → side → count
-  const tgtCounts = new Map<string, Map<string, number>>();
-  for (const n of nodes) {
-    srcCounts.set(n.id, new Map());
-    tgtCounts.set(n.id, new Map());
-  }
-
-  // Collect per-node port definitions and per-edge handle mapping
-  const nodePortDefs = new Map<string, Array<{ elkId: string; handleId: string; side: string; portType: "source" | "target" }>>();
-  for (const n of nodes) {
-    nodePortDefs.set(n.id, []);
-  }
-
-  const edgeHandleMap = new Map<string, { sourceHandle: string; targetHandle: string }>();
-
-  // Filter to valid edges (both endpoints present)
-  const validEdges = edges.filter((e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target));
-
-  // Sort edges deterministically so port ordering is stable across layout passes
-  const sortedEdges = [...validEdges].sort((a, b) => {
-    if (a.source !== b.source) return a.source.localeCompare(b.source);
-    if (a.target !== b.target) return a.target.localeCompare(b.target);
-    const aType = (a.data as { relationType?: string } | undefined)?.relationType ?? "calls";
-    const bType = (b.data as { relationType?: string } | undefined)?.relationType ?? "calls";
-    return aType.localeCompare(bType);
-  });
-
-  for (const e of sortedEdges) {
-    const relType = (e.data as { relationType?: string } | undefined)?.relationType ?? "calls";
-
-    // Determine port sides based on relation type
-    const srcSide = relType === "imports" ? "NORTH"
-      : (relType === "reads" || relType === "writes") ? "SOUTH"
-        : "EAST";
-    const tgtSide = relType === "imports" ? "WEST"
-      : (relType === "reads" || relType === "writes") ? "SOUTH"
-        : "WEST";
-
-    // Generate sequential handle IDs per side
-    const srcSideCounts = srcCounts.get(e.source)!;
-    const srcIdx = srcSideCounts.get(srcSide) ?? 0;
-    srcSideCounts.set(srcSide, srcIdx + 1);
-
-    const tgtSideCounts = tgtCounts.get(e.target)!;
-    const tgtIdx = tgtSideCounts.get(tgtSide) ?? 0;
-    tgtSideCounts.set(tgtSide, tgtIdx + 1);
-
-    const srcHandleId = `src-${srcSide.toLowerCase()}-${srcIdx}`;
-    const tgtHandleId = `tgt-${tgtSide.toLowerCase()}-${tgtIdx}`;
-
-    // ELK port IDs are globally unique (prefixed with nodeId)
-    const srcElkId = `${e.source}:${srcHandleId}`;
-    const tgtElkId = `${e.target}:${tgtHandleId}`;
-
-    nodePortDefs.get(e.source)!.push({ elkId: srcElkId, handleId: srcHandleId, side: srcSide, portType: "source" });
-    nodePortDefs.get(e.target)!.push({ elkId: tgtElkId, handleId: tgtHandleId, side: tgtSide, portType: "target" });
-
-    edgeHandleMap.set(e.id, { sourceHandle: srcHandleId, targetHandle: tgtHandleId });
-  }
+  const { sortedEdges, nodePortDefs, edgeHandleMap } = buildPortAssignments(nodes, edges);
 
   /* ── Build ELK graph with dynamic ports ─────────────────────── */
   const elkNodes: ElkNode[] = nodes.map((n) => {

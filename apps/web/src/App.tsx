@@ -219,7 +219,7 @@ export function App() {
         )}
         <button
           className="debug-transport-toggle"
-          title="Transport-Debug ein-/ausblenden"
+          title="Debug ein-/ausblenden"
           onClick={toggleDebugTransport}
         >
           <i className="bi bi-bug" />

@@ -1,9 +1,21 @@
 import { Router, type Router as RouterType } from "express";
-import { AiDocRequestSchema, SymbolDocSchema } from "@dmpg/shared";
+import {
+  AiDocRequestSchema,
+  bestNavigableViewForSymbol,
+  SymbolDocSchema,
+  type ProjectAnalysisFinding,
+} from "@dmpg/shared";
 import type { Symbol as Sym, Relation, DiagramView, RelationType } from "@dmpg/shared";
 import { getGraph, setGraph, getCurrentProjectPath, loadAiProgress, saveAiProgress, clearAiProgress } from "../store.js";
 import { callAiJson } from "../ai/client.js";
 import { formatAiModelRoutingSummary } from "../ai/modelRouting.js";
+import { listRunningOllamaModels } from "../ai/ollamaLocalModels.js";
+import { resolveProjectAnalysisScope } from "../ai/analysisScope.js";
+import {
+  detectCommentedOutCodeFindings,
+  detectUnreachableCodeFindings,
+  sortProjectAnalysisFindings,
+} from "../ai/codeHygiene.js";
 import { normalizeSymbolDocPayload, parseStructuredResponse } from "../ai/responseNormalization.js";
 import { AI_USE_CASES, getTaskTypeForUseCase } from "../ai/useCases.js";
 import { aiUmlRouter } from "./ai-uml.js";
@@ -17,6 +29,22 @@ aiRouter.use("/vision", aiVisionRouter);
 
 /* ── AI Provider config ─────────────────────────── */
 console.log(`[AI] ${formatAiModelRoutingSummary()}`);
+
+aiRouter.get("/local-models", async (_req, res) => {
+  try {
+    const models = await listRunningOllamaModels();
+    res.json({
+      models,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(502).json({
+      models: [],
+      error: error instanceof Error ? error.message : "Could not run `ollama ps`.",
+      checkedAt: new Date().toISOString(),
+    });
+  }
+});
 
 /** Try to read source code for a symbol from its location path */
 function readSourceForSymbol(
@@ -410,20 +438,29 @@ aiRouter.post("/analyze", async (req, res) => {
     return;
   }
 
-  const g = getGraph();
-  if (!g) {
+  const loadedGraph = getGraph();
+  if (!loadedGraph) {
     console.log("[AI-Analyze] ERROR: No graph loaded");
     res.status(404).json({ error: "No graph loaded" });
     return;
   }
+  const g = loadedGraph;
 
-  // Optional: scope filter by viewId
+  // Optional: scope filter by viewId. The server uses the same navigable-view rules as the UI.
   const body = typeof req.body === "object" && req.body ? req.body : {};
   const scopeViewId = body.viewId as string | undefined;
   const resumeMode = body.resume === true;
-  const scopeView = scopeViewId ? g.views.find((v) => v.id === scopeViewId) : undefined;
-  const scopeSymbolIds = scopeView ? new Set(scopeView.nodeRefs) : null;
+  const analysisScope = resolveProjectAnalysisScope(g, scopeViewId);
+  const scopeView = analysisScope.scopeView;
+  const analysisTargetIds = analysisScope.targetSymbolIds;
+  const analysisTargetFiles = analysisScope.targetFiles;
   const scopeLabel = scopeView ? `View: ${scopeView.title}` : "Gesamtes Projekt";
+  const symbolMap = new Map(g.symbols.map((symbol) => [symbol.id, symbol]));
+
+  if (scopeViewId && !scopeView) {
+    res.status(400).json({ error: `View is not available in the navigable workspace scope: ${scopeViewId}` });
+    return;
+  }
 
   // Load saved progress for resume
   const savedProgress = resumeMode ? loadAiProgress() : null;
@@ -434,7 +471,7 @@ aiRouter.post("/analyze", async (req, res) => {
   let completedStructure = (savedProgress?.completedSymbols.structure ?? []).includes("done");
 
   console.log(`[AI-Analyze] Graph: ${g.symbols.length} symbols, ${g.relations.length} relations, ${g.views.length} views`);
-  console.log(`[AI-Analyze] Scope: ${scopeLabel}${scopeSymbolIds ? ` (${scopeSymbolIds.size} symbols)` : ""}`);
+  console.log(`[AI-Analyze] Scope: ${scopeLabel} (${analysisTargetIds.size} navigable symbols)`);
   console.log(`[AI-Analyze] Resume: ${resumeMode} (${completedDocs.size} docs, ${completedLabels.size} labels already done)`);
   console.log(`[AI-Analyze] AI config: ${formatAiModelRoutingSummary()}`);
 
@@ -477,15 +514,7 @@ aiRouter.post("/analyze", async (req, res) => {
 
   /** Find the deepest (most specific) view containing a symbol */
   function findBestView(symbolId: string): string | null {
-    let bestView: string | null = null;
-    for (const v of g!.views) {
-      if (v.nodeRefs.includes(symbolId)) {
-        if (!bestView || (v.parentViewId && v.parentViewId !== g!.rootViewId)) {
-          bestView = v.id;
-        }
-      }
-    }
-    return bestView;
+    return bestNavigableViewForSymbol(g, symbolId);
   }
 
   function send(event: Record<string, unknown>) {
@@ -510,6 +539,7 @@ aiRouter.post("/analyze", async (req, res) => {
     docsGenerated: savedProgress?.stats.docsGenerated ?? 0,
     relationsAdded: savedProgress?.stats.relationsAdded ?? 0,
     deadCodeFound: savedProgress?.stats.deadCodeFound ?? 0,
+    commentedOutFound: savedProgress?.stats.commentedOutFound ?? 0,
     groupsReviewed: savedProgress?.stats.groupsReviewed ?? 0,
   };
   analyzeState = { running: true, paused: false, phase: "labels", stats };
@@ -541,13 +571,58 @@ aiRouter.post("/analyze", async (req, res) => {
     });
   }
 
+  function resetCodeHygieneArtifacts() {
+    for (const symbol of g.symbols) {
+      if (!analysisTargetIds.has(symbol.id)) continue;
+      if (!symbol.doc?.aiGenerated?.deadCode) continue;
+
+      const nextTags = (symbol.tags ?? []).filter((tag) => tag !== "dead-code");
+      const nextAiGenerated = { ...(symbol.doc.aiGenerated ?? {}) };
+      delete nextAiGenerated.deadCode;
+
+      symbol.tags = nextTags.length > 0 ? nextTags : undefined;
+      symbol.doc = {
+        ...symbol.doc,
+        aiGenerated: Object.keys(nextAiGenerated).length > 0 ? nextAiGenerated : undefined,
+        deadCodeReason: undefined,
+        deadCodeKind: undefined,
+      };
+    }
+
+    const existingFindings = g.analysisFindings ?? [];
+    g.analysisFindings = existingFindings.filter((finding) => {
+      if (finding.type !== "dead_code" && finding.type !== "commented_out_code") {
+        return true;
+      }
+      if (finding.symbolId && analysisTargetIds.has(finding.symbolId)) {
+        return false;
+      }
+      return !analysisTargetFiles.has(finding.file);
+    });
+  }
+
+  function upsertAnalysisFinding(finding: ProjectAnalysisFinding) {
+    const current = g.analysisFindings ?? [];
+    const existingIndex = current.findIndex((entry) => entry.id === finding.id);
+    if (existingIndex >= 0) {
+      current[existingIndex] = finding;
+      g.analysisFindings = current;
+      return;
+    }
+    g.analysisFindings = [...current, finding];
+  }
+
+  if (!resumeMode) {
+    resetCodeHygieneArtifacts();
+  }
+
   try {
     // ── Phase 1: Label Cleanup ──
     console.log("[AI-Analyze] Phase 1: Labels starting");
     updateState("labels");
     const longLabelSymbols = g.symbols.filter((s) =>
       (s.label.length > 35 || s.label.includes("/") || s.label.includes("\\")) &&
-      (!scopeSymbolIds || scopeSymbolIds.has(s.id)) &&
+      analysisTargetIds.has(s.id) &&
       !completedLabels.has(s.id), // skip already completed
     );
     const labelCount = Math.min(longLabelSymbols.length, 50);
@@ -612,7 +687,7 @@ Return JSON: {"label": "cleaned label"}`,
       // Skip if already has a good summary
       if (s.doc?.summary && s.doc.summary.length >= 5) return false;
       // Skip scope filter
-      if (scopeSymbolIds && !scopeSymbolIds.has(s.id)) return false;
+      if (!analysisTargetIds.has(s.id)) return false;
       // Skip already completed
       if (completedDocs.has(s.id)) return false;
       // Skip __init__ and __pycache__ modules
@@ -732,7 +807,7 @@ Respond ONLY with valid JSON, no markdown.`,
     updateState("relations");
     const analyzable = g.symbols.filter((s) =>
       (s.kind === "function" || s.kind === "method" || s.kind === "class") && s.location &&
-      (!scopeSymbolIds || scopeSymbolIds.has(s.id)) &&
+      analysisTargetIds.has(s.id) &&
       !completedRelations.has(s.id), // skip already completed
     );
     const relLimit = Math.min(analyzable.length, 40);
@@ -747,6 +822,7 @@ Respond ONLY with valid JSON, no markdown.`,
     // Build symbol label→id map for matching
     const labelToIds = new Map<string, string[]>();
     for (const s of g.symbols) {
+      if (!analysisTargetIds.has(s.id)) continue;
       const short = s.label.split(".").pop()?.toLowerCase() ?? s.label.toLowerCase();
       const arr = labelToIds.get(short) ?? [];
       arr.push(s.id);
@@ -872,8 +948,8 @@ Respond ONLY with valid JSON.`,
     if (cancelRequested) { send({ phase: "cancelled", stats }); throw { __cancelled: true }; }
     if (pauseRequested) { send({ phase: "paused", stats }); throw { __paused: true }; }
 
-    // ── Phase 4: Dead Code Detection ──
-    console.log("[AI-Analyze] Phase 4: Dead-Code starting");
+    // ── Phase 4: Code Hygiene (unreachable blocks, commented-out code, unused symbols) ──
+    console.log("[AI-Analyze] Phase 4: Code hygiene starting");
     updateState("dead-code");
 
     // Build incoming calls/imports map
@@ -887,83 +963,177 @@ Respond ONLY with valid JSON.`,
 
     const potentialDead = g.symbols.filter((s) => {
       if (s.kind !== "function" && s.kind !== "method") return false;
-      if (scopeSymbolIds && !scopeSymbolIds.has(s.id)) return false;
+      if (!analysisTargetIds.has(s.id)) return false;
       const shortName = s.label.split(".").pop() ?? "";
       if (shortName.startsWith("__") || shortName === "main" || shortName === "run") return false;
-      if (s.tags?.includes("dead-code")) return false; // already tagged
-      if (completedDeadCode.has(s.id)) return false; // already processed
+      if ((s.tags?.includes("dead-code") ?? false) && s.doc?.aiGenerated?.deadCode) return false;
+      if (completedDeadCode.has(s.id)) return false;
       return (incomingCalls.get(s.id) ?? 0) === 0;
     });
     const deadLimit = Math.min(potentialDead.length, 30);
-    console.log(`[AI-Analyze] Dead-Code: ${potentialDead.length} to process (${completedDeadCode.size} already done)`);
-    send({ phase: "dead-code", action: "start", current: 0, total: deadLimit });
-    send({ phase: "dead-code", action: "progress", message: `${potentialDead.length} potentiell ungenutzte Symbole, prüfe ${deadLimit}…`, current: 0, total: deadLimit });
+    const hygieneTotal = deadLimit + 2;
+    console.log(`[AI-Analyze] Code hygiene: ${analysisTargetFiles.size} files, ${potentialDead.length} unused-symbol candidates`);
+    send({ phase: "dead-code", action: "start", current: 0, total: hygieneTotal });
+    send({
+      phase: "dead-code",
+      action: "progress",
+      message: `${analysisTargetFiles.size} Dateien werden auf unerreichbaren oder auskommentierten Code geprueft; ${deadLimit} ungenutzte Symbole werden verifiziert.`,
+      current: 0,
+      total: hygieneTotal,
+    });
+
+    const staticUnreachableFindings = detectUnreachableCodeFindings({
+      graph: g,
+      targetSymbolIds: analysisTargetIds,
+      scanRoot,
+    });
+    for (const finding of staticUnreachableFindings) {
+      upsertAnalysisFinding(finding);
+      send({
+        phase: "dead-code",
+        action: "unreachable",
+        symbolId: finding.symbolId,
+        symbolLabel: finding.symbolLabel,
+        viewId: finding.viewId,
+        current: 1,
+        total: hygieneTotal,
+        reason: finding.summary,
+        message: `${finding.file}:${finding.startLine}`,
+        file: finding.file,
+        startLine: finding.startLine,
+        endLine: finding.endLine,
+        deadCodeKind: finding.deadCodeKind,
+      });
+    }
+    updateState("dead-code", 1, hygieneTotal, undefined, undefined, "Pruefe unerreichbare Codebloecke");
+    send({
+      phase: "dead-code",
+      action: "progress",
+      current: 1,
+      total: hygieneTotal,
+      message: `${staticUnreachableFindings.length} unerreichbare Codebloecke gefunden.`,
+    });
+
+    const commentedOutFindings = detectCommentedOutCodeFindings({
+      graph: g,
+      targetSymbolIds: analysisTargetIds,
+      targetFiles: analysisTargetFiles,
+      scanRoot,
+    });
+    for (const finding of commentedOutFindings) {
+      upsertAnalysisFinding(finding);
+      send({
+        phase: "dead-code",
+        action: "commented-out",
+        symbolId: finding.symbolId,
+        symbolLabel: finding.symbolLabel,
+        viewId: finding.viewId,
+        current: 2,
+        total: hygieneTotal,
+        reason: finding.summary,
+        message: `${finding.file}:${finding.startLine}`,
+        file: finding.file,
+        startLine: finding.startLine,
+        endLine: finding.endLine,
+      });
+    }
+    updateState("dead-code", 2, hygieneTotal, undefined, undefined, "Pruefe auskommentierten Code");
+    send({
+      phase: "dead-code",
+      action: "progress",
+      current: 2,
+      total: hygieneTotal,
+      message: `${commentedOutFindings.length} auskommentierte Codebloecke gefunden.`,
+    });
 
     let deadIdx = 0;
     for (const sym of potentialDead.slice(0, deadLimit)) {
       if (cancelRequested) { console.log("[AI-Analyze] Cancelled in dead-code phase"); break; }
       if (pauseRequested) { console.log("[AI-Analyze] Paused in dead-code phase"); break; }
       deadIdx++;
-      updateState("dead-code", deadIdx, deadLimit, sym.id, sym.label, `Pruefe Dead-Code: \u201E${sym.label}\u201C`);
-      send({ phase: "dead-code", action: "focus", symbolId: sym.id, symbolLabel: sym.label, viewId: findBestView(sym.id), current: deadIdx, total: deadLimit, thought: `Pruefe Dead-Code: \u201E${sym.label}\u201C` });
+      const progressCurrent = deadIdx + 2;
+      updateState("dead-code", progressCurrent, hygieneTotal, sym.id, sym.label, `Pruefe ungenutztes Symbol: \u201E${sym.label}\u201C`);
+      send({ phase: "dead-code", action: "focus", symbolId: sym.id, symbolLabel: sym.label, viewId: findBestView(sym.id), current: progressCurrent, total: hygieneTotal, thought: `Pruefe ungenutztes Symbol: \u201E${sym.label}\u201C` });
       const code = readSourceCode(sym, scanRoot);
 
       let confirmed = true;
-      let reason = "Keine eingehenden Aufrufe oder Instanziierungen im Projektgraphen gefunden.";
+      let reason = "Keine eingehenden Aufrufe oder Instanziierungen im sichtbaren Projektgraphen gefunden.";
 
-      // Gather outgoing relations for context
       const outRels = g.relations.filter((r) => r.source === sym.id && r.type !== "contains");
       const outSummary = outRels.length > 0
-        ? outRels.slice(0, 8).map((r) => `${r.type} → ${r.target}`).join(", ")
+        ? outRels.slice(0, 8).map((r) => `${r.type} → ${symbolMap.get(r.target)?.label ?? r.target}`).join(", ")
         : "keine ausgehenden Beziehungen";
 
       if (code) {
         try {
           const { data: result } = await callAiJson({
             taskType: getTaskTypeForUseCase(AI_USE_CASES.DEAD_CODE_REVIEW),
-            systemPrompt: `Analysiere ob diese Python/JS-Funktion Dead Code (ungenutzt) ist.
+            systemPrompt: `Analysiere ob diese Python/JS-Funktion oder -Methode als ungenutztes Symbol im Projekt betrachtet werden kann.
 Return JSON: {"isDead": true/false, "reason": "1-2 Sätze in Englisch, spezifisch"}
 
-Die "reason" MUSS konkret erklären WARUM der Code dead ist. Beispiele guter Gründe:
-- "Hilfsfunktion die nur in einer auskommentierten Passage in X referenziert wird."
-- "Überbleibsel einer früheren Implementierung, ersetzt durch Y."
-- "Wird nirgends importiert oder aufgerufen; kein Entry-Point oder Callback."
-- "Interne Methode ohne Aufrufer innerhalb der Klasse oder von außen."
-
-NICHT dead wenn: Entry-Point, API-Handler, Event-Callback, Test, dynamisch aufgerufen (getattr/reflection), __init__, CLI-Command.
-Dead wenn: Keine Aufrufer, kein Entry-Point, kein Callback-Pattern, scheint Überbleibsel zu sein.
-
-Sei spezifisch — nenne den wahrscheinlichen Grund (z.B. "keine Aufrufer", "auskommentiert", "ersetzt", "unerreichbar").`,
-            userPrompt: `Funktion: ${sym.label}\nArt: ${sym.kind}\nDatei: ${sym.location?.file ?? "unbekannt"}\nAusgehende Beziehungen: ${outSummary}\nEingehende Aufrufe: 0\n${code ? `Code:\n${code.slice(0, 1500)}` : ""}`,
+Markiere NUR dann als dead, wenn es keine sichtbaren Aufrufer oder Instanziierungen gibt und der Code nicht wie Entry-Point, Callback, dynamischer Hook oder API-Oberflaeche aussieht.
+Die Reason soll konkret sein, zum Beispiel: "No incoming calls in the visible project graph; helper looks orphaned after refactor."`,
+            userPrompt: `Funktion: ${sym.label}\nArt: ${sym.kind}\nDatei: ${sym.location?.file ?? "unbekannt"}\nAusgehende Beziehungen: ${outSummary}\nEingehende Aufrufe im sichtbaren Graphen: 0\n${code ? `Code:\n${code.slice(0, 1500)}` : ""}`,
           });
           confirmed = (result as any)?.isDead === true;
           reason = (result as any)?.reason ?? reason;
         } catch {
-          // On LLM failure, still mark based on graph analysis
+          // On LLM failure, fall back to the graph-based heuristic.
         }
       }
 
       if (confirmed) {
         sym.tags = [...(sym.tags ?? []).filter((t) => t !== "dead-code"), "dead-code"];
-        // Mark dead-code as AI-generated AND persist the reason in the graph
         sym.doc = {
           ...sym.doc,
           aiGenerated: { ...(sym.doc?.aiGenerated ?? {}), deadCode: true },
           deadCodeReason: reason,
+          deadCodeKind: "unused_symbol",
         };
-        stats.deadCodeFound++;
+
+        upsertAnalysisFinding({
+          id: `dead-symbol:${sym.id}`,
+          type: "dead_code",
+          deadCodeKind: "unused_symbol",
+          title: "Ungenutztes Symbol",
+          summary: reason,
+          file: sym.location?.file ?? "(unknown)",
+          startLine: sym.location?.startLine ?? 1,
+          endLine: sym.location?.endLine,
+          symbolId: sym.id,
+          symbolLabel: sym.label,
+          viewId: findBestView(sym.id) ?? undefined,
+          codePreview: code?.split("\n").slice(0, 6).join("\n"),
+        });
+
         console.log(`[AI-Analyze] Dead-Code: "${sym.label}" - ${reason}`);
         send({
           phase: "dead-code",
           symbolId: sym.id,
           symbolLabel: sym.label,
           reason,
-          current: deadIdx,
-          total: deadLimit,
+          current: progressCurrent,
+          total: hygieneTotal,
+          deadCodeKind: "unused_symbol",
+          file: sym.location?.file,
+          startLine: sym.location?.startLine,
+          endLine: sym.location?.endLine,
         });
       }
       completedDeadCode.add(sym.id);
     }
+
+    g.analysisFindings = sortProjectAnalysisFindings(g.analysisFindings ?? []);
+
+    stats.deadCodeFound = (g.analysisFindings ?? []).filter((finding) =>
+      finding.type === "dead_code" &&
+      ((finding.symbolId && analysisTargetIds.has(finding.symbolId)) || analysisTargetFiles.has(finding.file))
+    ).length;
+    stats.commentedOutFound = (g.analysisFindings ?? []).filter((finding) =>
+      finding.type === "commented_out_code" &&
+      ((finding.symbolId && analysisTargetIds.has(finding.symbolId)) || analysisTargetFiles.has(finding.file))
+    ).length;
+
     setGraph(g);
     persistProgress("dead-code");
     if (cancelRequested) { send({ phase: "cancelled", stats }); throw { __cancelled: true }; }
@@ -975,14 +1145,18 @@ Sei spezifisch — nenne den wahrscheinlichen Grund (z.B. "keine Aufrufer", "aus
     updateState("structure");
 
     const groupSymbols = g.symbols.filter(
-      (s) => s.kind === "group" && !s.tags?.includes("artifact-cluster") && !s.tags?.includes("artifact-category"),
+      (s) =>
+        analysisTargetIds.has(s.id) &&
+        s.kind === "group" &&
+        !s.tags?.includes("artifact-cluster") &&
+        !s.tags?.includes("artifact-category"),
     );
     const structureSummary = groupSymbols.map((grp) => {
       const members = g.symbols
-        .filter((s) => s.parentId === grp.id && (s.kind === "module" || s.kind === "package"))
+        .filter((s) => analysisTargetIds.has(s.id) && s.parentId === grp.id && (s.kind === "module" || s.kind === "package"))
         .map((s) => ({ id: s.id, label: s.label, file: s.location?.file ?? "" }));
       const childGroups = groupSymbols
-        .filter((sg) => sg.parentId === grp.id)
+        .filter((sg) => analysisTargetIds.has(sg.id) && sg.parentId === grp.id)
         .map((sg) => sg.id);
       return { groupId: grp.id, groupLabel: grp.label, memberCount: members.length, members, childGroups };
     });

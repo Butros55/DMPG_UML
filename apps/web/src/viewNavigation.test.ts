@@ -25,6 +25,7 @@ function buildLegacyNavigationGraph(): ProjectGraph {
         scope: "root",
         nodeRefs: ["sym:writer", "proc:artifact:distribution"],
         edgeRefs: [],
+        manualLayout: true,
       },
       {
         id: "view:process-stage:distribution",
@@ -33,6 +34,16 @@ function buildLegacyNavigationGraph(): ProjectGraph {
         scope: "group",
         nodeRefs: ["sym:writer", "proc:artifact:distribution"],
         edgeRefs: [],
+        manualLayout: true,
+      },
+      {
+        id: "view:grp:visible",
+        title: "Visible Group",
+        parentViewId: "view:process-overview",
+        scope: "group",
+        nodeRefs: ["sym:writer"],
+        edgeRefs: [],
+        manualLayout: true,
       },
       {
         id: "view:art-cat:io",
@@ -55,11 +66,23 @@ test("normalizeGraphForFrontend strips legacy hidden views and invalid child vie
 
   assert.deepEqual(
     normalized.views.map((view) => view.id),
-    ["view:process-overview", "view:process-stage:distribution"],
+    ["view:process-overview", "view:process-stage:distribution", "view:grp:visible"],
   );
   assert.equal(
     normalized.symbols.find((symbol) => symbol.id === "grp:art-cat:io")?.childViewId,
     undefined,
+  );
+  assert.equal(
+    normalized.views.find((view) => view.id === "view:process-overview")?.manualLayout,
+    undefined,
+  );
+  assert.equal(
+    normalized.views.find((view) => view.id === "view:process-stage:distribution")?.manualLayout,
+    undefined,
+  );
+  assert.equal(
+    normalized.views.find((view) => view.id === "view:grp:visible")?.manualLayout,
+    true,
   );
 });
 

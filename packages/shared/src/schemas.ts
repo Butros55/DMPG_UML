@@ -101,6 +101,8 @@ export const SymbolDocSchema = z.object({
   aiGenerated: z.record(z.string(), z.boolean()).optional(),
   /** Explanation why this symbol was flagged as dead code */
   deadCodeReason: z.string().optional(),
+  /** Classification for dead-code findings */
+  deadCodeKind: z.enum(["unused_symbol", "unreachable_code"]).optional(),
   /** Lightweight static checks for coding-guideline adherence. */
   codingGuidelines: CodingGuidelinesSchema.optional(),
 });
@@ -310,6 +312,7 @@ export const DiagramViewSchema = z.object({
   parentViewId: z.string().nullable().optional(),
   scope: ViewScopeEnum.optional(),
   hiddenInSidebar: z.boolean().optional(),
+  manualLayout: z.boolean().optional(),
   nodeRefs: z.array(z.string()),
   edgeRefs: z.array(z.string()),
   nodePositions: z.array(NodePositionSchema).optional(),
@@ -322,12 +325,37 @@ export const DiagramViewSchema = z.object({
 });
 export type DiagramView = z.infer<typeof DiagramViewSchema>;
 
+export const ProjectAnalysisFindingTypeEnum = z.enum([
+  "dead_code",
+  "commented_out_code",
+]);
+export type ProjectAnalysisFindingType = z.infer<typeof ProjectAnalysisFindingTypeEnum>;
+
+export const ProjectAnalysisFindingSchema = z.object({
+  id: z.string(),
+  type: ProjectAnalysisFindingTypeEnum,
+  title: z.string(),
+  summary: z.string(),
+  file: z.string(),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive().optional(),
+  deadCodeKind: z.enum(["unused_symbol", "unreachable_code"]).optional(),
+  symbolId: z.string().optional(),
+  symbolLabel: z.string().optional(),
+  relatedSymbolIds: z.array(z.string()).optional(),
+  viewId: z.string().optional(),
+  codePreview: z.string().optional(),
+  createdAt: z.string().optional(),
+});
+export type ProjectAnalysisFinding = z.infer<typeof ProjectAnalysisFindingSchema>;
+
 /* ───────────── Project Graph ───────────── */
 
 export const ProjectGraphSchema = z.object({
   symbols: z.array(SymbolSchema),
   relations: z.array(RelationSchema),
   views: z.array(DiagramViewSchema),
+  analysisFindings: z.array(ProjectAnalysisFindingSchema).optional(),
   rootViewId: z.string(),
   projectName: z.string().optional(),
   projectPath: z.string().optional(),

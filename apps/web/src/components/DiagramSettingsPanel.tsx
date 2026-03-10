@@ -74,6 +74,7 @@ export function DiagramSettingsPanel() {
   const setDiagramPreset = useAppStore((s) => s.setDiagramPreset);
   const applyDiagramLayout = useAppStore((s) => s.applyDiagramLayout);
   const resetDiagramSettings = useAppStore((s) => s.resetDiagramSettings);
+  const resetProjectLayout = useAppStore((s) => s.resetProjectLayout);
 
   useEffect(() => {
     if (!settings.autoLayout) return;
@@ -360,6 +361,9 @@ export function DiagramSettingsPanel() {
         </button>
         <button className="btn btn-sm" onClick={resetDiagramSettings}>
           Reset Defaults
+        </button>
+        <button className="btn btn-sm btn-danger" onClick={resetProjectLayout}>
+          Reset Project Layout
         </button>
       </div>
     </div>

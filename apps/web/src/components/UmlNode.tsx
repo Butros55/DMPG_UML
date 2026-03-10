@@ -306,7 +306,9 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
         </div>
       )}
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
-      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />      <DynamicPorts ports={d.dynamicPorts} />    </div>
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
+      <DynamicPorts ports={d.dynamicPorts} />
+    </div>
   );
 });
 
@@ -381,7 +383,6 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
           <i className="bi bi-caret-right-fill" /> Methods detail
         </div>
       )}
-
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
       <Handle type="source" position={Position.Right} id="out-right" style={{ top: "70%" }} />
       <DynamicPorts ports={d.dynamicPorts} />
@@ -447,9 +448,10 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
           <i className="bi bi-caret-right-fill" /> Detail
         </div>
       )}
-
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
-      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />      <DynamicPorts ports={d.dynamicPorts} />    </div>
+      <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
+      <DynamicPorts ports={d.dynamicPorts} />
+    </div>
   );
 });
 
@@ -499,7 +501,6 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
       )}
 
       <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
-
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
       <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
       <DynamicPorts ports={d.dynamicPorts} />

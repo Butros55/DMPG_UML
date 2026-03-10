@@ -305,3 +305,37 @@ test("runViewWorkspaceSession surfaces review-only reference actions in the fina
   assert.equal(result.autoApplied, false);
   assert.equal(events.at(-1)?.reviewOnlyCount, 1);
 });
+
+test("runViewWorkspaceSession skips reference errors caused by missing vision capability", async () => {
+  const graph = buildGraph();
+  const deps = buildBaseDependencies(graph);
+  deps.runReferenceDrivenUmlAutorefactor = async () => {
+    throw new Error('Configured vision model "llama3" does not advertise the "vision" capability.');
+  };
+
+  const events: ViewWorkspaceRunEvent[] = [];
+  const result = await runViewWorkspaceSession({
+    graph,
+    request: {
+      viewId: "view:root",
+      includeStructure: false,
+      includeContext: false,
+      includeLabels: false,
+      currentViewImage: {
+        mimeType: "image/png",
+        dataBase64: "AAA=",
+      },
+      referenceImage: {
+        mimeType: "image/png",
+        dataBase64: "BBB=",
+      },
+    },
+    emit: (event) => events.push(event),
+  }, deps);
+
+  assert.equal(result.appliedCount, 0);
+  assert.equal(result.reviewOnlyCount, 0);
+  assert.equal(result.autoApplied, false);
+  assert.equal(events.some((event) => event.action === "skipped"), true);
+  assert.equal(events.at(-1)?.phase, "done");
+});

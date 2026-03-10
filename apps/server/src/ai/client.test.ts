@@ -38,6 +38,21 @@ test("callAiVisionJson rejects unsupported MIME types with a clear error", async
   );
 });
 
+test("callAiVisionJson fails early when local mode has no selected model", async () => {
+  restoreEnv();
+  process.env.AI_PROVIDER = "local";
+
+  await assert.rejects(
+    () =>
+      callAiVisionJson({
+        images: [{ mimeType: "image/png", dataBase64: "AA==" }],
+        systemPrompt: "Inspect the image.",
+        userPrompt: "Review UML quality.",
+      }),
+    /No local Ollama model selected/,
+  );
+});
+
 test("callAiVisionJson uses routing fallback models for vision requests", async () => {
   restoreEnv();
   process.env.AI_MODEL_ROUTING_ENABLED = "true";

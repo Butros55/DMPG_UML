@@ -3,10 +3,40 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { scanProject } from "../scanner/index.js";
-import { setGraph } from "../store.js";
+import { getPersistedProjectGraph, setGraph } from "../store.js";
+import type { ProjectGraph } from "@dmpg/shared";
+import { isManagedProcessLayoutViewId } from "@dmpg/shared";
 import { ScanRequestSchema } from "@dmpg/shared";
 
 export const scanRouter: RouterType = Router();
+
+function mergePersistedViewLayouts(nextGraph: ProjectGraph, previousGraph: ProjectGraph | null): ProjectGraph {
+  if (!previousGraph) return nextGraph;
+
+  const previousViews = new Map(previousGraph.views.map((view) => [view.id, view]));
+  for (const view of nextGraph.views) {
+    const previous = previousViews.get(view.id);
+    if (!previous) continue;
+
+    if (typeof previous.hiddenInSidebar === "boolean") {
+      view.hiddenInSidebar = previous.hiddenInSidebar;
+    }
+
+    const validNodeIds = new Set(view.nodeRefs);
+    const preservedPositions = (previous.nodePositions ?? []).filter((position) =>
+      validNodeIds.has(position.symbolId),
+    );
+
+    if (preservedPositions.length > 0) {
+      view.nodePositions = preservedPositions;
+      if (previous.manualLayout && !isManagedProcessLayoutViewId(view.id)) {
+        view.manualLayout = true;
+      }
+    }
+  }
+
+  return nextGraph;
+}
 
 /** POST /api/scan — scan a local project directory */
 scanRouter.post("/", async (req, res) => {
@@ -16,7 +46,12 @@ scanRouter.post("/", async (req, res) => {
     return;
   }
   try {
-    const graph = await scanProject(parsed.data.projectPath);
+    const resolvedProjectPath = path.resolve(parsed.data.projectPath);
+    const previousGraph = getPersistedProjectGraph(resolvedProjectPath);
+    const graph = mergePersistedViewLayouts(
+      await scanProject(resolvedProjectPath),
+      previousGraph,
+    );
     setGraph(graph);
     res.json(graph);
   } catch (err: any) {

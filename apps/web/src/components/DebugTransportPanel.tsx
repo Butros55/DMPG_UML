@@ -7,6 +7,7 @@ import { useAppStore } from "../store";
 export function DebugTransportPanel() {
   const show = useAppStore((s) => s.showDebugTransport);
   const debug = useAppStore((s) => s.debugTransport);
+  const debugDiagram = useAppStore((s) => s.debugDiagram);
   const aiAnalysis = useAppStore((s) => s.aiAnalysis);
   const toggle = useAppStore((s) => s.toggleDebugTransport);
 
@@ -19,10 +20,69 @@ export function DebugTransportPanel() {
   return (
     <div className="debug-transport-panel">
       <div className="debug-transport-header">
-        <span><i className="bi bi-bug" /> Transport Debug</span>
+        <span><i className="bi bi-bug" /> Debug</span>
         <button className="debug-transport-close" onClick={toggle}><i className="bi bi-x-lg" /></button>
       </div>
       <div className="debug-transport-body">
+        <div className="debug-row">
+          <span className="debug-label">Route mode</span>
+          <span className="debug-value">{debugDiagram?.routeMode ?? "—"}</span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Route reason</span>
+          <span className="debug-value">{debugDiagram?.routeReason ?? "—"}</span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Layout pass</span>
+          <span className="debug-value">
+            {debugDiagram?.layoutPass ?? 0} / run {debugDiagram?.layoutRunId ?? 0}
+          </span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Nodes / edges</span>
+          <span className="debug-value">
+            {debugDiagram?.nodesRendered ?? 0}/{debugDiagram?.viewNodes ?? 0}
+            {" · "}
+            {debugDiagram?.edgesRendered ?? 0}/{debugDiagram?.viewEdges ?? 0}
+          </span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">ELK routes</span>
+          <span className="debug-value">
+            {debugDiagram?.elkRouteCount ?? 0} · handles {debugDiagram?.edgeHandleCount ?? 0}
+          </span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Dynamic ports</span>
+          <span className="debug-value">
+            {debugDiagram?.dynamicPortNodeCount ?? 0} nodes · {debugDiagram?.dynamicPortCount ?? 0} ports
+          </span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Manual state</span>
+          <span className="debug-value">
+            auto={debugDiagram?.autoLayout ? "on" : "off"}
+            {" · "}drag={debugDiagram?.dragActive ? "on" : "off"}
+            {" · "}manual={debugDiagram?.manualLayoutActive ? "on" : "off"}
+          </span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Saved pos</span>
+          <span className="debug-value">
+            {debugDiagram?.savedPositionCount ?? 0}
+            {" · all="}
+            {debugDiagram?.allHaveSavedPositions ? "yes" : "no"}
+          </span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">View</span>
+          <span className="debug-value debug-value--mono">{debugDiagram?.currentViewId ?? "—"}</span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Layout key</span>
+          <span className="debug-value debug-value--mono">{debugDiagram?.layoutKey || "—"}</span>
+        </div>
+        <div className="debug-sep" />
         <div className="debug-row">
           <span className="debug-label">SSE</span>
           <span className={`debug-dot ${debug?.sseConnected ? "debug-dot--on" : ""}`} />

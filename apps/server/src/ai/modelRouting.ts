@@ -132,5 +132,5 @@ export function getActiveAiModelConfig(aiConfig: AiConfig = resolveAiConfig()) {
 
 export function formatAiModelRoutingSummary(aiConfig: AiConfig = resolveAiConfig()): string {
   const mode = aiConfig.routing.enabled ? "enabled" : "disabled";
-  return `provider=${aiConfig.provider} routing=${mode} globalModel=${aiConfig.model}`;
+  return `provider=${aiConfig.provider} routing=${mode} globalModel=${aiConfig.model || "(not set)"}`;
 }

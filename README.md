@@ -194,9 +194,8 @@ Copy-Item apps/server/.env.example apps/server/.env
 | `OLLAMA_BASE_URL` | `https://ollama.com` | Cloud-Endpunkt |
 | `OLLAMA_LOCAL_URL` | `http://127.0.0.1:11434` | Lokaler Ollama-Endpunkt |
 | `OLLAMA_API_KEY` | leer | API-Key fuer Cloud-Provider |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Globales Fallback-Modell |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Cloud-/Fallback-Modell fuer `AI_PROVIDER=cloud` |
 | `OLLAMA_CLOUD_MODEL` | leer | Cloud-spezifisches Modell |
-| `OLLAMA_LOCAL_MODEL` | leer | Lokales Modell |
 | `AI_HTTP_JSON_LIMIT` | `50mb` | JSON-Body-Limit, relevant fuer Screenshots/Base64 |
 
 ### AI Model Routing
@@ -219,8 +218,10 @@ Fallback-Reihenfolge:
 1. Task-spezifisches Modell
 2. `AI_DEFAULT_TASK_MODEL` bei `general`
 3. `UML_FALLBACK_MODEL`
-4. globales Modell (`OLLAMA_CLOUD_MODEL` / `OLLAMA_LOCAL_MODEL` / `OLLAMA_MODEL`)
-5. interner Default `llama3.1:8b`
+4. globales Modell:
+   - local: im AI Workspace ausgewaehltes Modell
+   - cloud: `OLLAMA_CLOUD_MODEL` oder `OLLAMA_MODEL`
+5. interner Default `llama3.1:8b` fuer Cloud
 
 ### Minimalbeispiele
 
@@ -231,9 +232,10 @@ PORT=3001
 SCAN_PROJECT_PATH=C:\dev\dmpg_models\data_pipeline
 AI_PROVIDER=local
 OLLAMA_LOCAL_URL=http://127.0.0.1:11434
-OLLAMA_LOCAL_MODEL=qwen2.5-coder:14b
 AI_MODEL_ROUTING_ENABLED=false
 ```
+
+Hinweis: Das lokale Modell wird im AI Workspace oben ueber das Dropdown gewaehlt. Beim Oeffnen wird die Liste jedes Mal mit `ollama ps` aktualisiert.
 
 Cloud-Modus mit Routing:
 
@@ -320,7 +322,7 @@ Phasen:
 1. `labels` - unklare Labels bereinigen
 2. `docs` - Symbol-Dokumentation generieren
 3. `relations` - fehlende Relationen vorschlagen und validieren
-4. `dead-code` - moegliche tote Funktionen markieren
+4. `dead-code` - Code Hygiene: unerreichbare Bloecke, auskommentierten Code und ungenutzte sichtbare Symbole erfassen
 5. `structure` - Gruppenstruktur reviewen, umbenennen, verschieben, mergen oder splitten
 
 Danach kann der Validate-Mode genutzt werden:
@@ -333,6 +335,13 @@ Danach kann der Validate-Mode genutzt werden:
 ### 5. AI Workspace auf View-Ebene
 
 Der AI Workspace arbeitet gezielt auf der aktuell geoeffneten View.
+
+Wenn `AI_PROVIDER=local` gesetzt ist:
+
+- zeigt das Provider-Dropdown die aktuell laufenden Modelle aus `ollama ps`
+- die Liste wird bei jedem Oeffnen neu geladen
+- das ausgewaehlte Modell wird fuer den Lauf verwendet, ohne dass `apps/server/.env` angepasst werden muss
+- wenn kein vision-faehiges Modell verfuegbar ist, wird der Referenz-Schritt im Workspace uebersprungen und im UI als Skip angezeigt
 
 Moegliche Schritte:
 
@@ -410,6 +419,7 @@ Der HTML-Export ist bewusst standalone:
 | --- | --- | --- |
 | `POST` | `/api/ai/summarize` | Doku fuer ein Symbol generieren |
 | `POST` | `/api/ai/batch-summarize` | Doku fuer mehrere Symbole generieren |
+| `GET` | `/api/ai/local-models` | laufende lokale Ollama-Modelle via `ollama ps` laden |
 | `POST` | `/api/ai/analyze` | projektweite AI-Analyse via SSE starten |
 | `GET` | `/api/ai/analyze-status` | Fortschritt pollen |
 | `GET` | `/api/ai/analyze-events` | Event-Log fuer Fallback-/Reconnect-Transport |

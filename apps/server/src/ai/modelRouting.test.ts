@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { resolveAiConfig } from "../env.js";
 import { getActiveAiModelConfig, resolveModelForTask } from "./modelRouting.js";
+import { runWithAiRequestOverrides } from "./requestContext.js";
 import { AI_TASK_TYPES } from "./taskTypes.js";
 
 test("resolveAiConfig respects provider-specific model precedence and normalizes URLs", () => {
@@ -64,6 +65,29 @@ test("resolveModelForTask uses the local provider model for every task when AI_P
   assert.equal(generalModel.source, "global");
   assert.equal(labelingModel.model, "local-model");
   assert.equal(labelingModel.source, "global");
+});
+
+test("resolveAiConfig ignores OLLAMA_MODEL in local mode when no local model is selected", () => {
+  const aiConfig = resolveAiConfig({
+    AI_PROVIDER: "local",
+    OLLAMA_MODEL: "shared-model",
+  });
+
+  assert.equal(aiConfig.model, "");
+  assert.equal(aiConfig.modelSource, "default");
+});
+
+test("resolveAiConfig prefers the request-scoped local model override", () => {
+  const aiConfig = runWithAiRequestOverrides(
+    { localModel: "qwen2.5-coder:14b" },
+    () => resolveAiConfig({
+      AI_PROVIDER: "local",
+      OLLAMA_LOCAL_MODEL: "legacy-local-model",
+    }),
+  );
+
+  assert.equal(aiConfig.model, "qwen2.5-coder:14b");
+  assert.equal(aiConfig.modelSource, "request_local_override");
 });
 
 test("resolveModelForTask keeps legacy single-model behavior when routing is disabled", () => {

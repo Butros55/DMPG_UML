@@ -7,6 +7,7 @@ import {
   bestNavigableViewForTargetIds,
   buildBreadcrumbPath,
   collectNavigableSymbolIds,
+  isManagedProcessLayoutViewId,
   isTechnicalNavigationView,
   normalizeGraphForFrontend,
   resolveNavigableViewId,
@@ -98,6 +99,30 @@ export interface DebugTransportState {
   navigationSettledSeq: number;
 }
 
+export interface DebugDiagramState {
+  currentViewId: string | null;
+  layoutKey: string;
+  layoutPass: number;
+  layoutRunId: number;
+  nodesRendered: number;
+  edgesRendered: number;
+  viewNodes: number;
+  viewEdges: number;
+  elkRouteCount: number;
+  edgeHandleCount: number;
+  dynamicPortNodeCount: number;
+  dynamicPortCount: number;
+  routeMode: "elk" | "fallback" | "mixed" | "none";
+  routeReason: string;
+  autoLayout: boolean;
+  dragActive: boolean;
+  persistedManualLayout: boolean;
+  localManualLayoutOverride: boolean;
+  manualLayoutActive: boolean;
+  savedPositionCount: number;
+  allHaveSavedPositions: boolean;
+}
+
 export interface ReviewHighlightState {
   activeItemId: string | null;
   nodeIds: string[];
@@ -176,6 +201,7 @@ export interface AppState {
   setDiagramPreset: (presetId: DiagramPresetId) => void;
   applyDiagramLayout: () => void;
   resetDiagramSettings: () => void;
+  resetProjectLayout: () => void;
 
   // Hover card
   hoverSymbolId: string | null;
@@ -215,9 +241,11 @@ export interface AppState {
 
   // Debug transport state
   debugTransport: DebugTransportState | null;
+  debugDiagram: DebugDiagramState | null;
   showDebugTransport: boolean;
   toggleDebugTransport: () => void;
   updateDebugTransport: (patch: Partial<DebugTransportState>) => void;
+  updateDebugDiagram: (patch: Partial<DebugDiagramState>) => void;
 
   // actions
   setGraph: (g: ProjectGraph) => void;
@@ -569,6 +597,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         diagramLayoutVersion: state.diagramLayoutVersion + 1,
       };
     }),
+  resetProjectLayout: () => {
+    const { graph } = get();
+    if (!graph) return;
+    const updated = {
+      ...graph,
+      views: graph.views.map((view) => ({
+        ...view,
+        manualLayout: undefined,
+        nodePositions: undefined,
+      })),
+    };
+    set((state) => ({
+      graph: updated,
+      diagramLayoutVersion: state.diagramLayoutVersion + 1,
+      ...historyPatchWithCurrentSnapshot(state),
+    }));
+    void get().syncGraphToServer();
+  },
 
   hoverSymbolId: null,
   hoverPosition: null,
@@ -668,6 +714,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // Debug transport state
   debugTransport: null,
+  debugDiagram: null,
   showDebugTransport: false,
   toggleDebugTransport: () => set((s) => ({ showDebugTransport: !s.showDebugTransport })),
   updateDebugTransport: (patch) => set((s) => ({
@@ -677,6 +724,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       eventsDelivered: 0, eventsDeduplicated: 0, playbackQueueLen: 0,
       navigationRequestedSeq: 0, navigationSettledSeq: 0,
     }) as DebugTransportState), ...patch },
+  })),
+  updateDebugDiagram: (patch) => set((s) => ({
+    debugDiagram: { ...((s.debugDiagram ?? {
+      currentViewId: null,
+      layoutKey: "",
+      layoutPass: 0,
+      layoutRunId: 0,
+      nodesRendered: 0,
+      edgesRendered: 0,
+      viewNodes: 0,
+      viewEdges: 0,
+      elkRouteCount: 0,
+      edgeHandleCount: 0,
+      dynamicPortNodeCount: 0,
+      dynamicPortCount: 0,
+      routeMode: "none",
+      routeReason: "waiting for layout",
+      autoLayout: true,
+      dragActive: false,
+      persistedManualLayout: false,
+      localManualLayoutOverride: false,
+      manualLayoutActive: false,
+      savedPositionCount: 0,
+      allHaveSavedPositions: false,
+    }) as DebugDiagramState), ...patch },
   })),
 
   startAiAnalysis: (runKind = "project_analysis") =>
@@ -912,9 +984,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           const alreadyTagged = sym.tags?.includes("dead-code") ?? false;
           const nextReason = event.reason.trim();
           const reasonChanged = (sym.doc?.deadCodeReason ?? "") !== nextReason;
+          const kindChanged = (sym.doc?.deadCodeKind ?? "") !== (event.deadCodeKind ?? "");
           const aiMarkerMissing = !sym.doc?.aiGenerated?.deadCode;
 
-          if (!alreadyTagged || reasonChanged || aiMarkerMissing) {
+          if (!alreadyTagged || reasonChanged || kindChanged || aiMarkerMissing) {
             symbols[symbolIndex] = {
               ...sym,
               tags: [...(sym.tags ?? []).filter((t) => t !== "dead-code"), "dead-code"],
@@ -922,6 +995,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                 ...sym.doc,
                 aiGenerated: { ...(sym.doc?.aiGenerated ?? {}), deadCode: true },
                 deadCodeReason: nextReason,
+                deadCodeKind: event.deadCodeKind,
               },
             };
             graphChanged = true;
@@ -1838,8 +1912,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   saveNodePositions: (positions) => {
-    const { graph, currentViewId } = get();
+    const { graph, currentViewId, diagramSettings } = get();
     if (!graph || !currentViewId) return;
+    const persistManualLayout = !diagramSettings.autoLayout && !isManagedProcessLayoutViewId(currentViewId);
     const updated = {
       ...graph,
       views: graph.views.map((v) => {
@@ -1849,7 +1924,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         for (const p of positions) {
           existing.set(p.symbolId, p);
         }
-        return { ...v, nodePositions: Array.from(existing.values()) };
+        return {
+          ...v,
+          manualLayout: persistManualLayout ? true : undefined,
+          nodePositions: Array.from(existing.values()),
+        };
       }),
     };
     set((state) => ({

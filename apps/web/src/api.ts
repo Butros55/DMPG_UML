@@ -14,6 +14,85 @@ import type {
 } from "@dmpg/shared";
 
 const API_BASE = "/api";
+const LOCAL_AI_MODEL_STORAGE_KEY = "dmpg.ai.local-model.v1";
+const LOCAL_AI_MODEL_HEADER = "x-dmpg-local-ai-model";
+
+let preferredLocalAiModel = "";
+
+function readPreferredLocalAiModel(): string {
+  if (preferredLocalAiModel) return preferredLocalAiModel;
+  if (typeof window === "undefined") return "";
+
+  try {
+    preferredLocalAiModel = window.localStorage.getItem(LOCAL_AI_MODEL_STORAGE_KEY)?.trim() ?? "";
+  } catch {
+    preferredLocalAiModel = "";
+  }
+
+  return preferredLocalAiModel;
+}
+
+function buildApiHeaders(headers?: HeadersInit): Headers {
+  const merged = new Headers(headers);
+  const localModel = readPreferredLocalAiModel();
+  if (localModel) {
+    merged.set(LOCAL_AI_MODEL_HEADER, localModel);
+  }
+  return merged;
+}
+
+function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    headers: buildApiHeaders(init?.headers),
+  });
+}
+
+export function getPreferredLocalAiModel(): string {
+  return readPreferredLocalAiModel();
+}
+
+export function setPreferredLocalAiModel(model: string) {
+  preferredLocalAiModel = model.trim();
+  if (typeof window === "undefined") return;
+
+  try {
+    if (preferredLocalAiModel) {
+      window.localStorage.setItem(LOCAL_AI_MODEL_STORAGE_KEY, preferredLocalAiModel);
+    } else {
+      window.localStorage.removeItem(LOCAL_AI_MODEL_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore localStorage failures and keep the in-memory value.
+  }
+}
+
+export interface LocalOllamaModel {
+  name: string;
+  id: string | null;
+  size: string | null;
+  processor: string | null;
+  until: string | null;
+}
+
+export async function fetchLocalOllamaModels(): Promise<{
+  models: LocalOllamaModel[];
+  checkedAt?: string;
+  error?: string;
+}> {
+  const res = await apiFetch(`${API_BASE}/ai/local-models`);
+  const payload = await res.json().catch(() => ({ models: [] })) as {
+    models?: LocalOllamaModel[];
+    checkedAt?: string;
+    error?: string;
+  };
+
+  return {
+    models: Array.isArray(payload.models) ? payload.models : [],
+    checkedAt: payload.checkedAt,
+    error: !res.ok ? (payload.error ?? "Lokale Ollama-Modelle konnten nicht geladen werden.") : payload.error,
+  };
+}
 
 /* ── Project management ────────────────────────── */
 
@@ -29,7 +108,7 @@ export async function fetchProjects(): Promise<{
   projects: ProjectMeta[];
   activeProject: string | null;
 }> {
-  const res = await fetch(`${API_BASE}/projects`);
+  const res = await apiFetch(`${API_BASE}/projects`);
   if (!res.ok) return { projects: [], activeProject: null };
   return res.json();
 }
@@ -39,7 +118,7 @@ export async function switchProject(projectPath: string): Promise<{
   graph: import("@dmpg/shared").ProjectGraph | null;
   projectPath: string;
 }> {
-  const res = await fetch(`${API_BASE}/projects/switch`, {
+  const res = await apiFetch(`${API_BASE}/projects/switch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ projectPath }),
@@ -57,7 +136,7 @@ export async function deleteProjectApi(projectPath: string): Promise<{
   activeProject: string | null;
   graph: import("@dmpg/shared").ProjectGraph | null;
 }> {
-  const res = await fetch(`${API_BASE}/projects`, {
+  const res = await apiFetch(`${API_BASE}/projects`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ projectPath }),
@@ -80,7 +159,7 @@ export interface SourceCodeResult {
 }
 
 export async function fetchSourceCode(symbolId: string): Promise<SourceCodeResult> {
-  const res = await fetch(`${API_BASE}/graph/source/${encodeURIComponent(symbolId)}`);
+  const res = await apiFetch(`${API_BASE}/graph/source/${encodeURIComponent(symbolId)}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as any).error ?? "Could not load source code");
@@ -103,7 +182,7 @@ export async function openInIde(
   const body: Record<string, unknown> = { ide, file, line };
   if (mode) body.mode = mode;
   if (diffFile) body.diffFile = diffFile;
-  const res = await fetch(`${API_BASE}/open-in-ide`, {
+  const res = await apiFetch(`${API_BASE}/open-in-ide`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -115,13 +194,13 @@ export async function openInIde(
 }
 
 export async function fetchGraph() {
-  const res = await fetch(`${API_BASE}/graph`);
+  const res = await apiFetch(`${API_BASE}/graph`);
   if (!res.ok) throw new Error("Failed to fetch graph");
   return res.json();
 }
 
 export async function replaceGraph(graph: ProjectGraph): Promise<ProjectGraph> {
-  const res = await fetch(`${API_BASE}/graph`, {
+  const res = await apiFetch(`${API_BASE}/graph`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(graph),
@@ -135,7 +214,7 @@ export async function replaceGraph(graph: ProjectGraph): Promise<ProjectGraph> {
 }
 
 export async function scanProject(projectPath: string) {
-  const res = await fetch(`${API_BASE}/scan`, {
+  const res = await apiFetch(`${API_BASE}/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ projectPath }),
@@ -148,7 +227,7 @@ export async function scanProject(projectPath: string) {
 }
 
 export async function summarizeSymbol(symbolId: string, codeSnippet?: string, context?: string) {
-  const res = await fetch(`${API_BASE}/ai/summarize`, {
+  const res = await apiFetch(`${API_BASE}/ai/summarize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ symbolId, codeSnippet, context }),
@@ -161,7 +240,7 @@ export async function summarizeSymbol(symbolId: string, codeSnippet?: string, co
 }
 
 export async function batchSummarize(symbolIds: string[]) {
-  const res = await fetch(`${API_BASE}/ai/batch-summarize`, {
+  const res = await apiFetch(`${API_BASE}/ai/batch-summarize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ symbolIds }),
@@ -178,7 +257,7 @@ export async function reviewDiagramImage(
   instruction?: string,
   viewId?: string,
 ): Promise<DiagramImageReviewResponse> {
-  const res = await fetch(`${API_BASE}/ai/vision/review`, {
+  const res = await apiFetch(`${API_BASE}/ai/vision/review`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ images, instruction, viewId }),
@@ -195,7 +274,7 @@ export async function compareDiagramImages(
   instruction?: string,
   viewId?: string,
 ): Promise<DiagramImageCompareResponse> {
-  const res = await fetch(`${API_BASE}/ai/vision/compare`, {
+  const res = await apiFetch(`${API_BASE}/ai/vision/compare`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ images, instruction, viewId }),
@@ -216,7 +295,7 @@ export async function compareUmlDiagramImages(
     persistSuggestions?: boolean;
   } = {},
 ): Promise<UmlReferenceCompareResponse> {
-  const res = await fetch(`${API_BASE}/ai/vision/compare-uml`, {
+  const res = await apiFetch(`${API_BASE}/ai/vision/compare-uml`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -237,7 +316,7 @@ export async function compareUmlDiagramImages(
 export async function runReferenceDrivenAutorefactor(
   request: UmlReferenceAutorefactorRequest,
 ): Promise<UmlReferenceAutorefactorResponse> {
-  const res = await fetch(`${API_BASE}/ai/vision/compare-apply`, {
+  const res = await apiFetch(`${API_BASE}/ai/vision/compare-apply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -252,7 +331,7 @@ export async function runReferenceDrivenAutorefactor(
 export async function undoReferenceDrivenAutorefactor(
   snapshotId: string,
 ): Promise<{ ok: true; graph: ProjectGraph }> {
-  const res = await fetch(`${API_BASE}/ai/vision/compare-apply/undo`, {
+  const res = await apiFetch(`${API_BASE}/ai/vision/compare-apply/undo`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ snapshotId }),
@@ -269,7 +348,7 @@ export async function suggestDiagramImageImprovements(
   instruction?: string,
   viewId?: string,
 ): Promise<DiagramImageSuggestionsResponse> {
-  const res = await fetch(`${API_BASE}/ai/vision/suggestions`, {
+  const res = await apiFetch(`${API_BASE}/ai/vision/suggestions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ images, instruction, viewId }),
@@ -289,7 +368,7 @@ export async function reviewCurrentViewStructure(
   heuristics: Record<string, unknown>;
   contextReview?: AiExternalContextReviewResponse;
 }> {
-  const res = await fetch(`${API_BASE}/ai/uml/review-view-structure`, {
+  const res = await apiFetch(`${API_BASE}/ai/uml/review-view-structure`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -309,7 +388,7 @@ export async function improveCurrentViewLabels(
   viewId: string,
   options: { persist?: boolean } = {},
 ): Promise<AiLabelImprovementResponse> {
-  const res = await fetch(`${API_BASE}/ai/uml/improve-view-labels`, {
+  const res = await apiFetch(`${API_BASE}/ai/uml/improve-view-labels`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -329,7 +408,7 @@ export async function fetchConfig(): Promise<{
   aiProvider: string;
   ollamaModel: string;
 }> {
-  const res = await fetch(`${API_BASE}/config`);
+  const res = await apiFetch(`${API_BASE}/config`);
   if (!res.ok) return { scanProjectPath: "", aiProvider: "cloud", ollamaModel: "" };
   return res.json();
 }
@@ -340,7 +419,7 @@ export async function browseFolders(path?: string): Promise<{
   folders: Array<{ name: string; path: string }>;
 }> {
   const params = path ? `?path=${encodeURIComponent(path)}` : "";
-  const res = await fetch(`${API_BASE}/scan/browse${params}`);
+  const res = await apiFetch(`${API_BASE}/scan/browse${params}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error ?? "Browse failed");
@@ -376,8 +455,12 @@ export interface AnalyzeEvent {
   subGroupLabel?: string;
   moduleCount?: number;
   reason?: string;
+  deadCodeKind?: "unused_symbol" | "unreachable_code";
   summary?: string;
   message?: string;
+  file?: string;
+  startLine?: number;
+  endLine?: number;
   inputs?: Array<{ name: string; type?: string; description?: string }>;
   outputs?: Array<{ name: string; type?: string; description?: string }>;
   current?: number;
@@ -393,6 +476,7 @@ export interface AnalyzeEvent {
     docsGenerated: number;
     relationsAdded: number;
     deadCodeFound: number;
+    commentedOutFound?: number;
     groupsReviewed?: number;
   };
   thought?: string;
@@ -409,14 +493,14 @@ export interface AnalyzeEvent {
 /** Cancel a running analysis on the server */
 export async function cancelAnalysis(): Promise<void> {
   try {
-    await fetch(`${API_BASE}/ai/cancel`, { method: "POST" });
+    await apiFetch(`${API_BASE}/ai/cancel`, { method: "POST" });
   } catch { /* ignore */ }
 }
 
 /** Pause a running analysis on the server (can be resumed later) */
 export async function pauseAnalysis(): Promise<void> {
   try {
-    await fetch(`${API_BASE}/ai/pause`, { method: "POST" });
+    await apiFetch(`${API_BASE}/ai/pause`, { method: "POST" });
   } catch { /* ignore */ }
 }
 
@@ -428,7 +512,7 @@ export async function fetchAnalyzeStatus(): Promise<{
   canResume?: boolean;
   paused?: boolean;
 }> {
-  const res = await fetch(`${API_BASE}/ai/analyze-status`);
+  const res = await apiFetch(`${API_BASE}/ai/analyze-status`);
   if (!res.ok) return { running: false, phase: "idle", stats: {} };
   return res.json();
 }
@@ -439,7 +523,7 @@ export async function fetchAnalyzeBaseline(): Promise<{
   symbols: Record<string, { label: string; doc?: any; tags?: string[] }>;
   relationIds: string[];
 }> {
-  const res = await fetch(`${API_BASE}/ai/analyze-baseline`);
+  const res = await apiFetch(`${API_BASE}/ai/analyze-baseline`);
   if (!res.ok) return { runId: null, symbols: {}, relationIds: [] };
   return res.json();
 }
@@ -463,7 +547,7 @@ async function runEventsPoller(
     await new Promise((r) => setTimeout(r, intervalMs));
     if (signal.aborted) return;
     try {
-      const res = await fetch(`${API_BASE}/ai/analyze-events?afterSeq=${afterSeq}`);
+      const res = await apiFetch(`${API_BASE}/ai/analyze-events?afterSeq=${afterSeq}`);
       if (!res.ok) continue;
       const data = await res.json() as {
         runId: string;
@@ -514,7 +598,7 @@ async function runStatusPoller(
     await new Promise((r) => setTimeout(r, intervalMs));
     if (signal.aborted) return;
     try {
-      const res = await fetch(`${API_BASE}/ai/analyze-status`);
+      const res = await apiFetch(`${API_BASE}/ai/analyze-status`);
       if (!res.ok) continue;
       const state = await res.json() as {
         running: boolean; phase: string; stats: Record<string, number>;
@@ -619,7 +703,7 @@ export function startAnalysis(
       if (viewId) body.viewId = viewId;
       if (resume) body.resume = true;
 
-      const res = await fetch(`${API_BASE}/ai/analyze`, {
+      const res = await apiFetch(`${API_BASE}/ai/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -704,7 +788,7 @@ export function startViewWorkspaceRun(
 
   (async () => {
     try {
-      const res = await fetch(`${API_BASE}/ai/uml/workspace-run`, {
+      const res = await apiFetch(`${API_BASE}/ai/uml/workspace-run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),

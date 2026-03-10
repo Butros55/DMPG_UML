@@ -10,6 +10,7 @@ import { projectsRouter } from "./routes/projects.js";
 import { resolveAiConfig } from "./env.js";
 import { getActiveAiModelConfig } from "./ai/modelRouting.js";
 import { getActiveAiUseCaseRouting } from "./ai/useCases.js";
+import { aiRequestContextMiddleware } from "./ai/requestContext.js";
 import { getCurrentProjectPath, getGraph } from "./store.js";
 
 const app = express();
@@ -45,6 +46,7 @@ app.use(cors({
   },
 }));
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(aiRequestContextMiddleware);
 
 app.use("/api/graph", graphRouter);
 app.use("/api/scan", scanRouter);

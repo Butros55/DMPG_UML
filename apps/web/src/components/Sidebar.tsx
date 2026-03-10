@@ -774,10 +774,6 @@ export function Sidebar() {
     return ids;
   }, [graph]);
 
-  // Collect dead-code symbols for dedicated section
-  const deadCodeSymbols = useMemo(() => {
-    return (graph?.symbols ?? []).filter((s) => s.tags?.includes("dead-code"));
-  }, [graph]);
   const handleViewTreeClick = useCallback((viewId: string) => {
     navigateToView(viewId);
   }, [navigateToView]);
@@ -899,24 +895,6 @@ export function Sidebar() {
           </div>
         )}
       </div>
-      )}
-
-      {/* ── Dead Code Section ── */}
-      {activeTab === "views" && deadCodeSymbols.length > 0 && (
-        <div className="sidebar-section">
-          <h2><i className="bi bi-exclamation-triangle" /> Dead Code ({deadCodeSymbols.length})</h2>
-          {deadCodeSymbols.map((sym) => (
-            <div
-              key={sym.id}
-              className="node-palette-item dead-code-item"
-              onClick={() => goToSymbol(sym.id)}
-            >
-              <span className="dead-code-icon"><i className="bi bi-x-circle" /></span>
-              <KindBadge kind={sym.kind} />
-              <span>{sym.label.split(".").pop()}</span>
-            </div>
-          ))}
-        </div>
       )}
 
       {activeTab === "ai" && (

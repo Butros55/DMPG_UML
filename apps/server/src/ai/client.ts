@@ -103,6 +103,11 @@ async function executeAiChatJson(options: ExecuteAiChatJsonOptions): Promise<Par
   const aiConfig = resolveAiConfig();
   const taskType = normalizeAiTaskType(options.taskType);
   const resolvedModel = resolveModelForTask(taskType, aiConfig);
+  if (!resolvedModel.model.trim()) {
+    throw new Error(
+      "No local Ollama model selected. Choose a running model in the AI Workspace dropdown.",
+    );
+  }
   const headers = createAiHeaders(aiConfig.apiKey);
   const url = `${aiConfig.baseUrl}/api/chat`;
   console.log(
@@ -220,6 +225,11 @@ export async function callAiVisionJson(options: CallAiVisionJsonOptions): Promis
   const aiConfig = resolveAiConfig();
   const taskType = normalizeAiTaskType(options.taskType ?? AI_TASK_TYPES.VISION_REVIEW);
   const resolvedModel = resolveModelForTask(taskType, aiConfig);
+  if (!resolvedModel.model.trim()) {
+    throw new Error(
+      "No local Ollama model selected. Choose a running model in the AI Workspace dropdown.",
+    );
+  }
   const normalizedImages = normalizeVisionImages(options.images);
   const capabilities = await fetchModelCapabilities(resolvedModel.model, aiConfig.baseUrl, aiConfig.apiKey);
   if (capabilities && !capabilities.has(VISION_CAPABILITY)) {

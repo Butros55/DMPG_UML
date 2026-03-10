@@ -104,6 +104,16 @@ function describeStep(step: AiWorkspaceRunStep): string {
   }
 }
 
+function isSkippableVisionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return (
+    message.includes("vision") ||
+    message.includes("multimodal") ||
+    message.includes("capability") ||
+    message.includes("does not advertise")
+  );
+}
+
 export async function runViewWorkspaceSession(
   params: {
     graph: ProjectGraph;
@@ -249,47 +259,65 @@ export async function runViewWorkspaceSession(
     }
 
     if (step === "reference") {
-      const result: UmlReferenceAutorefactorResponse = await deps.runReferenceDrivenUmlAutorefactor({
-        graph,
-        viewId: view.id,
-        currentViewImage: params.request.currentViewImage!,
-        referenceImage: params.request.referenceImage!,
-        instruction: params.request.instruction,
-        options: params.request.options,
-        graphContext: {
+      try {
+        const result: UmlReferenceAutorefactorResponse = await deps.runReferenceDrivenUmlAutorefactor({
+          graph,
           viewId: view.id,
-          viewTitle: view.title,
-        },
-      });
+          currentViewImage: params.request.currentViewImage!,
+          referenceImage: params.request.referenceImage!,
+          instruction: params.request.instruction,
+          options: params.request.options,
+          graphContext: {
+            viewId: view.id,
+            viewTitle: view.title,
+          },
+        });
 
-      graph = result.graph ?? graph;
-      deps.persistGraph(graph);
+        graph = result.graph ?? graph;
+        deps.persistGraph(graph);
 
-      const targetIds = unique(result.highlightTargetIds);
-      targetIds.forEach((targetId) => highlightTargets.add(targetId));
-      focusViewId = result.focusViewId ?? focusViewId;
-      appliedCount = result.appliedActions.length;
-      reviewOnlyCount = result.reviewOnlyActions.length;
-      autoApplied = result.autoApplied;
-      undoSnapshotId = result.undoInfo?.snapshotId;
-      applyRunId = result.undoInfo?.applyRunId;
+        const targetIds = unique(result.highlightTargetIds);
+        targetIds.forEach((targetId) => highlightTargets.add(targetId));
+        focusViewId = result.focusViewId ?? focusViewId;
+        appliedCount = result.appliedActions.length;
+        reviewOnlyCount = result.reviewOnlyActions.length;
+        autoApplied = result.autoApplied;
+        undoSnapshotId = result.undoInfo?.snapshotId;
+        applyRunId = result.undoInfo?.applyRunId;
 
-      params.emit({
-        runKind: "view_workspace",
-        phase: "uml_reference_compare",
-        action: "saved",
-        step,
-        viewId: view.id,
-        current: index + 1,
-        total: steps.length,
-        message: `${result.appliedActions.length} automatisch angewendet, ${result.reviewOnlyActions.length} als Review offen.`,
-        symbolId: result.primaryFocusTargetIds[0] ?? firstSymbolId(targetIds),
-        targetIds,
-        focusViewId,
-        appliedCount,
-        reviewOnlyCount,
-        autoApplied,
-      });
+        params.emit({
+          runKind: "view_workspace",
+          phase: "uml_reference_compare",
+          action: "saved",
+          step,
+          viewId: view.id,
+          current: index + 1,
+          total: steps.length,
+          message: `${result.appliedActions.length} automatisch angewendet, ${result.reviewOnlyActions.length} als Review offen.`,
+          symbolId: result.primaryFocusTargetIds[0] ?? firstSymbolId(targetIds),
+          targetIds,
+          focusViewId,
+          appliedCount,
+          reviewOnlyCount,
+          autoApplied,
+        });
+      } catch (error) {
+        if (!isSkippableVisionError(error)) {
+          throw error;
+        }
+
+        params.emit({
+          runKind: "view_workspace",
+          phase: "uml_reference_compare",
+          action: "skipped",
+          step,
+          viewId: view.id,
+          current: index + 1,
+          total: steps.length,
+          focusViewId,
+          message: `Referenz-Vergleich uebersprungen: ${error instanceof Error ? error.message : "Vision-Modell nicht verfuegbar."}`,
+        });
+      }
     }
   }
 

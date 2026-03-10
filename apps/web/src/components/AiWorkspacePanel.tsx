@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { UmlReferenceAutorefactorOptions } from "@dmpg/shared";
+import type { ProjectAnalysisFinding, UmlReferenceAutorefactorOptions } from "@dmpg/shared";
 import {
   cancelAnalysis,
+  fetchLocalOllamaModels,
   fetchAnalyzeStatus,
   fetchGraph,
+  getPreferredLocalAiModel,
+  openInIde,
+  setPreferredLocalAiModel,
   pauseAnalysis,
   startAnalysis,
   startViewWorkspaceRun,
   undoReferenceDrivenAutorefactor,
   type AnalyzeEvent,
+  type LocalOllamaModel,
 } from "../api";
 import {
   captureCurrentViewAsVisionImage,
@@ -41,6 +46,9 @@ function phaseLabel(event?: AnalyzeEvent | null) {
   if (event.runKind === "view_workspace" && event.step) {
     return stepLabel(event.step);
   }
+  if (event.phase === "dead-code") {
+    return "Code Hygiene";
+  }
   return event.phase || "Startet";
 }
 
@@ -53,6 +61,18 @@ function latestProgressEvent(log: AnalyzeEvent[] | undefined, runKind: "project_
     (entry.runKind ?? "project_analysis") === runKind &&
     (entry.action === "progress" || entry.action === "saved" || entry.action === "poll-progress"),
   ) ?? null;
+}
+
+function findingTypeLabel(finding: ProjectAnalysisFinding) {
+  if (finding.type === "commented_out_code") return "Auskommentiert";
+  if (finding.deadCodeKind === "unused_symbol") return "Ungenutztes Symbol";
+  if (finding.deadCodeKind === "unreachable_code") return "Unerreichbar";
+  return "Dead Code";
+}
+
+function findingLocationLabel(finding: ProjectAnalysisFinding) {
+  const end = finding.endLine && finding.endLine !== finding.startLine ? `-${finding.endLine}` : "";
+  return `${finding.file}:${finding.startLine}${end}`;
 }
 
 function renderProjectAnalysisLogEntry(ev: AnalyzeEvent) {
@@ -70,6 +90,12 @@ function renderProjectAnalysisLogEntry(ev: AnalyzeEvent) {
   }
   if (ev.phase === "relations" && ev.action === "added") {
     return <span><i className="bi bi-link-45deg" /> +{ev.relationType}: {ev.sourceLabel} → {ev.targetLabel}</span>;
+  }
+  if (ev.phase === "dead-code" && ev.action === "unreachable") {
+    return <span><i className="bi bi-sign-turn-slight-right-fill" /> {ev.symbolLabel ?? ev.file} — {ev.reason}</span>;
+  }
+  if (ev.phase === "dead-code" && ev.action === "commented-out") {
+    return <span><i className="bi bi-chat-left-quote" /> {ev.file}:{ev.startLine} — {ev.reason}</span>;
   }
   if (ev.phase === "dead-code" && !ev.action) {
     return <span><i className="bi bi-x-circle" /> {ev.symbolLabel} — {ev.reason}</span>;
@@ -115,6 +141,13 @@ function renderWorkspaceLogEntry(ev: AnalyzeEvent) {
       </span>
     );
   }
+  if (ev.action === "skipped") {
+    return (
+      <span>
+        <i className="bi bi-skip-forward-circle" /> {stepLabel(ev.step)}: {ev.message}
+      </span>
+    );
+  }
   if (ev.action === "progress") {
     return (
       <span>
@@ -146,6 +179,9 @@ export function AiWorkspacePanel({
   const clearReviewHighlight = useAppStore((state) => state.clearReviewHighlight);
   const exitValidateMode = useAppStore((state) => state.exitValidateMode);
   const resetPlaybackQueue = useAppStore((state) => state.resetPlaybackQueue);
+  const navigateToView = useAppStore((state) => state.navigateToView);
+  const setFocusNode = useAppStore((state) => state.setFocusNode);
+  const openSourceViewer = useAppStore((state) => state.openSourceViewer);
 
   const [analyzeScope, setAnalyzeScope] = useState<"all" | "view">("all");
   const [canResume, setCanResume] = useState(false);
@@ -157,7 +193,17 @@ export function AiWorkspacePanel({
   const [includeContext, setIncludeContext] = useState(true);
   const [includeLabels, setIncludeLabels] = useState(true);
   const [workspaceError, setWorkspaceError] = useState("");
+  const [selectedLocalModel, setSelectedLocalModel] = useState(() => getPreferredLocalAiModel() || ollamaModel);
+  const [localModelMenuOpen, setLocalModelMenuOpen] = useState(false);
+  const [localModels, setLocalModels] = useState<LocalOllamaModel[]>([]);
+  const [localModelsLoading, setLocalModelsLoading] = useState(false);
+  const [localModelsError, setLocalModelsError] = useState("");
+  const [localModelsCheckedAt, setLocalModelsCheckedAt] = useState("");
+  const [runLogExpanded, setRunLogExpanded] = useState(true);
+  const [deadCodeExpanded, setDeadCodeExpanded] = useState(true);
+  const [commentedCodeExpanded, setCommentedCodeExpanded] = useState(true);
   const logRef = useRef<HTMLDivElement>(null);
+  const localModelMenuRef = useRef<HTMLDivElement>(null);
 
   const activeRunKind = aiAnalysis?.runKind ?? "project_analysis";
   const projectAnalysisActive = !!aiAnalysis?.running && activeRunKind === "project_analysis";
@@ -188,12 +234,73 @@ export function AiWorkspacePanel({
     ),
     [workspaceViewId, graph?.views],
   );
+  const localModelMissing = aiProvider === "local" && !selectedLocalModel.trim();
+  const selectedLocalModelVisible = selectedLocalModel
+    ? localModels.some((model) => model.name === selectedLocalModel)
+    : false;
+  const analysisFindings = useMemo(
+    () => [...(graph?.analysisFindings ?? [])].sort((left, right) =>
+      left.type.localeCompare(right.type) ||
+      left.file.localeCompare(right.file) ||
+      left.startLine - right.startLine,
+    ),
+    [graph?.analysisFindings],
+  );
+  const deadCodeFindings = useMemo(
+    () => analysisFindings.filter((finding) => finding.type === "dead_code"),
+    [analysisFindings],
+  );
+  const commentedCodeFindings = useMemo(
+    () => analysisFindings.filter((finding) => finding.type === "commented_out_code"),
+    [analysisFindings],
+  );
+
+  const refreshLocalModels = useCallback(async (autoSelectFirst = false) => {
+    setLocalModelsLoading(true);
+    setLocalModelsError("");
+    try {
+      const result = await fetchLocalOllamaModels();
+      setLocalModels(result.models);
+      setLocalModelsCheckedAt(result.checkedAt ?? "");
+      setLocalModelsError(result.error ?? "");
+
+      if (autoSelectFirst && !getPreferredLocalAiModel() && !selectedLocalModel && result.models.length > 0) {
+        const nextModel = result.models[0].name;
+        setSelectedLocalModel(nextModel);
+        setPreferredLocalAiModel(nextModel);
+      }
+    } catch (error) {
+      setLocalModels([]);
+      setLocalModelsCheckedAt("");
+      setLocalModelsError(error instanceof Error ? error.message : "Lokale Ollama-Modelle konnten nicht geladen werden.");
+    } finally {
+      setLocalModelsLoading(false);
+    }
+  }, [selectedLocalModel]);
 
   useEffect(() => {
     fetchAnalyzeStatus()
       .then((status) => setCanResume(!!status.canResume && !status.running))
       .catch(() => setCanResume(false));
   }, []);
+
+  useEffect(() => {
+    const preferredModel = getPreferredLocalAiModel();
+    if (preferredModel) {
+      setSelectedLocalModel((current) => current === preferredModel ? current : preferredModel);
+      return;
+    }
+
+    if (aiProvider === "local" && ollamaModel && !selectedLocalModel) {
+      setSelectedLocalModel(ollamaModel);
+      setPreferredLocalAiModel(ollamaModel);
+    }
+  }, [aiProvider, ollamaModel, selectedLocalModel]);
+
+  useEffect(() => {
+    if (aiProvider !== "local" || selectedLocalModel) return;
+    void refreshLocalModels(true);
+  }, [aiProvider, refreshLocalModels, selectedLocalModel]);
 
   useEffect(() => {
     if (aiAnalysis?.running) return;
@@ -207,6 +314,29 @@ export function AiWorkspacePanel({
     if (!logRef.current) return;
     logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [aiAnalysis?.log.length]);
+
+  useEffect(() => {
+    if (!localModelMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!localModelMenuRef.current?.contains(event.target as Node)) {
+        setLocalModelMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLocalModelMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [localModelMenuOpen]);
 
   const handlePrepareRun = useCallback(async () => {
     exitValidateMode();
@@ -234,7 +364,31 @@ export function AiWorkspacePanel({
     }
   }, [addAiEvent]);
 
+  const handleSelectLocalModel = useCallback((model: string) => {
+    setSelectedLocalModel(model);
+    setPreferredLocalAiModel(model);
+    setLocalModelMenuOpen(false);
+    setWorkspaceError("");
+  }, []);
+
+  const handleToggleLocalModelMenu = useCallback(() => {
+    if (aiProvider !== "local" || !!aiAnalysis?.running) return;
+
+    setLocalModelMenuOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen) {
+        void refreshLocalModels(!selectedLocalModel.trim());
+      }
+      return nextOpen;
+    });
+  }, [aiAnalysis?.running, aiProvider, refreshLocalModels, selectedLocalModel]);
+
   const handleStartProjectAnalysis = useCallback(async (resume = false) => {
+    if (localModelMissing) {
+      setWorkspaceError("Bitte zuerst ein laufendes Ollama-Modell auswaehlen.");
+      return;
+    }
+
     await handlePrepareRun();
     startAiAnalysis("project_analysis");
     setCanResume(false);
@@ -254,7 +408,7 @@ export function AiWorkspacePanel({
       resume,
     );
     setAbortFn(() => abort);
-  }, [analyzeScope, currentViewId, handlePrepareRun, handleProjectAnalysisEvent, startAiAnalysis]);
+  }, [analyzeScope, currentViewId, handlePrepareRun, handleProjectAnalysisEvent, localModelMissing, startAiAnalysis]);
 
   const handleStartViewWorkspace = useCallback(async () => {
     if (!workspaceViewId) {
@@ -308,6 +462,7 @@ export function AiWorkspacePanel({
     includeContext,
     includeLabels,
     includeStructure,
+    localModelMissing,
     referenceFile,
     referenceInstruction,
     referenceOptions,
@@ -316,12 +471,17 @@ export function AiWorkspacePanel({
   ]);
 
   const handleStartRequestedRun = useCallback(async (resume = false) => {
+    if (localModelMissing) {
+      setWorkspaceError("Bitte zuerst ein laufendes Ollama-Modell auswaehlen.");
+      return;
+    }
+
     if (analyzeScope === "all") {
       await handleStartProjectAnalysis(resume);
       return;
     }
     await handleStartViewWorkspace();
-  }, [analyzeScope, handleStartProjectAnalysis, handleStartViewWorkspace]);
+  }, [analyzeScope, handleStartProjectAnalysis, handleStartViewWorkspace, localModelMissing]);
 
   const handleStopRun = useCallback(() => {
     if (activeRunKind === "project_analysis") {
@@ -357,6 +517,32 @@ export function AiWorkspacePanel({
     }
   }, [clearReviewHighlight, lastWorkspaceEvent?.undoSnapshotId, updateGraph]);
 
+  const handleFocusFinding = useCallback((finding: ProjectAnalysisFinding) => {
+    if (finding.viewId) {
+      navigateToView(finding.viewId);
+    }
+    if (finding.symbolId) {
+      setFocusNode(finding.symbolId);
+    }
+  }, [navigateToView, setFocusNode]);
+
+  const handleInspectFinding = useCallback((finding: ProjectAnalysisFinding) => {
+    if (finding.symbolId && finding.symbolLabel) {
+      openSourceViewer(finding.symbolId, finding.symbolLabel);
+      return;
+    }
+
+    openInIde("vscode", finding.file, finding.startLine).catch((error) => {
+      setWorkspaceError(error instanceof Error ? error.message : "Datei konnte nicht geoeffnet werden.");
+    });
+  }, [openSourceViewer]);
+
+  const handleOpenFindingInIde = useCallback((finding: ProjectAnalysisFinding) => {
+    openInIde("vscode", finding.file, finding.startLine).catch((error) => {
+      setWorkspaceError(error instanceof Error ? error.message : "Datei konnte nicht geoeffnet werden.");
+    });
+  }, []);
+
   useEffect(() => {
     const onWorkspaceCommand = (event: Event) => {
       const detail = (event as CustomEvent<{ action?: string }>).detail;
@@ -391,10 +577,99 @@ export function AiWorkspacePanel({
         <h2 className="ai-workspace__title">AI Workspace</h2>
 
         <div className="ai-provider-info">
-          <span className={`ai-provider-badge ai-provider-badge--${aiProvider}`}>
-            {aiProvider === "local" ? <><i className="bi bi-pc-display" /> Lokal</> : <><i className="bi bi-cloud" /> Cloud</>}
-          </span>
-          {ollamaModel && <span className="ai-provider-model">{ollamaModel}</span>}
+          {aiProvider === "local" ? (
+            <div className="ai-provider-picker" ref={localModelMenuRef}>
+              <button
+                type="button"
+                className={`ai-provider-select${localModelMenuOpen ? " ai-provider-select--open" : ""}`}
+                onClick={handleToggleLocalModelMenu}
+                disabled={!!aiAnalysis?.running}
+                aria-haspopup="listbox"
+                aria-expanded={localModelMenuOpen}
+              >
+                <span className={`ai-provider-badge ai-provider-badge--${aiProvider}`}>
+                  <i className="bi bi-pc-display" /> Lokal
+                </span>
+                <span className={`ai-provider-model${selectedLocalModel ? "" : " ai-provider-model--empty"}`}>
+                  {selectedLocalModel || "Modell waehlen"}
+                </span>
+                <span className="ai-provider-select__icon">
+                  <i className={`bi ${localModelMenuOpen ? "bi-chevron-up" : "bi-chevron-down"}`} />
+                </span>
+              </button>
+
+              {localModelMenuOpen && (
+                <div className="ai-provider-menu" role="listbox" aria-label="Lokale Ollama-Modelle">
+                  {localModelsLoading && (
+                    <div className="ai-provider-menu__status">
+                      <i className="bi bi-arrow-repeat ai-provider-menu__spinner" /> Lade `ollama ps`…
+                    </div>
+                  )}
+                  {!localModelsLoading && localModelsError && (
+                    <div className="ai-provider-menu__status ai-provider-menu__status--error">
+                      <i className="bi bi-exclamation-triangle" /> {localModelsError}
+                    </div>
+                  )}
+                  {!localModelsLoading && !localModelsError && localModels.length === 0 && (
+                    <div className="ai-provider-menu__status">
+                      Keine aktiven Modelle in `ollama ps`.
+                    </div>
+                  )}
+                  {!localModelsLoading && !localModelsError && localModels.map((model) => (
+                    <button
+                      key={`${model.name}-${model.id ?? "no-id"}`}
+                      type="button"
+                      className={`ai-provider-menu__item${model.name === selectedLocalModel ? " ai-provider-menu__item--active" : ""}`}
+                      onClick={() => handleSelectLocalModel(model.name)}
+                      role="option"
+                      aria-selected={model.name === selectedLocalModel}
+                    >
+                      <span className="ai-provider-menu__name">{model.name}</span>
+                      <span className="ai-provider-menu__meta">
+                        {[model.processor, model.size, model.until].filter(Boolean).join(" • ") || "aktives Modell"}
+                      </span>
+                    </button>
+                  ))}
+                  {!localModelsLoading && !localModelsError && selectedLocalModel && localModels.length > 0 && !selectedLocalModelVisible && (
+                    <div className="ai-provider-menu__status ai-provider-menu__status--warning">
+                      Ausgewaehltes Modell ist aktuell nicht in `ollama ps` sichtbar.
+                    </div>
+                  )}
+                  {!localModelsLoading && localModelsCheckedAt && (
+                    <div className="ai-provider-menu__footer">
+                      Zuletzt geprueft: {new Date(localModelsCheckedAt).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <span className={`ai-provider-badge ai-provider-badge--${aiProvider}`}>
+                <i className="bi bi-cloud" /> Cloud
+              </span>
+              {ollamaModel && <span className="ai-provider-model">{ollamaModel}</span>}
+            </>
+          )}
+        </div>
+
+        <div className={`ai-provider-hint${aiProvider === "local" && localModelMissing ? " ai-provider-hint--error" : ""}`}>
+          {aiProvider === "local"
+            ? (localModelMissing
+              ? "Waehle ein laufendes Ollama-Modell aus dem Dropdown."
+              : "Beim Oeffnen des Dropdowns wird die Liste jedes Mal mit `ollama ps` aktualisiert. Lokal nutzt der Workspace immer genau das ausgewaehlte Modell.")
+            : "Cloud-Routing nutzt die hinterlegte Task-Verteilung; Vision-Schritte werden versucht und bei nicht passendem Modell sauber uebersprungen."}
+        </div>
+
+        <div className="ai-workspace__summary-grid">
+          <div className="ai-workspace__summary-card">
+            <span className="ai-workspace__summary-label">Scope</span>
+            <strong>{analyzeScope === "all" ? "Gesamtes Projekt" : currentViewTitle}</strong>
+          </div>
+          <div className="ai-workspace__summary-card">
+            <span className="ai-workspace__summary-label">Model</span>
+            <strong>{aiProvider === "local" ? (selectedLocalModel || "Nicht gesetzt") : (ollamaModel || "Task-Routing")}</strong>
+          </div>
         </div>
 
         <div className="ai-scope-toggle">
@@ -547,7 +822,7 @@ export function AiWorkspacePanel({
               className="btn ai-analyze-btn ai-analyze-btn--start"
               onClick={() => void handleStartRequestedRun(false)}
               style={{ flex: 1 }}
-              disabled={!graph || (analyzeScope === "view" && !workspaceViewId)}
+              disabled={!graph || (analyzeScope === "view" && !workspaceViewId) || localModelMissing}
             >
               <i className="bi bi-cpu" /> {analyzeScope === "all" ? "AI Analyse starten" : "AI Workspace starten"}
             </button>
@@ -587,7 +862,21 @@ export function AiWorkspacePanel({
 
       {aiAnalysis && (
         <div className="sidebar-section ai-log-panel">
-          {aiAnalysis.running && (
+          <div className="ai-log-panel__header">
+            <div>
+              <div className="review-section-title">Laufdetails</div>
+              <div className="ai-workspace__run-kind">{activeRunKind === "view_workspace" ? "View Workspace" : "Project Analysis"}</div>
+            </div>
+            <button
+              type="button"
+              className="review-item__focus-btn"
+              onClick={() => setRunLogExpanded((current) => !current)}
+            >
+              <i className={`bi ${runLogExpanded ? "bi-chevron-up" : "bi-chevron-down"}`} /> {runLogExpanded ? "Minimieren" : "Oeffnen"}
+            </button>
+          </div>
+
+          {runLogExpanded && aiAnalysis.running && (
             <div className="ai-workspace__run-header">
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="ai-spinner" />
@@ -621,12 +910,12 @@ export function AiWorkspacePanel({
             </div>
           )}
 
-          {!aiAnalysis.running && aiAnalysis.phase === "done" && activeRunKind === "project_analysis" && (
+          {runLogExpanded && !aiAnalysis.running && aiAnalysis.phase === "done" && activeRunKind === "project_analysis" && (
             <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--green)" }}>
               <i className="bi bi-check-circle" /> Analyse abgeschlossen
             </div>
           )}
-          {!aiAnalysis.running && aiAnalysis.phase === "done" && activeRunKind === "view_workspace" && (
+          {runLogExpanded && !aiAnalysis.running && aiAnalysis.phase === "done" && activeRunKind === "view_workspace" && (
             <div className="ai-workspace-result-card">
               <div className="ai-workspace-result-card__header">
                 <span className="review-tag review-tag--source">AI Workspace</span>
@@ -653,23 +942,23 @@ export function AiWorkspacePanel({
               )}
             </div>
           )}
-          {!aiAnalysis.running && aiAnalysis.phase === "paused" && (
+          {runLogExpanded && !aiAnalysis.running && aiAnalysis.phase === "paused" && (
             <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--cyan, #66d9ef)" }}>
               <i className="bi bi-pause-circle" /> Analyse pausiert
             </div>
           )}
-          {!aiAnalysis.running && aiAnalysis.phase === "cancelled" && (
+          {runLogExpanded && !aiAnalysis.running && aiAnalysis.phase === "cancelled" && (
             <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--yellow)" }}>
               <i className="bi bi-slash-circle" /> Lauf abgebrochen
             </div>
           )}
-          {!aiAnalysis.running && aiAnalysis.phase === "stopped" && (
+          {runLogExpanded && !aiAnalysis.running && aiAnalysis.phase === "stopped" && (
             <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--yellow)" }}>
               <i className="bi bi-stop-circle" /> Lauf gestoppt
             </div>
           )}
 
-          {activeRunKind === "project_analysis" && aiAnalysis.log.some((entry) => entry.phase === "done" || entry.phase === "cancelled" || entry.phase === "paused") && (() => {
+          {runLogExpanded && activeRunKind === "project_analysis" && aiAnalysis.log.some((entry) => entry.phase === "done" || entry.phase === "cancelled" || entry.phase === "paused") && (() => {
             const stats = (aiAnalysis.log.find((entry) => entry.phase === "done")
               ?? aiAnalysis.log.find((entry) => entry.phase === "paused")
               ?? aiAnalysis.log.find((entry) => entry.phase === "cancelled"))?.stats;
@@ -679,12 +968,13 @@ export function AiWorkspacePanel({
                 <div className="ai-stat"><span><i className="bi bi-file-text" /></span><span className="num">{stats.docsGenerated ?? 0}</span> Docs</div>
                 <div className="ai-stat"><span><i className="bi bi-link-45deg" /></span><span className="num">{stats.relationsAdded ?? 0}</span> Relations</div>
                 <div className="ai-stat"><span><i className="bi bi-x-circle" /></span><span className="num">{stats.deadCodeFound ?? 0}</span> Dead Code</div>
+                <div className="ai-stat"><span><i className="bi bi-chat-left-quote" /></span><span className="num">{stats.commentedOutFound ?? 0}</span> Auskommentiert</div>
                 <div className="ai-stat"><span><i className="bi bi-collection" /></span><span className="num">{stats.groupsReviewed ?? 0}</span> Gruppen</div>
               </div>
             ) : null;
           })()}
 
-          {!aiAnalysis.running && activeRunKind === "project_analysis" && (aiAnalysis.phase === "done" || aiAnalysis.phase === "cancelled" || aiAnalysis.phase === "paused" || aiAnalysis.phase === "stopped") && (
+          {runLogExpanded && !aiAnalysis.running && activeRunKind === "project_analysis" && (aiAnalysis.phase === "done" || aiAnalysis.phase === "cancelled" || aiAnalysis.phase === "paused" || aiAnalysis.phase === "stopped") && (
             <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
               <button
                 className="btn ai-analyze-btn ai-analyze-btn--validate"
@@ -696,9 +986,10 @@ export function AiWorkspacePanel({
             </div>
           )}
 
-          <div className="ai-log-entries" ref={logRef}>
+          {runLogExpanded && (
+            <div className="ai-log-entries" ref={logRef}>
             {(aiAnalysis.log ?? [])
-              .filter((entry) => entry.action !== "poll-progress")
+              .filter((entry) => entry.action !== "poll-progress" && entry.action !== "focus")
               .slice(-100)
               .map((entry, index) => (
                 <div key={index} className="ai-log-entry">
@@ -710,9 +1001,133 @@ export function AiWorkspacePanel({
                   </span>
                 </div>
               ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
+
+      <div className="sidebar-section ai-code-hygiene">
+        <div className="review-panel__header">
+          <div>
+            <div className="review-section-title">Code Hygiene</div>
+            <div className="review-panel__subtitle">Statische Quellcode-Findings fuer Dead Code und auskommentierte Bloecke.</div>
+          </div>
+          <div className="review-panel__summary">
+            <span className="review-count review-count--high">{deadCodeFindings.length} dead</span>
+            <span className="review-count review-count--medium">{commentedCodeFindings.length} comments</span>
+          </div>
+        </div>
+
+        <div className="ai-code-hygiene__sections">
+          <div className="ai-code-hygiene__section">
+            <button
+              type="button"
+              className="ai-code-hygiene__toggle"
+              onClick={() => setDeadCodeExpanded((current) => !current)}
+            >
+              <span className="ai-code-hygiene__toggle-main">
+                <i className={`bi ${deadCodeExpanded ? "bi-chevron-down" : "bi-chevron-right"}`} />
+                Dead Code
+              </span>
+              <span className="review-tag review-tag--category">{deadCodeFindings.length}</span>
+            </button>
+
+            {deadCodeExpanded && (
+              deadCodeFindings.length > 0 ? (
+                <div className="ai-code-hygiene__list">
+                  {deadCodeFindings.map((finding) => (
+                    <article key={finding.id} className="ai-code-hygiene__item">
+                      <div className="review-item__header">
+                        <span className="review-badge review-badge--high">{findingTypeLabel(finding)}</span>
+                        {finding.symbolLabel && <span className="review-tag review-tag--source">{finding.symbolLabel}</span>}
+                        <span className="review-tag review-tag--confidence">{findingLocationLabel(finding)}</span>
+                      </div>
+                      <h3 className="review-item__title">{finding.title}</h3>
+                      <p className="review-item__message">{finding.summary}</p>
+                      {finding.codePreview && (
+                        <pre className="ai-code-hygiene__preview"><code>{finding.codePreview}</code></pre>
+                      )}
+                      <div className="review-item__footer">
+                        <div className="review-item__action-buttons">
+                          <button
+                            className="review-item__focus-btn"
+                            onClick={() => handleFocusFinding(finding)}
+                            disabled={!finding.symbolId && !finding.viewId}
+                          >
+                            <i className="bi bi-crosshair2" /> Focus
+                          </button>
+                          <button className="review-item__focus-btn" onClick={() => handleInspectFinding(finding)}>
+                            <i className="bi bi-search" /> Inspect
+                          </button>
+                          <button className="review-item__focus-btn" onClick={() => handleOpenFindingInIde(finding)}>
+                            <i className="bi bi-box-arrow-up-right" /> Open file
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="review-panel-empty">Keine Dead-Code-Findings im aktuellen Graphen.</div>
+              )
+            )}
+          </div>
+
+          <div className="ai-code-hygiene__section">
+            <button
+              type="button"
+              className="ai-code-hygiene__toggle"
+              onClick={() => setCommentedCodeExpanded((current) => !current)}
+            >
+              <span className="ai-code-hygiene__toggle-main">
+                <i className={`bi ${commentedCodeExpanded ? "bi-chevron-down" : "bi-chevron-right"}`} />
+                Auskommentierter Code
+              </span>
+              <span className="review-tag review-tag--category">{commentedCodeFindings.length}</span>
+            </button>
+
+            {commentedCodeExpanded && (
+              commentedCodeFindings.length > 0 ? (
+                <div className="ai-code-hygiene__list">
+                  {commentedCodeFindings.map((finding) => (
+                    <article key={finding.id} className="ai-code-hygiene__item ai-code-hygiene__item--commented">
+                      <div className="review-item__header">
+                        <span className="review-badge review-badge--medium">{findingTypeLabel(finding)}</span>
+                        {finding.symbolLabel && <span className="review-tag review-tag--source">{finding.symbolLabel}</span>}
+                        <span className="review-tag review-tag--confidence">{findingLocationLabel(finding)}</span>
+                      </div>
+                      <h3 className="review-item__title">{finding.title}</h3>
+                      <p className="review-item__message">{finding.summary}</p>
+                      {finding.codePreview && (
+                        <pre className="ai-code-hygiene__preview"><code>{finding.codePreview}</code></pre>
+                      )}
+                      <div className="review-item__footer">
+                        <div className="review-item__action-buttons">
+                          <button
+                            className="review-item__focus-btn"
+                            onClick={() => handleFocusFinding(finding)}
+                            disabled={!finding.symbolId && !finding.viewId}
+                          >
+                            <i className="bi bi-crosshair2" /> Focus
+                          </button>
+                          <button className="review-item__focus-btn" onClick={() => handleInspectFinding(finding)}>
+                            <i className="bi bi-search" /> Inspect
+                          </button>
+                          <button className="review-item__focus-btn" onClick={() => handleOpenFindingInIde(finding)}>
+                            <i className="bi bi-box-arrow-up-right" /> Open file
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="review-panel-empty">Keine auskommentierten Codebloecke erkannt.</div>
+              )
+            )}
+          </div>
+        </div>
+      </div>
 
       <ReviewHintsPanel embedded />
     </div>

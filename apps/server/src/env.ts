@@ -1,7 +1,9 @@
 import { AI_TASK_TYPES, type AiTaskType } from "./ai/taskTypes.js";
+import { getAiRequestOverrides } from "./ai/requestContext.js";
 
 export type AiProvider = "cloud" | "local";
 export type AiGlobalModelSource =
+  | "request_local_override"
   | "ollama_local_model"
   | "ollama_cloud_model"
   | "ollama_model"
@@ -61,16 +63,33 @@ function resolveGlobalModel(provider: AiProvider, env: EnvMap): {
   model: string;
   source: AiGlobalModelSource;
 } {
-  const defaultModel = "llama3.1:8b";
-  const providerSpecificModel = provider === "local"
-    ? envNonEmpty("OLLAMA_LOCAL_MODEL", env)
-    : envNonEmpty("OLLAMA_CLOUD_MODEL", env);
+  const requestLocalModel = provider === "local" ? getAiRequestOverrides().localModel : undefined;
+  if (requestLocalModel) {
+    return {
+      model: requestLocalModel,
+      source: "request_local_override",
+    };
+  }
+
+  if (provider === "local") {
+    const legacyLocalModel = envNonEmpty("OLLAMA_LOCAL_MODEL", env);
+    if (legacyLocalModel) {
+      return {
+        model: legacyLocalModel,
+        source: "ollama_local_model",
+      };
+    }
+
+    return { model: "", source: "default" };
+  }
+
+  const providerSpecificModel = envNonEmpty("OLLAMA_CLOUD_MODEL", env);
   const sharedModel = envNonEmpty("OLLAMA_MODEL", env);
 
   if (providerSpecificModel) {
     return {
       model: providerSpecificModel,
-      source: provider === "local" ? "ollama_local_model" : "ollama_cloud_model",
+      source: "ollama_cloud_model",
     };
   }
 
@@ -78,7 +97,7 @@ function resolveGlobalModel(provider: AiProvider, env: EnvMap): {
     return { model: sharedModel, source: "ollama_model" };
   }
 
-  return { model: defaultModel, source: "default" };
+  return { model: "llama3.1:8b", source: "default" };
 }
 
 function resolveRoutingConfig(env: EnvMap): AiRoutingConfig {

@@ -14,6 +14,7 @@ import {
   BackgroundVariant,
   Position,
   useReactFlow,
+  useUpdateNodeInternals,
   type EdgeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -39,6 +40,7 @@ import {
 } from "../diagramSettings";
 import { resolveArtifactView } from "../artifactVisibility";
 import { buildArtifactPreview } from "../artifactPreview";
+import { isManagedProcessLayoutViewId } from "../viewNavigation";
 
 const nodeTypes = {
   uml: UmlNode,
@@ -122,11 +124,16 @@ function attachDynamicPorts(
   portsByNode: Map<string, PortInfo[]>,
 ): Node[] {
   return nodes.map((n) => {
-    const ports = portsByNode.get(n.id);
-    if (!ports || ports.length === 0) return n;
+    const ports = portsByNode.get(n.id) ?? [];
+    const nextData = { ...(n.data as Record<string, unknown>) };
+    if (ports.length > 0) {
+      nextData.dynamicPorts = ports;
+    } else if ("dynamicPorts" in nextData) {
+      delete nextData.dynamicPorts;
+    }
     return {
       ...n,
-      data: { ...(n.data as object), dynamicPorts: ports },
+      data: nextData,
     };
   });
 }
@@ -293,6 +300,40 @@ function neighborhoodNodeIds(rootId: string, edges: PreparedProjectedEdge[], dep
   return seen;
 }
 
+function clearScheduledTimeout(ref: { current: ReturnType<typeof setTimeout> | null }) {
+  if (ref.current) {
+    clearTimeout(ref.current);
+    ref.current = null;
+  }
+}
+
+function clearScheduledFrame(ref: { current: number | null }) {
+  if (ref.current !== null) {
+    cancelAnimationFrame(ref.current);
+    ref.current = null;
+  }
+}
+
+function summarizeRouteReason(params: {
+  autoLayout: boolean;
+  dragActive: boolean;
+  persistedManualLayout: boolean;
+  localManualLayoutOverride: boolean;
+  routeMode: "elk" | "fallback" | "mixed" | "none";
+  edgeCount: number;
+  elkRouteCount: number;
+}): string {
+  if (!params.autoLayout) return "auto-layout disabled";
+  if (params.dragActive) return "node drag active";
+  if (params.persistedManualLayout) return "persisted manual layout";
+  if (params.localManualLayoutOverride) return "local manual override";
+  if (params.edgeCount === 0) return "no edges in current view";
+  if (params.routeMode === "elk") return "ELK routing active";
+  if (params.routeMode === "mixed") return `partial ELK routes (${params.elkRouteCount}/${params.edgeCount})`;
+  if (params.routeMode === "fallback") return "React Flow fallback routing";
+  return "waiting for layout";
+}
+
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
@@ -306,7 +347,6 @@ export function Canvas() {
   const viewUiSnapshots = useAppStore((s) => s.viewUiSnapshots);
   const viewRestoreViewId = useAppStore((s) => s.viewRestoreViewId);
   const viewRestoreSeq = useAppStore((s) => s.viewRestoreSeq ?? 0);
-  const saveCurrentViewSnapshot = useAppStore((s) => s.saveCurrentViewSnapshot);
   const addSymbolToGraph = useAppStore((s) => s.addSymbolToGraph);
   const addRelation = useAppStore((s) => s.addRelation);
   const updateRelation = useAppStore((s) => s.updateRelation);
@@ -323,37 +363,129 @@ export function Canvas() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [layoutDone, setLayoutDone] = useState(false);
   const reactFlowInstance = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
   const nodesInitialized = useNodesInitialized();
   const layoutRef = useRef(false);
   const layoutPassRef = useRef(0); // 0 = idle, 1 = first pass done, 2 = second pass done
   const prevLayoutKeyRef = useRef<string>("");
+  const layoutRunIdRef = useRef(0);
+  const lastResolvedLayoutVersionRef = useRef(layoutVersion);
+  const manualLayoutViewIdsRef = useRef<Set<string>>(new Set());
+  const suppressNextGraphResetRef = useRef(false);
   const appliedViewRestoreSeqRef = useRef(0);
+  const appliedViewFitSeqRef = useRef(0);
+  const firstPassFitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const secondPassFitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusApplyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reviewFitFrameRef = useRef<number | null>(null);
+  const viewRestoreFrameRef = useRef<number | null>(null);
+  const viewFitFrameRef = useRef<number | null>(null);
+  const viewportPersistTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const currentViewSnapshot = currentViewId ? viewUiSnapshots[currentViewId] ?? null : null;
   const pendingRestoreForCurrentView =
     !!currentViewId &&
     viewRestoreViewId === currentViewId &&
     viewRestoreSeq > appliedViewRestoreSeqRef.current;
   const persistCurrentViewport = useCallback((expectedViewId?: string | null) => {
-    if (!currentViewId) return;
-    if (expectedViewId && expectedViewId !== currentViewId) return;
+    const liveState = useAppStore.getState();
+    const liveCurrentViewId = liveState.currentViewId;
+    if (!liveCurrentViewId) return;
+    if (expectedViewId && expectedViewId !== liveCurrentViewId) return;
     const viewport = reactFlowInstance.getViewport();
-    saveCurrentViewSnapshot({
+    liveState.saveCurrentViewSnapshot({
       viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
     });
-  }, [currentViewId, reactFlowInstance, saveCurrentViewSnapshot]);
+  }, [reactFlowInstance]);
   const scheduleViewportPersist = useCallback((delayMs: number, expectedViewId: string | null = currentViewId) => {
     if (!expectedViewId) return;
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      viewportPersistTimersRef.current.delete(timer);
       persistCurrentViewport(expectedViewId);
     }, delayMs);
+    viewportPersistTimersRef.current.add(timer);
   }, [currentViewId, persistCurrentViewport]);
+
+  const canApplyLayoutResult = useCallback((expectedViewId: string | null, layoutRunId: number, layoutKey?: string) => {
+    if (!expectedViewId) return false;
+    if (layoutRunId !== layoutRunIdRef.current) return false;
+    if (useAppStore.getState().currentViewId !== expectedViewId) return false;
+    if (layoutKey && prevLayoutKeyRef.current !== layoutKey) return false;
+    return true;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearScheduledTimeout(firstPassFitTimeoutRef);
+      clearScheduledTimeout(secondPassFitTimeoutRef);
+      clearScheduledTimeout(focusApplyTimeoutRef);
+      clearScheduledTimeout(focusHighlightTimeoutRef);
+      clearScheduledFrame(reviewFitFrameRef);
+      clearScheduledFrame(viewRestoreFrameRef);
+      clearScheduledFrame(viewFitFrameRef);
+      for (const timer of viewportPersistTimersRef.current) {
+        clearTimeout(timer);
+      }
+      viewportPersistTimersRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (suppressNextGraphResetRef.current) {
+      suppressNextGraphResetRef.current = false;
+      return;
+    }
+    manualLayoutViewIdsRef.current.clear();
+    setIsNodeDragActive(false);
+  }, [graph]);
 
   // Dynamic port handle mapping from ELK layout (persists across layout passes)
   const edgeHandlesRef = useRef<Map<string, { sourceHandle: string; targetHandle: string }>>(new Map());
   const edgeRoutesRef = useRef<Map<string, EdgeRoute>>(new Map());
 
+  const dynamicPortState = useMemo(() => {
+    const nodeIds: string[] = [];
+    const signatureParts: string[] = [];
+
+    for (const node of nodes) {
+      const ports = (node.data as UmlNodeData).dynamicPorts ?? [];
+      if (ports.length === 0) continue;
+      nodeIds.push(node.id);
+      signatureParts.push(
+        `${node.id}:${ports
+          .map((port) => `${port.id}:${port.side}:${port.type}:${port.x.toFixed(1)}:${port.y.toFixed(1)}`)
+          .join(",")}`,
+      );
+    }
+
+    signatureParts.sort();
+    nodeIds.sort();
+    return {
+      nodeIds,
+      signature: signatureParts.join("|"),
+    };
+  }, [nodes]);
+
+  useEffect(() => {
+    if (dynamicPortState.nodeIds.length === 0) return;
+    const frame = requestAnimationFrame(() => {
+      updateNodeInternals(dynamicPortState.nodeIds);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [dynamicPortState.signature, updateNodeInternals]);
+
   // Node hover highlighting — dims unrelated edges
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
+  const [isNodeDragActive, setIsNodeDragActive] = useState(false);
+
+  const currentView = useMemo(
+    () => (graph && currentViewId ? graph.views.find((view) => view.id === currentViewId) ?? null : null),
+    [graph, currentViewId],
+  );
+  const currentViewIgnoresManualLayout = useMemo(
+    () => !!currentViewId && isManagedProcessLayoutViewId(currentViewId),
+    [currentViewId],
+  );
 
   // AI analysis highlight
   const aiHighlightId = useAppStore((s) => s.aiAnalysis?.highlightSymbolId ?? null);
@@ -632,10 +764,85 @@ export function Canvas() {
     reviewHighlight.viewId,
   ]);
 
+  useEffect(() => {
+    const persistedManualLayout =
+      !currentViewIgnoresManualLayout &&
+      !!currentView?.manualLayout;
+    const localManualLayoutOverride =
+      !currentViewIgnoresManualLayout &&
+      !!currentViewId &&
+      manualLayoutViewIdsRef.current.has(currentViewId);
+    const savedPositionCount = currentView?.nodePositions?.length ?? 0;
+    const savedPositionIds = new Set((currentView?.nodePositions ?? []).map((position) => position.symbolId));
+    const allHaveSavedPositions = viewNodes.length > 0 && viewNodes.every((node) => savedPositionIds.has(node.id));
+    const renderedElkRouteCount = edges.filter((edge) => {
+      const data = edge.data as { elkRoute?: EdgeRoute } | undefined;
+      return !!data?.elkRoute;
+    }).length;
+    const routeMode: "elk" | "fallback" | "mixed" | "none" =
+      edges.length === 0
+        ? "none"
+        : renderedElkRouteCount === 0
+          ? "fallback"
+          : renderedElkRouteCount === edges.length
+            ? "elk"
+            : "mixed";
+    const dynamicPortCount = nodes.reduce((sum, node) =>
+      sum + (((node.data as UmlNodeData).dynamicPorts ?? []).length), 0);
+
+    useAppStore.getState().updateDebugDiagram({
+      currentViewId,
+      layoutKey: prevLayoutKeyRef.current,
+      layoutPass: layoutPassRef.current,
+      layoutRunId: layoutRunIdRef.current,
+      nodesRendered: nodes.length,
+      edgesRendered: edges.length,
+      viewNodes: viewNodes.length,
+      viewEdges: viewEdges.length,
+      elkRouteCount: renderedElkRouteCount,
+      edgeHandleCount: edgeHandlesRef.current.size,
+      dynamicPortNodeCount: dynamicPortState.nodeIds.length,
+      dynamicPortCount,
+      routeMode,
+      routeReason: summarizeRouteReason({
+        autoLayout: diagramSettings.autoLayout,
+        dragActive: isNodeDragActive,
+        persistedManualLayout,
+        localManualLayoutOverride,
+        routeMode,
+        edgeCount: edges.length,
+        elkRouteCount: renderedElkRouteCount,
+      }),
+      autoLayout: diagramSettings.autoLayout,
+      dragActive: isNodeDragActive,
+      persistedManualLayout,
+      localManualLayoutOverride,
+      manualLayoutActive: persistedManualLayout || localManualLayoutOverride,
+      savedPositionCount,
+      allHaveSavedPositions,
+    });
+  }, [
+    currentView,
+    currentViewId,
+    currentViewIgnoresManualLayout,
+    diagramSettings.autoLayout,
+    dynamicPortState.nodeIds.length,
+    edges,
+    isNodeDragActive,
+    nodes,
+    viewEdges.length,
+    viewNodes,
+  ]);
+
   // Apply ELK layout — Pass 1 (estimate)
   // Only re-layout when the view or node set actually changes (not on position/data-only updates)
   useEffect(() => {
+    clearScheduledTimeout(firstPassFitTimeoutRef);
+    clearScheduledTimeout(secondPassFitTimeoutRef);
+    const expectedViewId = currentViewId;
+
     if (viewNodes.length === 0) {
+      layoutRunIdRef.current += 1;
       setNodes([]);
       setEdges([]);
       prevLayoutKeyRef.current = "";
@@ -659,6 +866,26 @@ export function Canvas() {
       .sort()
       .join(",");
     const layoutKey = `${currentViewId}|${diagramSettings.autoLayout ? "auto" : "manual"}|${nodeFingerprint}|${edgeFingerprint}|${layoutVersion}`;
+    const isExplicitRelayout = layoutVersion !== lastResolvedLayoutVersionRef.current;
+    const view = currentView;
+    const persistedManualLayout =
+      !currentViewIgnoresManualLayout &&
+      !!view?.manualLayout;
+    if (isExplicitRelayout) {
+      manualLayoutViewIdsRef.current.clear();
+    }
+    const hasManualLayoutOverride =
+      persistedManualLayout ||
+      (
+        !currentViewIgnoresManualLayout &&
+        !!currentViewId &&
+        manualLayoutViewIdsRef.current.has(currentViewId)
+      );
+    const shouldRespectSavedPositions = hasManualLayoutOverride && !isExplicitRelayout;
+    const shouldUseElkRoutes =
+      diagramSettings.autoLayout &&
+      !isNodeDragActive &&
+      !hasManualLayoutOverride;
 
     if (layoutKey === prevLayoutKeyRef.current) {
       // Node structure unchanged — update node data & edges without repositioning
@@ -683,23 +910,25 @@ export function Canvas() {
           viewEdges,
           edgeHandlesRef.current,
           edgeRoutesRef.current,
-          diagramSettings.autoLayout,
+          shouldUseElkRoutes,
           diagramSettings.edgeType,
         ),
       );
       return;
     }
     prevLayoutKeyRef.current = layoutKey;
+    lastResolvedLayoutVersionRef.current = layoutVersion;
+    const layoutRunId = layoutRunIdRef.current + 1;
+    layoutRunIdRef.current = layoutRunId;
 
     // Check which nodes have saved positions
-    const view = graph?.views.find((v) => v.id === currentViewId);
     const savedMap = new Map(
       (view?.nodePositions ?? []).map((p) => [p.symbolId, p]),
     );
     const allHaveSavedPos = viewNodes.every((n) => savedMap.has(n.id));
 
-    if (allHaveSavedPos && !diagramSettings.autoLayout) {
-      // Manual layout mode: respect persisted node positions and use fallback edges.
+    if (allHaveSavedPos && (!diagramSettings.autoLayout || shouldRespectSavedPositions)) {
+      // Manual drag overrides keep persisted positions until the user explicitly re-applies layout.
       edgeHandlesRef.current = new Map();
       edgeRoutesRef.current = new Map();
       setNodes(viewNodes);
@@ -729,13 +958,14 @@ export function Canvas() {
       diagramSettings.layout,
       diagramSettings.nodeCompactMode,
     ).then(({ nodes: laid, portsByNode, edgeHandles, routesByEdge }) => {
+      if (!canApplyLayoutResult(expectedViewId, layoutRunId, layoutKey)) return;
       edgeHandlesRef.current = edgeHandles;
-      edgeRoutesRef.current = diagramSettings.autoLayout ? routesByEdge : new Map();
-      // Preserve saved positions; use ELK only for new/unsaved nodes
+      edgeRoutesRef.current = shouldUseElkRoutes ? routesByEdge : new Map();
+      // Manual drag overrides pin the saved positions; new nodes still receive layout positions.
       const positioned = laid.map((n) => {
         const saved = savedMap.get(n.id);
         return saved
-          ? !diagramSettings.autoLayout
+          ? shouldRespectSavedPositions
             ? { ...n, position: { x: saved.x, y: saved.y } }
             : n
           : n;
@@ -746,7 +976,7 @@ export function Canvas() {
           viewEdges,
           edgeHandles,
           edgeRoutesRef.current,
-          diagramSettings.autoLayout,
+          shouldUseElkRoutes,
           diagramSettings.edgeType,
         ),
       );
@@ -754,17 +984,20 @@ export function Canvas() {
       setLayoutDone(true);
     });
   }, [
+    canApplyLayoutResult,
     viewNodes,
     viewEdges,
     setNodes,
     setEdges,
-    graph,
+    currentView,
     currentViewId,
+    currentViewIgnoresManualLayout,
     layoutVersion,
     diagramSettings.autoLayout,
     diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
+    isNodeDragActive,
   ]);
 
   // Pass 2: re-layout with measured sizes (React Flow measures after first render)
@@ -775,9 +1008,27 @@ export function Canvas() {
     if (!hasMeasured) return;
 
     layoutPassRef.current = 2; // prevent infinite loop
+    const expectedViewId = currentViewId;
+    const layoutRunId = layoutRunIdRef.current;
+    const expectedLayoutKey = prevLayoutKeyRef.current;
+    const view = currentView;
+    const persistedManualLayout =
+      !currentViewIgnoresManualLayout &&
+      !!view?.manualLayout;
+    const hasManualLayoutOverride =
+      persistedManualLayout ||
+      (
+        !currentViewIgnoresManualLayout &&
+        !!currentViewId &&
+        manualLayoutViewIdsRef.current.has(currentViewId)
+      );
+    const shouldRespectSavedPositions = hasManualLayoutOverride;
+    const shouldUseElkRoutes =
+      diagramSettings.autoLayout &&
+      !isNodeDragActive &&
+      !hasManualLayoutOverride;
 
     // Preserve saved positions in pass 2 as well
-    const view = graph?.views.find((v) => v.id === currentViewId);
     const savedMap = new Map(
       (view?.nodePositions ?? []).map((p) => [p.symbolId, p]),
     );
@@ -788,12 +1039,13 @@ export function Canvas() {
       diagramSettings.layout,
       diagramSettings.nodeCompactMode,
     ).then(({ nodes: laid, portsByNode, edgeHandles, routesByEdge }) => {
+      if (!canApplyLayoutResult(expectedViewId, layoutRunId, expectedLayoutKey)) return;
       edgeHandlesRef.current = edgeHandles;
-      edgeRoutesRef.current = diagramSettings.autoLayout ? routesByEdge : new Map();
+      edgeRoutesRef.current = shouldUseElkRoutes ? routesByEdge : new Map();
       const positioned = laid.map((n) => {
         const saved = savedMap.get(n.id);
         return saved
-          ? !diagramSettings.autoLayout
+          ? shouldRespectSavedPositions
             ? { ...n, position: { x: saved.x, y: saved.y } }
             : n
           : n;
@@ -804,30 +1056,40 @@ export function Canvas() {
           prev,
           edgeHandles,
           edgeRoutesRef.current,
-          diagramSettings.autoLayout,
+          shouldUseElkRoutes,
           diagramSettings.edgeType,
         ),
       );
-      if (!pendingRestoreForCurrentView || !currentViewSnapshot?.viewport) {
-        setTimeout(() => {
-          const expectedViewId = currentViewId;
+      const liveState = useAppStore.getState();
+      const pendingExplicitFit =
+        !!expectedViewId &&
+        liveState.viewFitViewId === expectedViewId &&
+        (liveState.viewFitSeq ?? 0) > appliedViewFitSeqRef.current;
+      if (!pendingRestoreForCurrentView && !currentViewSnapshot?.viewport && !liveState.focusNodeId && !pendingExplicitFit) {
+        clearScheduledTimeout(secondPassFitTimeoutRef);
+        secondPassFitTimeoutRef.current = setTimeout(() => {
+          secondPassFitTimeoutRef.current = null;
+          if (!canApplyLayoutResult(expectedViewId, layoutRunId, expectedLayoutKey)) return;
           reactFlowInstance.fitView({ padding: 0.12, duration: 300 });
           scheduleViewportPersist(360, expectedViewId);
         }, 60);
       }
     });
   }, [
+    canApplyLayoutResult,
     nodes,
     edges,
     layoutDone,
     setNodes,
     reactFlowInstance,
-    graph,
+    currentView,
     currentViewId,
+    currentViewIgnoresManualLayout,
     diagramSettings.autoLayout,
     diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
+    isNodeDragActive,
     currentViewSnapshot?.viewport,
     pendingRestoreForCurrentView,
     scheduleViewportPersist,
@@ -837,16 +1099,26 @@ export function Canvas() {
   useEffect(() => {
     if (layoutDone && !layoutRef.current) {
       layoutRef.current = true;
-      if (pendingRestoreForCurrentView && currentViewSnapshot?.viewport) {
+      const liveState = useAppStore.getState();
+      const pendingExplicitFit =
+        !!currentViewId &&
+        liveState.viewFitViewId === currentViewId &&
+        (liveState.viewFitSeq ?? 0) > appliedViewFitSeqRef.current;
+      if ((pendingRestoreForCurrentView && currentViewSnapshot?.viewport) || liveState.focusNodeId || pendingExplicitFit) {
         return;
       }
-      setTimeout(() => {
-        const expectedViewId = currentViewId;
+      const expectedViewId = currentViewId;
+      const layoutRunId = layoutRunIdRef.current;
+      const expectedLayoutKey = prevLayoutKeyRef.current;
+      clearScheduledTimeout(firstPassFitTimeoutRef);
+      firstPassFitTimeoutRef.current = setTimeout(() => {
+        firstPassFitTimeoutRef.current = null;
+        if (!canApplyLayoutResult(expectedViewId, layoutRunId, expectedLayoutKey)) return;
         reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
         scheduleViewportPersist(360, expectedViewId);
       }, 50);
     }
-  }, [currentViewId, currentViewSnapshot?.viewport, layoutDone, pendingRestoreForCurrentView, reactFlowInstance, scheduleViewportPersist]);
+  }, [canApplyLayoutResult, currentViewId, currentViewSnapshot?.viewport, layoutDone, pendingRestoreForCurrentView, reactFlowInstance, scheduleViewportPersist]);
 
   // AI highlight: When highlightSymbolId changes (or seq increments for same symbol),
   // flash the node if it exists in the current view. This is a lightweight visual cue;
@@ -900,10 +1172,10 @@ export function Canvas() {
   const pendingFocusRef = useRef<string | null>(null);
   const focusRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedReviewSeqRef = useRef(0);
-  const appliedViewFitSeqRef = useRef(0);
 
   // Core function to apply focus zoom + highlight
-  const applyFocusZoom = useCallback((nodeId: string) => {
+  const applyFocusZoom = useCallback((nodeId: string, expectedViewId: string | null) => {
+    if (!expectedViewId || useAppStore.getState().currentViewId !== expectedViewId) return;
     const isDeadCodeFocus = !!graph?.symbols.find(
       (s) => s.id === nodeId && (s.tags?.includes("dead-code") ?? false),
     );
@@ -916,7 +1188,7 @@ export function Canvas() {
       const cx = absPos.x + w / 2;
       const cy = absPos.y + h / 2;
       reactFlowInstance.setCenter(cx, cy, { zoom: 1.5, duration: 500 });
-      scheduleViewportPersist(560);
+      scheduleViewportPersist(560, expectedViewId);
     } else {
       reactFlowInstance.fitView({
         nodes: [{ id: nodeId }],
@@ -924,9 +1196,13 @@ export function Canvas() {
         padding: 0.1,
         maxZoom: 2,
       });
-      scheduleViewportPersist(560);
+      scheduleViewportPersist(560, expectedViewId);
     }
-    setTimeout(() => {
+    clearScheduledTimeout(focusHighlightTimeoutRef);
+    focusHighlightTimeoutRef.current = setTimeout(() => {
+      focusHighlightTimeoutRef.current = null;
+      const liveState = useAppStore.getState();
+      if (liveState.currentViewId !== expectedViewId || liveState.focusNodeId !== nodeId) return;
       // Clear ALL previous focus highlights — only one node should be highlighted at a time
       document.querySelectorAll(".node-focus-highlight, .node-focus-highlight-dead").forEach((prev) => {
         prev.classList.remove("node-focus-highlight", "node-focus-highlight-dead");
@@ -946,6 +1222,17 @@ export function Canvas() {
       acknowledgeAiNavigationSettled(nodeId);
     }, 520);
   }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph, scheduleViewportPersist]);
+
+  const scheduleFocusZoom = useCallback((nodeId: string, expectedViewId: string | null, delayMs: number) => {
+    clearScheduledTimeout(focusApplyTimeoutRef);
+    focusApplyTimeoutRef.current = setTimeout(() => {
+      focusApplyTimeoutRef.current = null;
+      const liveState = useAppStore.getState();
+      if (!expectedViewId || liveState.currentViewId !== expectedViewId) return;
+      if (liveState.focusNodeId !== nodeId) return;
+      applyFocusZoom(nodeId, expectedViewId);
+    }, delayMs);
+  }, [applyFocusZoom]);
 
   const applyReviewFit = useCallback((nodeIds: string[]) => {
     const uniqueNodeIds = Array.from(new Set(nodeIds));
@@ -984,8 +1271,8 @@ export function Canvas() {
     focusAppliedRef.current = focusNodeId;
     lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
-    setTimeout(() => applyFocusZoom(focusNodeId), 300);
-  }, [focusNodeId, focusSeq, layoutDone, nodes, nodesInitialized, reactFlowInstance, setFocusNode, applyFocusZoom]);
+    scheduleFocusZoom(focusNodeId, currentViewId, 300);
+  }, [currentViewId, focusNodeId, focusSeq, layoutDone, nodes, nodesInitialized, scheduleFocusZoom]);
 
   // Retry pending focus after layout pass 2 completes (also checks nodesInitialized)
   useEffect(() => {
@@ -1004,8 +1291,8 @@ export function Canvas() {
     focusAppliedRef.current = pending;
     lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
-    setTimeout(() => applyFocusZoom(pending), 300);
-  }, [layoutDone, nodes, nodesInitialized, applyFocusZoom, focusSeq]);
+    scheduleFocusZoom(pending, currentViewId, 300);
+  }, [currentViewId, layoutDone, nodes, nodesInitialized, scheduleFocusZoom, focusSeq]);
 
   // Also retry with a timer for cases where layout deps don't trigger re-render
   useEffect(() => {
@@ -1039,12 +1326,12 @@ export function Canvas() {
       pendingFocusRef.current = null;
       if (focusRetryRef.current) clearInterval(focusRetryRef.current);
       focusRetryRef.current = null;
-      setTimeout(() => applyFocusZoom(id), 100);
+      scheduleFocusZoom(id, currentViewId, 100);
     }, 200);
     return () => {
       if (focusRetryRef.current) { clearInterval(focusRetryRef.current); focusRetryRef.current = null; }
     };
-  }, [focusNodeId, focusSeq, nodes, applyFocusZoom]);
+  }, [currentViewId, focusNodeId, focusSeq, nodes, scheduleFocusZoom]);
 
   useEffect(() => {
     if (reviewHighlight.seq <= appliedReviewSeqRef.current) return;
@@ -1060,7 +1347,12 @@ export function Canvas() {
     appliedReviewSeqRef.current = reviewHighlight.seq;
     if (visibleTargetIds.length === 0) return;
 
-    requestAnimationFrame(() => applyReviewFit(visibleTargetIds));
+    clearScheduledFrame(reviewFitFrameRef);
+    reviewFitFrameRef.current = requestAnimationFrame(() => {
+      reviewFitFrameRef.current = null;
+      if (useAppStore.getState().currentViewId !== currentViewId) return;
+      applyReviewFit(visibleTargetIds);
+    });
   }, [
     applyReviewFit,
     currentViewId,
@@ -1075,6 +1367,8 @@ export function Canvas() {
 
   useEffect(() => {
     if (!focusNodeId) {
+      clearScheduledTimeout(focusApplyTimeoutRef);
+      clearScheduledTimeout(focusHighlightTimeoutRef);
       document.querySelectorAll(".node-focus-highlight, .node-focus-highlight-dead").forEach((el) => {
         el.classList.remove("node-focus-highlight", "node-focus-highlight-dead");
       });
@@ -1093,9 +1387,12 @@ export function Canvas() {
     const viewport = currentViewSnapshot?.viewport;
     if (!viewport) return;
 
-    requestAnimationFrame(() => {
+    clearScheduledFrame(viewRestoreFrameRef);
+    viewRestoreFrameRef.current = requestAnimationFrame(() => {
+      viewRestoreFrameRef.current = null;
+      if (useAppStore.getState().currentViewId !== currentViewId) return;
       void reactFlowInstance.setViewport(viewport, { duration: 320 });
-      scheduleViewportPersist(380);
+      scheduleViewportPersist(380, currentViewId);
     });
   }, [
     currentViewId,
@@ -1112,15 +1409,20 @@ export function Canvas() {
     if (viewFitSeq <= appliedViewFitSeqRef.current) return;
     if (!viewFitViewId || viewFitViewId !== currentViewId) return;
     if (pendingRestoreForCurrentView) return;
+    if (focusNodeId) return;
     if (!layoutDone || !nodesInitialized || nodes.length === 0) return;
 
     appliedViewFitSeqRef.current = viewFitSeq;
-    requestAnimationFrame(() => {
+    clearScheduledFrame(viewFitFrameRef);
+    viewFitFrameRef.current = requestAnimationFrame(() => {
+      viewFitFrameRef.current = null;
+      if (useAppStore.getState().currentViewId !== currentViewId) return;
       reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
-      scheduleViewportPersist(360);
+      scheduleViewportPersist(360, currentViewId);
     });
   }, [
     currentViewId,
+    focusNodeId,
     layoutDone,
     nodes.length,
     nodesInitialized,
@@ -1364,6 +1666,7 @@ export function Canvas() {
   const onNodeDragStart = useCallback((_event: React.MouseEvent, _node: Node, _draggedNodes: Node[]) => {
     setHoverInteractionBlocked(true);
     setHoverNodeId(null);
+    setIsNodeDragActive(true);
   }, []);
 
   const onNodeDrag = useCallback((_event: React.MouseEvent, _node: Node, _draggedNodes: Node[]) => {
@@ -1372,6 +1675,19 @@ export function Canvas() {
 
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, _node: Node, draggedNodes: Node[]) => {
+      if (diagramSettings.autoLayout) {
+        if (currentViewId) {
+          manualLayoutViewIdsRef.current.delete(currentViewId);
+        }
+        setIsNodeDragActive(false);
+        applyDiagramLayout();
+        setHoverInteractionBlocked(false, 560);
+        return;
+      }
+      if (currentViewId) {
+        manualLayoutViewIdsRef.current.add(currentViewId);
+      }
+      suppressNextGraphResetRef.current = true;
       const positions = draggedNodes.map((n) => ({
         symbolId: (n.data as UmlNodeData).symbolId,
         x: n.position.x,
@@ -1380,13 +1696,11 @@ export function Canvas() {
         height: n.measured?.height,
       }));
       saveNodePositions(positions);
-      if (diagramSettings.autoLayout) {
-        applyDiagramLayout();
-      }
+      setIsNodeDragActive(false);
       // Prevent immediate hover re-open right after drag release.
       setHoverInteractionBlocked(false, 560);
     },
-    [applyDiagramLayout, diagramSettings.autoLayout, saveNodePositions],
+    [applyDiagramLayout, currentViewId, diagramSettings.autoLayout, saveNodePositions],
   );
 
   const onMoveStart = useCallback(() => {
@@ -1396,6 +1710,7 @@ export function Canvas() {
 
   const onMoveEnd = useCallback(() => {
     persistCurrentViewport();
+    setIsNodeDragActive(false);
     setHoverInteractionBlocked(false, 560);
   }, [persistCurrentViewport]);
 

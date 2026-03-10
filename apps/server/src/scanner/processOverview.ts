@@ -7,6 +7,7 @@ import type {
   RelationType,
   Symbol,
 } from "@dmpg/shared";
+import { isManagedProcessLayoutViewId } from "@dmpg/shared";
 import { buildProcessDiagramConfigFromGraph, describeProcessArtifact } from "./processOverview.auto.js";
 
 const PROCESS_TAG = "process-overview";
@@ -68,6 +69,7 @@ interface ProcessStageViewConfig {
   parentViewId?: string | null;
   scope: DiagramView["scope"];
   hiddenInSidebar?: boolean;
+  manualLayout?: boolean;
   nodeRefs: string[];
   edgeRefs: string[];
   nodePositions?: DiagramView["nodePositions"];
@@ -128,6 +130,15 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
     graph.rootViewId === PROCESS_VIEW_ID ? findFallbackRootViewId(graph) : graph.rootViewId;
   const config = resolveProcessDiagramConfig(graph);
   if (!config) return graph;
+  const previousOverlayViews = new Map(
+    graph.views
+      .filter((view) => view.id === config.viewId || view.parentViewId === config.viewId)
+      .map((view) => [view.id, {
+        hiddenInSidebar: view.hiddenInSidebar,
+        manualLayout: view.manualLayout === true,
+        nodePositions: view.nodePositions ? [...view.nodePositions] : undefined,
+      }]),
+  );
 
   removeExistingProcessOverlay(graph, config.viewId);
   if (!graph.views.some((view) => view.id === oldRootViewId)) {
@@ -218,6 +229,7 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
       .map((relation) => relation.id),
     nodePositions: processPositions,
   };
+  applyPersistedLayoutState(processView, previousOverlayViews.get(processView.id));
 
   graph.views.push(processView);
 
@@ -229,10 +241,14 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
         parentViewId: view.parentViewId ?? processView.id,
         scope: view.scope,
         hiddenInSidebar: view.hiddenInSidebar,
+        manualLayout: view.manualLayout,
         nodeRefs: [...view.nodeRefs],
         edgeRefs: [...view.edgeRefs],
         nodePositions: view.nodePositions ? [...view.nodePositions] : undefined,
-      })),
+      })).map((stageView) => {
+        applyPersistedLayoutState(stageView, previousOverlayViews.get(stageView.id));
+        return stageView;
+      }),
     );
   }
 
@@ -258,6 +274,26 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
 
   graph.rootViewId = processView.id;
   return graph;
+}
+
+function applyPersistedLayoutState(
+  target: DiagramView,
+  previous?: Pick<DiagramView, "hiddenInSidebar" | "manualLayout" | "nodePositions">,
+): void {
+  if (!previous) return;
+
+  if (typeof previous.hiddenInSidebar === "boolean") {
+    target.hiddenInSidebar = previous.hiddenInSidebar;
+  }
+
+  const filteredPositions = (previous.nodePositions ?? []).filter((position) =>
+    target.nodeRefs.includes(position.symbolId),
+  );
+
+  if (previous.manualLayout && filteredPositions.length > 0 && !isManagedProcessLayoutViewId(target.id)) {
+    target.manualLayout = true;
+    target.nodePositions = filteredPositions;
+  }
 }
 
 function addExternalContextStubs(graph: ProjectGraph): ProjectGraph {

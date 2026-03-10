@@ -193,6 +193,26 @@ export function getCurrentProjectPath(): string | null {
   return currentProjectPath;
 }
 
+export function getPersistedProjectGraph(projectPath: string): ProjectGraph | null {
+  const resolvedProjectPath = path.resolve(projectPath);
+  if (
+    currentGraph &&
+    currentProjectPath &&
+    path.resolve(currentProjectPath) === resolvedProjectPath
+  ) {
+    return currentGraph;
+  }
+
+  const hash = hashPath(resolvedProjectPath);
+  const gFile = path.join(projectDir(hash), "graph.json");
+  const loaded = loadNormalizedGraphFile(gFile);
+  if (!loaded) return null;
+  if (loaded.changed) {
+    persistGraphForProject(loaded.graph, resolvedProjectPath);
+  }
+  return loaded.graph;
+}
+
 // Debounced disk write (300ms)
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
