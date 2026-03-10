@@ -108,12 +108,31 @@ export interface ReviewHighlightState {
   previewNodeIds: string[];
 }
 
+export interface ViewportSnapshot {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface ViewUiSnapshot {
+  breadcrumb: string[];
+  selectedSymbolId: string | null;
+  selectedEdgeId: string | null;
+  inspectorCollapsed: boolean;
+  viewport: ViewportSnapshot | null;
+}
+
+export interface NavigateToViewOptions {
+  restoreViewState?: boolean;
+}
+
 export interface AppState {
   graph: ProjectGraph | null;
   currentViewId: string | null;
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
   breadcrumb: string[]; // view IDs path
+  viewUiSnapshots: Record<string, ViewUiSnapshot>;
   graphHistoryPast: GraphHistorySnapshot[];
   graphHistoryFuture: GraphHistorySnapshot[];
   historyCanUndo: boolean;
@@ -169,6 +188,9 @@ export interface AppState {
   setFocusNode: (id: string | null) => void;
   viewFitViewId: string | null;
   viewFitSeq: number;
+  viewRestoreViewId: string | null;
+  viewRestoreSeq: number;
+  saveCurrentViewSnapshot: (patch?: Partial<ViewUiSnapshot>) => void;
 
   // Review hint graph focus
   reviewHighlight: ReviewHighlightState;
@@ -200,7 +222,7 @@ export interface AppState {
   updateGraph: (g: ProjectGraph) => void;
   undoGraphChange: () => void;
   redoGraphChange: () => void;
-  navigateToView: (viewId: string) => void;
+  navigateToView: (viewId: string, options?: NavigateToViewOptions) => void;
   goBack: () => void;
   focusSymbolInContext: (symbolId: string, preferredViewId?: string | null) => void;
   selectSymbol: (id: string | null) => void;
@@ -269,6 +291,139 @@ function buildGraphHistorySnapshot(state: Pick<AppState,
   };
 }
 
+function normalizeSnapshotBreadcrumb(
+  graph: ProjectGraph | null,
+  viewId: string,
+  breadcrumb: string[] | undefined,
+): string[] {
+  if (!graph) {
+    return breadcrumb && breadcrumb.length > 0 ? [...breadcrumb] : [viewId];
+  }
+  const validViewIds = new Set(graph.views.map((view) => view.id));
+  if (
+    breadcrumb &&
+    breadcrumb.length > 0 &&
+    breadcrumb[breadcrumb.length - 1] === viewId &&
+    breadcrumb.every((entry) => validViewIds.has(entry))
+  ) {
+    return [...breadcrumb];
+  }
+  return buildViewPath(graph, viewId);
+}
+
+function buildViewUiSnapshot(
+  state: Pick<AppState,
+    | "graph"
+    | "currentViewId"
+    | "breadcrumb"
+    | "selectedSymbolId"
+    | "selectedEdgeId"
+    | "inspectorCollapsed"
+    | "viewUiSnapshots">,
+  viewId: string,
+  patch: Partial<ViewUiSnapshot> = {},
+): ViewUiSnapshot {
+  const previous = state.viewUiSnapshots[viewId];
+  const isCurrentView = state.currentViewId === viewId;
+  return {
+    breadcrumb: normalizeSnapshotBreadcrumb(
+      state.graph,
+      viewId,
+      patch.breadcrumb ?? (isCurrentView ? state.breadcrumb : previous?.breadcrumb),
+    ),
+    selectedSymbolId: patch.selectedSymbolId !== undefined
+      ? patch.selectedSymbolId
+      : (isCurrentView ? state.selectedSymbolId : previous?.selectedSymbolId ?? null),
+    selectedEdgeId: patch.selectedEdgeId !== undefined
+      ? patch.selectedEdgeId
+      : (isCurrentView ? state.selectedEdgeId : previous?.selectedEdgeId ?? null),
+    inspectorCollapsed: patch.inspectorCollapsed ?? (isCurrentView ? state.inspectorCollapsed : previous?.inspectorCollapsed ?? false),
+    viewport: patch.viewport !== undefined ? patch.viewport : previous?.viewport ?? null,
+  };
+}
+
+function withSavedCurrentViewSnapshot(
+  state: Pick<AppState,
+    | "graph"
+    | "currentViewId"
+    | "breadcrumb"
+    | "selectedSymbolId"
+    | "selectedEdgeId"
+    | "inspectorCollapsed"
+    | "viewUiSnapshots">,
+  patch: Partial<ViewUiSnapshot> = {},
+): Record<string, ViewUiSnapshot> {
+  if (!state.currentViewId) return state.viewUiSnapshots;
+  return {
+    ...state.viewUiSnapshots,
+    [state.currentViewId]: buildViewUiSnapshot(state, state.currentViewId, patch),
+  };
+}
+
+function isRestorableSelectedSymbol(
+  graph: ProjectGraph | null,
+  viewId: string,
+  symbolId: string | null,
+): boolean {
+  if (!graph || !symbolId) return false;
+  const view = graph.views.find((entry) => entry.id === viewId);
+  return !!view && view.nodeRefs.includes(symbolId) && graph.symbols.some((symbol) => symbol.id === symbolId);
+}
+
+function isRestorableSelectedEdge(
+  graph: ProjectGraph | null,
+  edgeId: string | null,
+): boolean {
+  if (!edgeId) return false;
+  if (edgeId.includes("|")) return true;
+  if (!graph) return false;
+  return graph.relations.some((relation) => relation.id === edgeId);
+}
+
+function getRestorableViewSnapshot(
+  state: Pick<AppState, "graph" | "viewUiSnapshots">,
+  viewId: string,
+): ViewUiSnapshot | null {
+  const snapshot = state.viewUiSnapshots[viewId];
+  if (!snapshot) return null;
+  return {
+    breadcrumb: normalizeSnapshotBreadcrumb(state.graph, viewId, snapshot.breadcrumb),
+    selectedSymbolId: isRestorableSelectedSymbol(state.graph, viewId, snapshot.selectedSymbolId)
+      ? snapshot.selectedSymbolId
+      : null,
+    selectedEdgeId: isRestorableSelectedEdge(state.graph, snapshot.selectedEdgeId)
+      ? snapshot.selectedEdgeId
+      : null,
+    inspectorCollapsed: snapshot.inspectorCollapsed,
+    viewport: snapshot.viewport ?? null,
+  };
+}
+
+function pruneViewUiSnapshots(
+  graph: ProjectGraph,
+  snapshots: Record<string, ViewUiSnapshot>,
+): Record<string, ViewUiSnapshot> {
+  const validViewIds = new Set(graph.views.map((view) => view.id));
+  const next: Record<string, ViewUiSnapshot> = {};
+
+  for (const [viewId, snapshot] of Object.entries(snapshots)) {
+    if (!validViewIds.has(viewId)) continue;
+    next[viewId] = {
+      ...snapshot,
+      breadcrumb: normalizeSnapshotBreadcrumb(graph, viewId, snapshot.breadcrumb),
+      selectedSymbolId: isRestorableSelectedSymbol(graph, viewId, snapshot.selectedSymbolId)
+        ? snapshot.selectedSymbolId
+        : null,
+      selectedEdgeId: isRestorableSelectedEdge(graph, snapshot.selectedEdgeId)
+        ? snapshot.selectedEdgeId
+        : null,
+      viewport: snapshot.viewport ?? null,
+    };
+  }
+
+  return next;
+}
+
 function historyPatchWithCurrentSnapshot(state: Pick<AppState,
   | "graph"
   | "currentViewId"
@@ -329,6 +484,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedSymbolId: null,
   selectedEdgeId: null,
   breadcrumb: [],
+  viewUiSnapshots: {},
   graphHistoryPast: [],
   graphHistoryFuture: [],
   historyCanUndo: false,
@@ -340,7 +496,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
 
   inspectorCollapsed: false,
-  toggleInspector: () => set((s) => ({ inspectorCollapsed: !s.inspectorCollapsed })),
+  toggleInspector: () => set((state) => ({
+    inspectorCollapsed: !state.inspectorCollapsed,
+    viewUiSnapshots: withSavedCurrentViewSnapshot(state, {
+      inspectorCollapsed: !state.inspectorCollapsed,
+    }),
+  })),
   sidebarCollapsed: false,
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -414,10 +575,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   focusSeq: 0,
   viewFitViewId: null,
   viewFitSeq: 0,
+  viewRestoreViewId: null,
+  viewRestoreSeq: 0,
   setFocusNode: (id) =>
-    set(id
-      ? { focusNodeId: id, focusSeq: (get().focusSeq ?? 0) + 1, selectedSymbolId: id, selectedEdgeId: null, inspectorCollapsed: false }
-      : { focusNodeId: null }),
+    set((state) => {
+      if (id) {
+        return {
+          focusNodeId: id,
+          focusSeq: state.focusSeq + 1,
+          selectedSymbolId: id,
+          selectedEdgeId: null,
+          inspectorCollapsed: false,
+          viewUiSnapshots: withSavedCurrentViewSnapshot(state, {
+            selectedSymbolId: id,
+            selectedEdgeId: null,
+            inspectorCollapsed: false,
+          }),
+        };
+      }
+      return { focusNodeId: null };
+    }),
+  saveCurrentViewSnapshot: (patch = {}) =>
+    set((state) => ({
+      viewUiSnapshots: withSavedCurrentViewSnapshot(state, patch),
+    })),
 
   reviewHighlight: {
     activeItemId: null,
@@ -1253,6 +1434,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedSymbolId: null,
       selectedEdgeId: null,
       breadcrumb: [initialViewId],
+      viewUiSnapshots: {},
       reviewHighlight: {
         activeItemId: null,
         nodeIds: [],
@@ -1266,12 +1448,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       graphHistoryFuture: [],
       historyCanUndo: false,
       historyCanRedo: false,
+      viewRestoreViewId: null,
+      viewRestoreSeq: 0,
     });
   },
 
   updateGraph: (g) => {
     const normalized = normalizeGraphForFrontend(g);
-    const { graph, aiAnalysis, currentViewId, breadcrumb, selectedSymbolId, selectedEdgeId } = get();
+    const { graph, aiAnalysis, currentViewId, breadcrumb, selectedSymbolId, selectedEdgeId, viewUiSnapshots } = get();
     const localUpdateFresh =
       !!aiAnalysis?.running &&
       _lastDataUpdateTime > 0 &&
@@ -1292,6 +1476,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       breadcrumb: viewStillExists ? breadcrumb : [fallbackViewId],
       selectedSymbolId: normalized.symbols.some((s) => s.id === selectedSymbolId) ? selectedSymbolId : null,
       selectedEdgeId: normalized.relations.some((r) => r.id === selectedEdgeId) ? selectedEdgeId : null,
+      viewUiSnapshots: pruneViewUiSnapshots(normalized, viewUiSnapshots),
       reviewHighlight: {
         ...get().reviewHighlight,
         nodeIds: get().reviewHighlight.nodeIds.filter((id) => normalized.symbols.some((symbol) => symbol.id === id)),
@@ -1305,6 +1490,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       graphHistoryFuture: [],
       historyCanUndo: false,
       historyCanRedo: false,
+      viewRestoreViewId: null,
+      viewRestoreSeq: 0,
     });
   },
 
@@ -1358,56 +1545,71 @@ export const useAppStore = create<AppState>((set, get) => ({
     void get().syncGraphToServer();
   },
 
-  navigateToView: (viewId) => {
-    const { breadcrumb, graph, currentViewId, viewFitSeq } = get();
+  navigateToView: (viewId, options = {}) => {
+    const state = get();
+    const { breadcrumb, graph, currentViewId, viewFitSeq, viewRestoreSeq } = state;
+    const shouldRestore = options.restoreViewState === true;
     const targetViewId = graph
       ? resolveNavigableViewId(graph, viewId, currentViewId) ?? viewId
       : viewId;
+    const snapshot = shouldRestore ? getRestorableViewSnapshot(state, targetViewId) : null;
+    const hasViewportRestore = !!snapshot?.viewport;
     if (currentViewId === targetViewId) {
       set({
         currentViewId: targetViewId,
-        selectedSymbolId: null,
-        selectedEdgeId: null,
+        breadcrumb: snapshot?.breadcrumb ?? breadcrumb,
+        selectedSymbolId: snapshot?.selectedSymbolId ?? null,
+        selectedEdgeId: snapshot?.selectedEdgeId ?? null,
         focusNodeId: null,
-        viewFitViewId: targetViewId,
-        viewFitSeq: viewFitSeq + 1,
+        inspectorCollapsed: snapshot?.inspectorCollapsed ?? state.inspectorCollapsed,
+        viewFitViewId: hasViewportRestore ? null : targetViewId,
+        viewFitSeq: hasViewportRestore ? viewFitSeq : viewFitSeq + 1,
+        viewRestoreViewId: hasViewportRestore ? targetViewId : null,
+        viewRestoreSeq: hasViewportRestore ? viewRestoreSeq + 1 : viewRestoreSeq,
       });
       return;
     }
 
     const idx = breadcrumb.indexOf(targetViewId);
     if (idx >= 0) {
-      // View is already in current breadcrumb — go back to that point
       set({
         currentViewId: targetViewId,
-        breadcrumb: breadcrumb.slice(0, idx + 1),
-        selectedSymbolId: null,
-        selectedEdgeId: null,
+        breadcrumb: snapshot?.breadcrumb ?? breadcrumb.slice(0, idx + 1),
+        selectedSymbolId: snapshot?.selectedSymbolId ?? null,
+        selectedEdgeId: snapshot?.selectedEdgeId ?? null,
         focusNodeId: null,
-        viewFitViewId: targetViewId,
-        viewFitSeq: viewFitSeq + 1,
+        inspectorCollapsed: snapshot?.inspectorCollapsed ?? state.inspectorCollapsed,
+        viewFitViewId: hasViewportRestore ? null : targetViewId,
+        viewFitSeq: hasViewportRestore ? viewFitSeq : viewFitSeq + 1,
+        viewRestoreViewId: hasViewportRestore ? targetViewId : null,
+        viewRestoreSeq: hasViewportRestore ? viewRestoreSeq + 1 : viewRestoreSeq,
       });
     } else if (graph) {
-      // Build correct ancestor path from root → target view
       const path = buildViewPath(graph, targetViewId);
       set({
         currentViewId: targetViewId,
-        breadcrumb: path,
-        selectedSymbolId: null,
-        selectedEdgeId: null,
+        breadcrumb: snapshot?.breadcrumb ?? path,
+        selectedSymbolId: snapshot?.selectedSymbolId ?? null,
+        selectedEdgeId: snapshot?.selectedEdgeId ?? null,
         focusNodeId: null,
-        viewFitViewId: targetViewId,
-        viewFitSeq: viewFitSeq + 1,
+        inspectorCollapsed: snapshot?.inspectorCollapsed ?? state.inspectorCollapsed,
+        viewFitViewId: hasViewportRestore ? null : targetViewId,
+        viewFitSeq: hasViewportRestore ? viewFitSeq : viewFitSeq + 1,
+        viewRestoreViewId: hasViewportRestore ? targetViewId : null,
+        viewRestoreSeq: hasViewportRestore ? viewRestoreSeq + 1 : viewRestoreSeq,
       });
     } else {
       set({
         currentViewId: targetViewId,
-        breadcrumb: [...breadcrumb, targetViewId],
-        selectedSymbolId: null,
-        selectedEdgeId: null,
+        breadcrumb: snapshot?.breadcrumb ?? [...breadcrumb, targetViewId],
+        selectedSymbolId: snapshot?.selectedSymbolId ?? null,
+        selectedEdgeId: snapshot?.selectedEdgeId ?? null,
         focusNodeId: null,
-        viewFitViewId: targetViewId,
-        viewFitSeq: viewFitSeq + 1,
+        inspectorCollapsed: snapshot?.inspectorCollapsed ?? state.inspectorCollapsed,
+        viewFitViewId: hasViewportRestore ? null : targetViewId,
+        viewFitSeq: hasViewportRestore ? viewFitSeq : viewFitSeq + 1,
+        viewRestoreViewId: hasViewportRestore ? targetViewId : null,
+        viewRestoreSeq: hasViewportRestore ? viewRestoreSeq + 1 : viewRestoreSeq,
       });
     }
   },
@@ -1416,7 +1618,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { breadcrumb } = get();
     if (breadcrumb.length > 1) {
       const newBc = breadcrumb.slice(0, -1);
-      set({ currentViewId: newBc[newBc.length - 1], breadcrumb: newBc, selectedSymbolId: null, selectedEdgeId: null });
+      get().navigateToView(newBc[newBc.length - 1], { restoreViewState: true });
     }
   },
 
@@ -1429,21 +1631,50 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentViewId,
     });
 
+    const nextViewId = targetViewId ?? currentViewId ?? graph.rootViewId;
+    const nextBreadcrumb = targetViewId ? buildViewPath(graph, targetViewId) : breadcrumb;
+    const nextFocusSeq = (get().focusSeq ?? 0) + 1;
+    const nextViewFitSeq = targetViewId ? (get().viewFitSeq ?? 0) + 1 : get().viewFitSeq;
+
     set({
-      currentViewId: targetViewId ?? currentViewId,
-      breadcrumb: targetViewId ? buildViewPath(graph, targetViewId) : breadcrumb,
+      currentViewId: nextViewId,
+      breadcrumb: nextBreadcrumb,
       selectedSymbolId: symbolId,
       selectedEdgeId: null,
       focusNodeId: symbolId,
-      focusSeq: (get().focusSeq ?? 0) + 1,
+      focusSeq: nextFocusSeq,
       inspectorCollapsed: false,
       viewFitViewId: targetViewId ?? get().viewFitViewId,
-      viewFitSeq: targetViewId ? (get().viewFitSeq ?? 0) + 1 : get().viewFitSeq,
+      viewFitSeq: nextViewFitSeq,
+      viewRestoreViewId: null,
+      viewUiSnapshots: {
+        ...get().viewUiSnapshots,
+        [nextViewId]: buildViewUiSnapshot(get(), nextViewId, {
+          breadcrumb: nextBreadcrumb,
+          selectedSymbolId: symbolId,
+          selectedEdgeId: null,
+          inspectorCollapsed: false,
+        }),
+      },
     });
   },
 
-  selectSymbol: (id) => set({ selectedSymbolId: id, selectedEdgeId: null }),
-  selectEdge: (id) => set({ selectedEdgeId: id, selectedSymbolId: null }),
+  selectSymbol: (id) => set((state) => ({
+    selectedSymbolId: id,
+    selectedEdgeId: null,
+    viewUiSnapshots: withSavedCurrentViewSnapshot(state, {
+      selectedSymbolId: id,
+      selectedEdgeId: null,
+    }),
+  })),
+  selectEdge: (id) => set((state) => ({
+    selectedEdgeId: id,
+    selectedSymbolId: null,
+    viewUiSnapshots: withSavedCurrentViewSnapshot(state, {
+      selectedEdgeId: id,
+      selectedSymbolId: null,
+    }),
+  })),
 
   getCurrentView: () => {
     const { graph, currentViewId } = get();

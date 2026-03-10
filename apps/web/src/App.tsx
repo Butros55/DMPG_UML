@@ -6,7 +6,6 @@ import { Inspector } from "./components/Inspector";
 import { Breadcrumb } from "./components/Breadcrumb";
 import { SourceViewer } from "./components/SourceViewer";
 import { CommandPalette } from "./components/CommandPalette";
-import { ActionPalette } from "./components/ActionPalette";
 import { ValidatePanel } from "./components/ValidatePanel";
 import { DebugTransportPanel } from "./components/DebugTransportPanel";
 import { useAppStore } from "./store";
@@ -91,7 +90,10 @@ export function App() {
   const setGraph = useAppStore((s) => s.setGraph);
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
+  const breadcrumb = useAppStore((s) => s.breadcrumb);
   const navigateToView = useAppStore((s) => s.navigateToView);
+  const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
+  const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const inspectorCollapsed = useAppStore((s) => s.inspectorCollapsed);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const sourceViewerSymbol = useAppStore((s) => s.sourceViewerSymbol);
@@ -100,6 +102,7 @@ export function App() {
   const toggleDebugTransport = useAppStore((s) => s.toggleDebugTransport);
   const undoGraphChange = useAppStore((s) => s.undoGraphChange);
   const redoGraphChange = useAppStore((s) => s.redoGraphChange);
+  const saveCurrentViewSnapshot = useAppStore((s) => s.saveCurrentViewSnapshot);
 
   const skipHistoryPush = useRef(false);
   const prevViewId = useRef<string | null>(null);
@@ -135,12 +138,24 @@ export function App() {
       if (viewId) {
         skipHistoryPush.current = true;
         prevViewId.current = viewId;
-        navigateToView(viewId);
+        navigateToView(viewId, { restoreViewState: true });
       }
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [navigateToView]);
+
+  useEffect(() => {
+    if (!currentViewId) return;
+    saveCurrentViewSnapshot();
+  }, [
+    breadcrumb,
+    currentViewId,
+    inspectorCollapsed,
+    saveCurrentViewSnapshot,
+    selectedEdgeId,
+    selectedSymbolId,
+  ]);
 
   // Global graph undo/redo shortcuts (capture phase to prevent browser handlers)
   useEffect(() => {
@@ -254,10 +269,8 @@ export function App() {
         />
       )}
 
-      {/* Command Palette (Ctrl+P) */}
+      {/* Unified command palette (Ctrl+P / Ctrl+Shift+P) */}
       <CommandPalette />
-      {/* Action Palette (Ctrl+Shift+P) */}
-      <ActionPalette />
 
       {/* Debug Transport overlay */}
       <DebugTransportPanel />

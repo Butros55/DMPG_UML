@@ -4215,7 +4215,7 @@ body,
 .tok-punct     { color: #808080; }        /* grey — : , = ( ) */
 
 /* ═════════════════════════════════════════════════════════════
-   Command Palette  (Ctrl+P)
+   Command Palette  (Ctrl+P / Ctrl+Shift+P)
    ═════════════════════════════════════════════════════════════ */
 
 .cmd-palette-backdrop {

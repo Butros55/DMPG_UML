@@ -262,6 +262,10 @@ export function Canvas() {
   const selectEdge = useAppStore((s) => s.selectEdge);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const navigateToView = useAppStore((s) => s.navigateToView);
+  const viewUiSnapshots = useAppStore((s) => s.viewUiSnapshots);
+  const viewRestoreViewId = useAppStore((s) => s.viewRestoreViewId);
+  const viewRestoreSeq = useAppStore((s) => s.viewRestoreSeq ?? 0);
+  const saveCurrentViewSnapshot = useAppStore((s) => s.saveCurrentViewSnapshot);
   const addSymbolToGraph = useAppStore((s) => s.addSymbolToGraph);
   const addRelation = useAppStore((s) => s.addRelation);
   const updateRelation = useAppStore((s) => s.updateRelation);
@@ -280,6 +284,19 @@ export function Canvas() {
   const layoutRef = useRef(false);
   const layoutPassRef = useRef(0); // 0 = idle, 1 = first pass done, 2 = second pass done
   const prevLayoutKeyRef = useRef<string>("");
+  const appliedViewRestoreSeqRef = useRef(0);
+  const currentViewSnapshot = currentViewId ? viewUiSnapshots[currentViewId] ?? null : null;
+  const pendingRestoreForCurrentView =
+    !!currentViewId &&
+    viewRestoreViewId === currentViewId &&
+    viewRestoreSeq > appliedViewRestoreSeqRef.current;
+  const persistCurrentViewport = useCallback(() => {
+    if (!currentViewId) return;
+    const viewport = reactFlowInstance.getViewport();
+    saveCurrentViewSnapshot({
+      viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
+    });
+  }, [currentViewId, reactFlowInstance, saveCurrentViewSnapshot]);
 
   // Dynamic port handle mapping from ELK layout (persists across layout passes)
   const edgeHandlesRef = useRef<Map<string, { sourceHandle: string; targetHandle: string }>>(new Map());
@@ -413,6 +430,7 @@ export function Canvas() {
       return {
         id: sym.id,
         type: nodeType,
+        selected: sym.id === selectedSymbolId,
         position: savedPos ? { x: savedPos.x, y: savedPos.y } : { x: i * 250, y: i * 120 },
         className: nodeClasses.join(" ") || undefined,
         data: {
@@ -514,6 +532,7 @@ export function Canvas() {
         id: pe.key,
         source: pe.source,
         target: pe.target,
+        selected: selectedEdgeId === pe.key || (selectedEdgeId !== null && pe.relationIds.includes(selectedEdgeId)),
         sourceHandle,
         targetHandle,
         sourcePosition: positionFromHandle(sourceHandle),
@@ -536,6 +555,7 @@ export function Canvas() {
     graph,
     currentViewId,
     diagramSettings,
+    selectedEdgeId,
     selectedSymbolId,
     reviewHighlight.nodeIds,
     reviewHighlight.previewNodeIds,
@@ -681,10 +701,12 @@ export function Canvas() {
       });
       setNodes(attachDynamicPorts(positioned, portsByNode));
       setEdges((prev) => withDynamicHandles(prev, edgeHandles));
-      // Short delay then fit
-      setTimeout(() => {
-        reactFlowInstance.fitView({ padding: 0.12, duration: 300 });
-      }, 60);
+      if (!pendingRestoreForCurrentView || !currentViewSnapshot?.viewport) {
+        setTimeout(() => {
+          reactFlowInstance.fitView({ padding: 0.12, duration: 300 });
+          setTimeout(() => persistCurrentViewport(), 360);
+        }, 60);
+      }
     });
   }, [
     nodes,
@@ -696,17 +718,24 @@ export function Canvas() {
     currentViewId,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
+    currentViewSnapshot?.viewport,
+    pendingRestoreForCurrentView,
+    persistCurrentViewport,
   ]);
 
   // Fit view after first layout pass
   useEffect(() => {
     if (layoutDone && !layoutRef.current) {
       layoutRef.current = true;
+      if (pendingRestoreForCurrentView && currentViewSnapshot?.viewport) {
+        return;
+      }
       setTimeout(() => {
         reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
+        setTimeout(() => persistCurrentViewport(), 360);
       }, 50);
     }
-  }, [layoutDone, reactFlowInstance]);
+  }, [currentViewSnapshot?.viewport, layoutDone, pendingRestoreForCurrentView, persistCurrentViewport, reactFlowInstance]);
 
   // AI highlight: When highlightSymbolId changes (or seq increments for same symbol),
   // flash the node if it exists in the current view. This is a lightweight visual cue;
@@ -776,6 +805,7 @@ export function Canvas() {
       const cx = absPos.x + w / 2;
       const cy = absPos.y + h / 2;
       reactFlowInstance.setCenter(cx, cy, { zoom: 1.5, duration: 500 });
+      setTimeout(() => persistCurrentViewport(), 560);
     } else {
       reactFlowInstance.fitView({
         nodes: [{ id: nodeId }],
@@ -783,6 +813,7 @@ export function Canvas() {
         padding: 0.1,
         maxZoom: 2,
       });
+      setTimeout(() => persistCurrentViewport(), 560);
     }
     setTimeout(() => {
       // Clear ALL previous focus highlights — only one node should be highlighted at a time
@@ -803,7 +834,7 @@ export function Canvas() {
       }
       acknowledgeAiNavigationSettled(nodeId);
     }, 520);
-  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph]);
+  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph, persistCurrentViewport]);
 
   const applyReviewFit = useCallback((nodeIds: string[]) => {
     const uniqueNodeIds = Array.from(new Set(nodeIds));
@@ -943,19 +974,47 @@ export function Canvas() {
   }, [focusNodeId]);
 
   useEffect(() => {
+    if (viewRestoreSeq <= appliedViewRestoreSeqRef.current) return;
+    if (!viewRestoreViewId || viewRestoreViewId !== currentViewId) return;
+    if (!layoutDone || layoutPassRef.current < 2 || !nodesInitialized) return;
+
+    appliedViewRestoreSeqRef.current = viewRestoreSeq;
+    const viewport = currentViewSnapshot?.viewport;
+    if (!viewport) return;
+
+    requestAnimationFrame(() => {
+      void reactFlowInstance.setViewport(viewport, { duration: 320 });
+      setTimeout(() => persistCurrentViewport(), 380);
+    });
+  }, [
+    currentViewId,
+    currentViewSnapshot?.viewport,
+    layoutDone,
+    nodesInitialized,
+    persistCurrentViewport,
+    reactFlowInstance,
+    viewRestoreSeq,
+    viewRestoreViewId,
+  ]);
+
+  useEffect(() => {
     if (viewFitSeq <= appliedViewFitSeqRef.current) return;
     if (!viewFitViewId || viewFitViewId !== currentViewId) return;
+    if (pendingRestoreForCurrentView) return;
     if (!layoutDone || !nodesInitialized || nodes.length === 0) return;
 
     appliedViewFitSeqRef.current = viewFitSeq;
     requestAnimationFrame(() => {
       reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
+      setTimeout(() => persistCurrentViewport(), 360);
     });
   }, [
     currentViewId,
     layoutDone,
     nodes.length,
     nodesInitialized,
+    pendingRestoreForCurrentView,
+    persistCurrentViewport,
     reactFlowInstance,
     viewFitSeq,
     viewFitViewId,
@@ -1222,8 +1281,9 @@ export function Canvas() {
   }, []);
 
   const onMoveEnd = useCallback(() => {
+    persistCurrentViewport();
     setHoverInteractionBlocked(false, 560);
-  }, []);
+  }, [persistCurrentViewport]);
 
   useEffect(() => {
     const onCanvasCommand = (event: Event) => {

@@ -19,7 +19,7 @@ export function Breadcrumb() {
             {isLast ? (
               <span style={{ color: "var(--text)" }}>{formatViewTitle(view?.title, viewId)}</span>
             ) : (
-              <button onClick={() => navigateToView(viewId)}>{formatViewTitle(view?.title, viewId)}</button>
+              <button onClick={() => navigateToView(viewId, { restoreViewState: true })}>{formatViewTitle(view?.title, viewId)}</button>
             )}
           </span>
         );

@@ -236,3 +236,24 @@ test("navigateToView clears any previous node focus so tree view clicks only fit
   assert.equal(state.focusNodeId, null);
   assert.equal(state.viewFitViewId, "view:process-stage:inputs");
 });
+
+test("navigateToView restores the previously saved view snapshot when requested", () => {
+  const graph = buildGraph();
+  useAppStore.getState().setGraph(graph);
+  useAppStore.getState().selectSymbol("sym:class");
+  useAppStore.getState().saveCurrentViewSnapshot({
+    viewport: { x: 120, y: -48, zoom: 0.78 },
+  });
+
+  useAppStore.getState().navigateToView("view:process-stage:inputs");
+  useAppStore.getState().selectSymbol("sym:class");
+
+  useAppStore.getState().navigateToView("view:process-overview", { restoreViewState: true });
+
+  const state = useAppStore.getState();
+  assert.equal(state.currentViewId, "view:process-overview");
+  assert.equal(state.selectedSymbolId, "sym:class");
+  assert.equal(state.selectedEdgeId, null);
+  assert.equal(state.viewRestoreViewId, "view:process-overview");
+  assert.equal(state.viewUiSnapshots["view:process-overview"]?.viewport?.zoom, 0.78);
+});
