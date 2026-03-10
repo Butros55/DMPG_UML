@@ -11,6 +11,7 @@ import type { EdgeRoute } from "../layout";
 type ElkEdgeData = {
   elkRoute?: EdgeRoute;
   fallbackEdgeType?: DiagramEdgeType;
+  hideFallback?: boolean;
 };
 
 function buildPolylinePath(route: EdgeRoute): string {
@@ -59,6 +60,10 @@ export function ElkEdge(props: EdgeProps<Edge<ElkEdgeData>>) {
     );
   }
 
+  if (props.data?.hideFallback) {
+    return null;
+  }
+
   const fallback = buildFallbackPath(props.data?.fallbackEdgeType ?? "step", props);
   return (
     <BaseEdge
@@ -69,3 +74,4 @@ export function ElkEdge(props: EdgeProps<Edge<ElkEdgeData>>) {
     />
   );
 }
+

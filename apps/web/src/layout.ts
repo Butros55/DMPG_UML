@@ -70,11 +70,13 @@ function estimateNodeSize(node: Node, compactMode: boolean): { width: number; he
   const children = (data.children as unknown[]) ?? [];
   const label = (data.label as string) ?? "";
 
-  // If already measured by React Flow, prefer that (with a small guard padding).
+  // If already measured by React Flow, prefer the measured dimensions.
+  // No extra padding — ELK's node-node spacing handles overlap prevention,
+  // and padding would shift port positions off-center relative to the visual node.
   if (node.measured?.width && node.measured?.height) {
     return {
-      width: (node.measured.width as number) + (compactMode ? 4 : 8),
-      height: (node.measured.height as number) + (compactMode ? 2 : 4),
+      width: node.measured.width as number,
+      height: node.measured.height as number,
     };
   }
 
@@ -313,7 +315,10 @@ function buildPortAssignments(
 function distributeOffset(index: number, total: number, span: number, inset: number): number {
   if (total <= 1) return span / 2;
   const usable = Math.max(0, span - inset * 2);
-  return inset + usable * (index / Math.max(1, total - 1));
+  const preferredGap = Math.min(20, Math.max(12, usable / Math.max(total + 1, 4)));
+  const clusterWidth = Math.min(usable, preferredGap * Math.max(0, total - 1));
+  const start = (span - clusterWidth) / 2;
+  return start + clusterWidth * (index / Math.max(1, total - 1));
 }
 
 function fallbackPortCoordinates(
@@ -441,12 +446,14 @@ export async function layoutNodes(
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
       "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
       "elk.portConstraints": "FIXED_SIDE",
+      "elk.portAlignment.default": "CENTER",
       "elk.edgeRouting": settings.routing,
       "elk.layered.mergeEdges": settings.mergeEdges ? "true" : "false",
       "elk.layered.spacing.edgeNodeBetweenLayers": `${settings.edgeNodeSpacing}`,
       "elk.layered.spacing.edgeEdgeBetweenLayers": `${settings.edgeEdgeSpacing}`,
       "elk.spacing.edgeNode": `${settings.edgeNodeSpacing}`,
       "elk.spacing.edgeEdge": `${settings.edgeEdgeSpacing}`,
+      "elk.spacing.portPort": `${Math.max(12, Math.round(settings.edgeEdgeSpacing * 0.6))}`,
       "elk.separateConnectedComponents": "true",
       "elk.spacing.componentComponent": `${settings.componentComponentSpacing}`,
       "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",

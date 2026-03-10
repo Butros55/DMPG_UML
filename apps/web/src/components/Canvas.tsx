@@ -103,16 +103,18 @@ function withLayoutGeometry(
   routeMap: Map<string, EdgeRoute>,
   useElkRoutes: boolean,
   fallbackEdgeType: DiagramEdgeType,
+  hideFallback = false,
 ): Edge[] {
   return edges.map((edge) => {
     const elkRoute = useElkRoutes ? routeMap.get(edge.id) : undefined;
     return {
       ...edge,
-      type: elkRoute ? "elk" : fallbackEdgeType,
+      type: useElkRoutes ? "elk" : fallbackEdgeType,
       data: {
         ...(edge.data as Record<string, unknown> | undefined),
         elkRoute,
         fallbackEdgeType,
+        hideFallback: useElkRoutes && hideFallback,
       },
     };
   });
@@ -386,6 +388,7 @@ export function Canvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [layoutDone, setLayoutDone] = useState(false);
+  const [layoutPass, setLayoutPass] = useState(0); // reactive mirror of layoutPassRef for effects
   const reactFlowInstance = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const nodesInitialized = useNodesInitialized();
@@ -829,11 +832,18 @@ export function Canvas() {
       const data = edge.data as { elkRoute?: EdgeRoute } | undefined;
       return !!data?.elkRoute;
     }).length;
+    const awaitingStableElkRoutes =
+      isAutoLayoutActive &&
+      !lastElkErrorRef.current &&
+      layoutPassRef.current < 2 &&
+      renderedElkRouteCount === 0;
     const routeMode: "elk" | "fallback" | "mixed" | "none" =
       edges.length === 0
         ? "none"
         : isAutoLayoutActive && !layoutDone && renderedElkRouteCount === 0
           ? "none"
+          : awaitingStableElkRoutes
+            ? "none"
           : renderedElkRouteCount === 0
             ? "fallback"
             : renderedElkRouteCount === edges.length
@@ -974,6 +984,7 @@ export function Canvas() {
           edgeRoutesRef.current,
           shouldUseElkRoutes,
           diagramSettings.edgeType,
+          false,
         ),
       );
       return;
@@ -1023,10 +1034,12 @@ export function Canvas() {
           edgeRoutesRef.current,
           false,
           diagramSettings.edgeType,
+          false,
         ),
       );
       layoutRef.current = false;
       layoutPassRef.current = 2;
+      setLayoutPass(2);
       setLayoutDone(true);
       return;
     }
@@ -1035,6 +1048,7 @@ export function Canvas() {
     setLayoutDone(false);
     layoutRef.current = false;
     layoutPassRef.current = 0;
+    setLayoutPass(0);
 
     layoutNodes(
       viewNodes,
@@ -1063,9 +1077,11 @@ export function Canvas() {
           edgeRoutesRef.current,
           shouldUseElkRoutes,
           diagramSettings.edgeType,
+          shouldUseElkRoutes,
         ),
       );
       layoutPassRef.current = 1;
+      setLayoutPass(1);
       setLayoutDone(true);
     }).catch((error) => {
       if (!canApplyLayoutResult(expectedViewId, layoutRunId, layoutKey)) return;
@@ -1082,10 +1098,12 @@ export function Canvas() {
           edgeRoutesRef.current,
           false,
           diagramSettings.edgeType,
+          false,
         ),
       );
       layoutRef.current = false;
       layoutPassRef.current = 2;
+      setLayoutPass(2);
       setLayoutDone(true);
     });
   }, [
@@ -1112,6 +1130,7 @@ export function Canvas() {
     if (!hasMeasured) return;
 
     layoutPassRef.current = 2; // prevent infinite loop
+    setLayoutPass(2);
     const expectedViewId = currentViewId;
     const layoutRunId = layoutRunIdRef.current;
     const expectedLayoutKey = prevLayoutKeyRef.current;
@@ -1157,6 +1176,7 @@ export function Canvas() {
           edgeRoutesRef.current,
           shouldUseElkRoutes,
           diagramSettings.edgeType,
+          false,
         ),
       );
       const liveState = useAppStore.getState();
@@ -1277,9 +1297,33 @@ export function Canvas() {
   const focusRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedReviewSeqRef = useRef(0);
 
+  const consumePendingViewFit = useCallback((expectedViewId: string | null) => {
+    if (!expectedViewId) return;
+    const liveState = useAppStore.getState();
+    if (liveState.viewFitViewId === expectedViewId) {
+      appliedViewFitSeqRef.current = Math.max(
+        appliedViewFitSeqRef.current,
+        liveState.viewFitSeq ?? 0,
+      );
+    }
+    clearScheduledTimeout(firstPassFitTimeoutRef);
+    clearScheduledTimeout(secondPassFitTimeoutRef);
+    clearScheduledFrame(viewFitFrameRef);
+    clearScheduledFrame(reviewFitFrameRef);
+  }, []);
+
+  const dismissFocusNavigation = useCallback(() => {
+    if (!focusNodeId) return;
+    clearScheduledTimeout(focusApplyTimeoutRef);
+    clearScheduledTimeout(focusHighlightTimeoutRef);
+    consumePendingViewFit(currentViewId);
+    setFocusNode(null);
+  }, [consumePendingViewFit, currentViewId, focusNodeId, setFocusNode]);
+
   // Core function to apply focus zoom + highlight
   const applyFocusZoom = useCallback((nodeId: string, expectedViewId: string | null) => {
     if (!expectedViewId || useAppStore.getState().currentViewId !== expectedViewId) return;
+    consumePendingViewFit(expectedViewId);
     const isDeadCodeFocus = !!graph?.symbols.find(
       (s) => s.id === nodeId && (s.tags?.includes("dead-code") ?? false),
     );
@@ -1325,7 +1369,14 @@ export function Canvas() {
       }
       acknowledgeAiNavigationSettled(nodeId);
     }, 520);
-  }, [reactFlowInstance, aiRunning, acknowledgeAiNavigationSettled, graph, scheduleViewportPersist]);
+  }, [
+    reactFlowInstance,
+    aiRunning,
+    acknowledgeAiNavigationSettled,
+    consumePendingViewFit,
+    graph,
+    scheduleViewportPersist,
+  ]);
 
   const scheduleFocusZoom = useCallback((nodeId: string, expectedViewId: string | null, delayMs: number) => {
     clearScheduledTimeout(focusApplyTimeoutRef);
@@ -1363,24 +1414,24 @@ export function Canvas() {
     if (!isNewBySeq && !isNewByNode) return;
 
     const exists = nodes.some((n) => n.id === focusNodeId);
-    if (!exists || !layoutDone || layoutPassRef.current < 2 || !nodesInitialized) {
+    if (!exists || !layoutDone || layoutPass < 2 || !nodesInitialized) {
       // Layout not ready — store as pending and retry
       pendingFocusRef.current = focusNodeId;
-      console.debug(`[Canvas-Focus] pending id=${focusNodeId} seq=${focusSeq} exists=${exists} layoutPass=${layoutPassRef.current} nodesInit=${nodesInitialized}`);
+      console.debug(`[Canvas-Focus] pending id=${focusNodeId} seq=${focusSeq} exists=${exists} layoutPass=${layoutPass} nodesInit=${nodesInitialized}`);
       return;
     }
 
     // Layout is ready — apply focus
-    console.debug(`[Canvas-Focus] applying id=${focusNodeId} seq=${focusSeq} layoutPass=${layoutPassRef.current} nodesInit=${nodesInitialized}`);
+    console.debug(`[Canvas-Focus] applying id=${focusNodeId} seq=${focusSeq} layoutPass=${layoutPass} nodesInit=${nodesInitialized}`);
     focusAppliedRef.current = focusNodeId;
     lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
     scheduleFocusZoom(focusNodeId, currentViewId, 300);
-  }, [currentViewId, focusNodeId, focusSeq, layoutDone, nodes, nodesInitialized, scheduleFocusZoom]);
+  }, [currentViewId, focusNodeId, focusSeq, layoutDone, layoutPass, nodes, nodesInitialized, scheduleFocusZoom]);
 
   // Retry pending focus after layout pass 2 completes (also checks nodesInitialized)
   useEffect(() => {
-    if (!layoutDone || layoutPassRef.current < 2 || !nodesInitialized) return;
+    if (!layoutDone || layoutPass < 2 || !nodesInitialized) return;
     const pending = pendingFocusRef.current;
     if (!pending) return;
     const isNewBySeq = focusSeq > lastFocusSeqRef.current;
@@ -1396,7 +1447,7 @@ export function Canvas() {
     lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
     scheduleFocusZoom(pending, currentViewId, 300);
-  }, [currentViewId, layoutDone, nodes, nodesInitialized, scheduleFocusZoom, focusSeq]);
+  }, [currentViewId, layoutDone, layoutPass, nodes, nodesInitialized, scheduleFocusZoom, focusSeq]);
 
   // Also retry with a timer for cases where layout deps don't trigger re-render
   useEffect(() => {
@@ -1445,7 +1496,7 @@ export function Canvas() {
       return;
     }
     if (!reviewHighlight.viewId || reviewHighlight.viewId !== currentViewId) return;
-    if (!layoutDone || layoutPassRef.current < 2 || !nodesInitialized) return;
+    if (!layoutDone || layoutPass < 2 || !nodesInitialized) return;
 
     const visibleTargetIds = reviewHighlight.nodeIds.filter((id) => nodes.some((node) => node.id === id));
     appliedReviewSeqRef.current = reviewHighlight.seq;
@@ -1455,12 +1506,15 @@ export function Canvas() {
     reviewFitFrameRef.current = requestAnimationFrame(() => {
       reviewFitFrameRef.current = null;
       if (useAppStore.getState().currentViewId !== currentViewId) return;
+      // Don't override an active focus zoom
+      if (useAppStore.getState().focusNodeId) return;
       applyReviewFit(visibleTargetIds);
     });
   }, [
     applyReviewFit,
     currentViewId,
     layoutDone,
+    layoutPass,
     nodes,
     nodesInitialized,
     reviewHighlight.fitView,
@@ -1485,7 +1539,7 @@ export function Canvas() {
   useEffect(() => {
     if (viewRestoreSeq <= appliedViewRestoreSeqRef.current) return;
     if (!viewRestoreViewId || viewRestoreViewId !== currentViewId) return;
-    if (!layoutDone || layoutPassRef.current < 2 || !nodesInitialized) return;
+    if (!layoutDone || layoutPass < 2 || !nodesInitialized) return;
 
     appliedViewRestoreSeqRef.current = viewRestoreSeq;
     const viewport = currentViewSnapshot?.viewport;
@@ -1502,6 +1556,7 @@ export function Canvas() {
     currentViewId,
     currentViewSnapshot?.viewport,
     layoutDone,
+    layoutPass,
     nodesInitialized,
     reactFlowInstance,
     scheduleViewportPersist,
@@ -1513,8 +1568,14 @@ export function Canvas() {
     if (viewFitSeq <= appliedViewFitSeqRef.current) return;
     if (!viewFitViewId || viewFitViewId !== currentViewId) return;
     if (pendingRestoreForCurrentView) return;
-    if (focusNodeId) return;
+    if (focusNodeId) {
+      // Consume the viewFitSeq so no stale fitView fires after focus is cleared
+      appliedViewFitSeqRef.current = viewFitSeq;
+      return;
+    }
     if (!layoutDone || !nodesInitialized || nodes.length === 0) return;
+    // Wait for pass 2 — pass 1 uses estimated sizes; fitView would target wrong bounds
+    if (layoutPass < 2) return;
 
     appliedViewFitSeqRef.current = viewFitSeq;
     clearScheduledFrame(viewFitFrameRef);
@@ -1528,6 +1589,7 @@ export function Canvas() {
     currentViewId,
     focusNodeId,
     layoutDone,
+    layoutPass,
     nodes.length,
     nodesInitialized,
     pendingRestoreForCurrentView,
@@ -1847,6 +1909,11 @@ export function Canvas() {
     return () => window.removeEventListener("dmpg:canvas-command", onCanvasCommand as EventListener);
   }, [currentViewId, diagramSettings, edges, graph, nodes]);
 
+  const handleFitView = useCallback(() => {
+    reactFlowInstance.fitView({ padding: 0.15, duration: 300 });
+    scheduleViewportPersist(360, currentViewId);
+  }, [currentViewId, reactFlowInstance, scheduleViewportPersist]);
+
   return (
     <div className="canvas-area">
       <ReactFlow
@@ -1878,7 +1945,7 @@ export function Canvas() {
         proOptions={proOptions}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#2d3148" />
-        <Controls>
+        <Controls onFitView={handleFitView}>
           <ControlButton
             className={`canvas-control-button canvas-control-button--artifact-mode canvas-control-button--artifact-input canvas-control-button--mode-${diagramSettings.inputArtifactMode}`}
             onClick={cycleInputArtifactMode}
@@ -2019,6 +2086,7 @@ export function Canvas() {
     </div>
   );
 }
+
 
 
 
