@@ -125,6 +125,26 @@ function buildLegacyBreadcrumbGraph(): ProjectGraph {
   };
 }
 
+function buildManualLayoutGraph(): ProjectGraph {
+  const graph = buildGraph();
+  return {
+    ...graph,
+    views: graph.views.map((view) =>
+      view.id === "view:grp:dir:connector"
+        ? {
+            ...view,
+            manualLayout: true,
+            nodePositions: [{ symbolId: "sym:class", x: 320, y: 180 }],
+          }
+        : view,
+    ),
+  };
+}
+
+function disableGraphSync() {
+  useAppStore.setState({ syncGraphToServer: async () => {} });
+}
+
 test("bestNavigableViewForSymbol prefers the current visible context when it already contains the symbol", () => {
   const graph = buildGraph();
   const targetViewId = bestNavigableViewForSymbol(graph, "sym:method", {
@@ -256,4 +276,51 @@ test("navigateToView restores the previously saved view snapshot when requested"
   assert.equal(state.selectedEdgeId, null);
   assert.equal(state.viewRestoreViewId, "view:process-overview");
   assert.equal(state.viewUiSnapshots["view:process-overview"]?.viewport?.zoom, 0.78);
+});
+
+test("saveNodePositions does not persist manual layout while auto-layout is active", () => {
+  disableGraphSync();
+  useAppStore.getState().setGraph(buildGraph());
+  useAppStore.getState().navigateToView("view:grp:dir:connector");
+  useAppStore.setState({
+    diagramSettings: {
+      ...useAppStore.getState().diagramSettings,
+      autoLayout: true,
+    },
+  });
+
+  useAppStore.getState().saveNodePositions([{ symbolId: "sym:class", x: 64, y: 96 }]);
+
+  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:grp:dir:connector");
+  assert.equal(view?.manualLayout, undefined);
+  assert.equal(view?.nodePositions, undefined);
+});
+
+test("saveNodePositions still persists manual layout when auto-layout is disabled", () => {
+  disableGraphSync();
+  useAppStore.getState().setGraph(buildGraph());
+  useAppStore.getState().navigateToView("view:grp:dir:connector");
+  useAppStore.setState({
+    diagramSettings: {
+      ...useAppStore.getState().diagramSettings,
+      autoLayout: false,
+    },
+  });
+
+  useAppStore.getState().saveNodePositions([{ symbolId: "sym:class", x: 64, y: 96 }]);
+
+  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:grp:dir:connector");
+  assert.equal(view?.manualLayout, true);
+  assert.deepEqual(view?.nodePositions, [{ symbolId: "sym:class", x: 64, y: 96 }]);
+});
+
+test("clearManualLayoutFlags removes persisted manual layout flags but keeps saved positions", () => {
+  disableGraphSync();
+  useAppStore.getState().setGraph(buildManualLayoutGraph());
+
+  useAppStore.getState().clearManualLayoutFlags();
+
+  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:grp:dir:connector");
+  assert.equal(view?.manualLayout, undefined);
+  assert.deepEqual(view?.nodePositions, [{ symbolId: "sym:class", x: 320, y: 180 }]);
 });

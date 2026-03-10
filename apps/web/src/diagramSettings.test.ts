@@ -5,6 +5,7 @@ import { DEFAULT_DIAGRAM_SETTINGS, sanitizeDiagramSettings } from "./diagramSett
 test("diagram settings use grouped artifact modes by default", () => {
   assert.equal(DEFAULT_DIAGRAM_SETTINGS.inputArtifactMode, "grouped");
   assert.equal(DEFAULT_DIAGRAM_SETTINGS.generatedArtifactMode, "grouped");
+  assert.equal(DEFAULT_DIAGRAM_SETTINGS.autoLayout, true);
 });
 
 test("sanitizeDiagramSettings accepts persisted split artifact modes", () => {

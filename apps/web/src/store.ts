@@ -102,6 +102,7 @@ export interface DebugTransportState {
 export interface DebugDiagramState {
   currentViewId: string | null;
   layoutKey: string;
+  layoutFingerprint: string;
   layoutPass: number;
   layoutRunId: number;
   nodesRendered: number;
@@ -115,12 +116,15 @@ export interface DebugDiagramState {
   routeMode: "elk" | "fallback" | "mixed" | "none";
   routeReason: string;
   autoLayout: boolean;
+  nodesDraggable: boolean;
   dragActive: boolean;
   persistedManualLayout: boolean;
   localManualLayoutOverride: boolean;
   manualLayoutActive: boolean;
+  effectiveManualLayout: boolean;
   savedPositionCount: number;
   allHaveSavedPositions: boolean;
+  lastLayoutTrigger: string;
 }
 
 export interface ReviewHighlightState {
@@ -202,6 +206,7 @@ export interface AppState {
   applyDiagramLayout: () => void;
   resetDiagramSettings: () => void;
   resetProjectLayout: () => void;
+  clearManualLayoutFlags: () => void;
 
   // Hover card
   hoverSymbolId: string | null;
@@ -615,6 +620,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
     void get().syncGraphToServer();
   },
+  clearManualLayoutFlags: () => {
+    const { graph } = get();
+    if (!graph) return;
+
+    let changed = false;
+    const updated = {
+      ...graph,
+      views: graph.views.map((view) => {
+        if (!view.manualLayout || isManagedProcessLayoutViewId(view.id)) {
+          return view;
+        }
+        changed = true;
+        return {
+          ...view,
+          manualLayout: undefined,
+        };
+      }),
+    };
+
+    if (!changed) return;
+    set({ graph: updated });
+    void get().syncGraphToServer();
+  },
 
   hoverSymbolId: null,
   hoverPosition: null,
@@ -729,6 +757,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     debugDiagram: { ...((s.debugDiagram ?? {
       currentViewId: null,
       layoutKey: "",
+      layoutFingerprint: "",
       layoutPass: 0,
       layoutRunId: 0,
       nodesRendered: 0,
@@ -742,12 +771,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       routeMode: "none",
       routeReason: "waiting for layout",
       autoLayout: true,
+      nodesDraggable: false,
       dragActive: false,
       persistedManualLayout: false,
       localManualLayoutOverride: false,
       manualLayoutActive: false,
+      effectiveManualLayout: false,
       savedPositionCount: 0,
       allHaveSavedPositions: false,
+      lastLayoutTrigger: "initial",
     }) as DebugDiagramState), ...patch },
   })),
 
@@ -1914,6 +1946,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   saveNodePositions: (positions) => {
     const { graph, currentViewId, diagramSettings } = get();
     if (!graph || !currentViewId) return;
+    if (diagramSettings.autoLayout) return;
     const persistManualLayout = !diagramSettings.autoLayout && !isManagedProcessLayoutViewId(currentViewId);
     const updated = {
       ...graph,

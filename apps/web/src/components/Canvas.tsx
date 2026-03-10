@@ -314,24 +314,46 @@ function clearScheduledFrame(ref: { current: number | null }) {
   }
 }
 
+function resolveManualLayoutState(params: {
+  autoLayout: boolean;
+  currentViewId: string | null;
+  currentViewIgnoresManualLayout: boolean;
+  view: { manualLayout?: boolean } | null;
+  manualLayoutViewIds: Set<string>;
+}) {
+  const manualLayoutAllowed = !params.autoLayout && !params.currentViewIgnoresManualLayout;
+  const persistedManualLayout = manualLayoutAllowed && !!params.view?.manualLayout;
+  const localManualLayoutOverride =
+    manualLayoutAllowed &&
+    !!params.currentViewId &&
+    params.manualLayoutViewIds.has(params.currentViewId);
+
+  return {
+    persistedManualLayout,
+    localManualLayoutOverride,
+    effectiveManualLayout: persistedManualLayout || localManualLayoutOverride,
+  };
+}
+
 function summarizeRouteReason(params: {
   autoLayout: boolean;
-  dragActive: boolean;
-  persistedManualLayout: boolean;
-  localManualLayoutOverride: boolean;
+  effectiveManualLayout: boolean;
   routeMode: "elk" | "fallback" | "mixed" | "none";
   edgeCount: number;
   elkRouteCount: number;
+  layoutReady: boolean;
+  layoutError: string | null;
 }): string {
-  if (!params.autoLayout) return "auto-layout disabled";
-  if (params.dragActive) return "node drag active";
-  if (params.persistedManualLayout) return "persisted manual layout";
-  if (params.localManualLayoutOverride) return "local manual override";
   if (params.edgeCount === 0) return "no edges in current view";
+  if (!params.autoLayout) {
+    return params.effectiveManualLayout ? "manual layout active" : "auto-layout disabled";
+  }
+  if (params.layoutError) return "ELK layout failed";
+  if (!params.layoutReady || params.routeMode === "none") return "waiting for ELK layout";
   if (params.routeMode === "elk") return "ELK routing active";
-  if (params.routeMode === "mixed") return `partial ELK routes (${params.elkRouteCount}/${params.edgeCount})`;
-  if (params.routeMode === "fallback") return "React Flow fallback routing";
-  return "waiting for layout";
+  if (params.routeMode === "mixed") return `ELK routes incomplete (${params.elkRouteCount}/${params.edgeCount})`;
+  if (params.routeMode === "fallback") return "ELK route data unavailable";
+  return "waiting for ELK layout";
 }
 
 export function Canvas() {
@@ -354,10 +376,12 @@ export function Canvas() {
   const removeSymbol = useAppStore((s) => s.removeSymbol);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const saveNodePositions = useAppStore((s) => s.saveNodePositions);
-  const applyDiagramLayout = useAppStore((s) => s.applyDiagramLayout);
+  const clearManualLayoutFlags = useAppStore((s) => s.clearManualLayoutFlags);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
   const layoutVersion = useAppStore((s) => s.diagramLayoutVersion);
   const updateDiagramSettings = useAppStore((s) => s.updateDiagramSettings);
+  const isAutoLayoutActive = diagramSettings.autoLayout;
+  const nodesDraggable = !isAutoLayoutActive;
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -368,8 +392,17 @@ export function Canvas() {
   const layoutRef = useRef(false);
   const layoutPassRef = useRef(0); // 0 = idle, 1 = first pass done, 2 = second pass done
   const prevLayoutKeyRef = useRef<string>("");
+  const layoutFingerprintRef = useRef<string>("");
   const layoutRunIdRef = useRef(0);
   const lastResolvedLayoutVersionRef = useRef(layoutVersion);
+  const lastLayoutTriggerRef = useRef<string>("initial");
+  const lastElkErrorRef = useRef<string | null>(null);
+  const prevLayoutFingerprintPartsRef = useRef<{
+    viewId: string | null;
+    autoLayout: boolean;
+    nodeFingerprint: string;
+    edgeFingerprint: string;
+  } | null>(null);
   const manualLayoutViewIdsRef = useRef<Set<string>>(new Set());
   const suppressNextGraphResetRef = useRef(false);
   const appliedViewRestoreSeqRef = useRef(0);
@@ -438,6 +471,21 @@ export function Canvas() {
     manualLayoutViewIdsRef.current.clear();
     setIsNodeDragActive(false);
   }, [graph]);
+
+  useEffect(() => {
+    if (!isAutoLayoutActive) return;
+    manualLayoutViewIdsRef.current.clear();
+    setIsNodeDragActive(false);
+  }, [isAutoLayoutActive]);
+
+  useEffect(() => {
+    if (!isAutoLayoutActive || !graph) return;
+    const hasPersistedManualLayout = graph.views.some(
+      (view) => !!view.manualLayout && !isManagedProcessLayoutViewId(view.id),
+    );
+    if (!hasPersistedManualLayout) return;
+    clearManualLayoutFlags();
+  }, [clearManualLayoutFlags, graph, isAutoLayoutActive]);
 
   // Dynamic port handle mapping from ELK layout (persists across layout passes)
   const edgeHandlesRef = useRef<Map<string, { sourceHandle: string; targetHandle: string }>>(new Map());
@@ -629,6 +677,7 @@ export function Canvas() {
         id: sym.id,
         type: nodeType,
         selected: sym.id === selectedSymbolId,
+        draggable: nodesDraggable,
         position: savedPos ? { x: savedPos.x, y: savedPos.y } : { x: i * 250, y: i * 120 },
         className: nodeClasses.join(" ") || undefined,
         data: {
@@ -753,9 +802,10 @@ export function Canvas() {
 
     return { viewNodes: scopedNodes, viewEdges: vEdges };
   }, [
-      graph,
+    graph,
     currentViewId,
     diagramSettings,
+    nodesDraggable,
     selectedEdgeId,
     selectedSymbolId,
     reviewHighlight.nodeIds,
@@ -765,13 +815,13 @@ export function Canvas() {
   ]);
 
   useEffect(() => {
-    const persistedManualLayout =
-      !currentViewIgnoresManualLayout &&
-      !!currentView?.manualLayout;
-    const localManualLayoutOverride =
-      !currentViewIgnoresManualLayout &&
-      !!currentViewId &&
-      manualLayoutViewIdsRef.current.has(currentViewId);
+    const { persistedManualLayout, localManualLayoutOverride, effectiveManualLayout } = resolveManualLayoutState({
+      autoLayout: isAutoLayoutActive,
+      currentViewId,
+      currentViewIgnoresManualLayout,
+      view: currentView,
+      manualLayoutViewIds: manualLayoutViewIdsRef.current,
+    });
     const savedPositionCount = currentView?.nodePositions?.length ?? 0;
     const savedPositionIds = new Set((currentView?.nodePositions ?? []).map((position) => position.symbolId));
     const allHaveSavedPositions = viewNodes.length > 0 && viewNodes.every((node) => savedPositionIds.has(node.id));
@@ -782,17 +832,20 @@ export function Canvas() {
     const routeMode: "elk" | "fallback" | "mixed" | "none" =
       edges.length === 0
         ? "none"
-        : renderedElkRouteCount === 0
-          ? "fallback"
-          : renderedElkRouteCount === edges.length
-            ? "elk"
-            : "mixed";
+        : isAutoLayoutActive && !layoutDone && renderedElkRouteCount === 0
+          ? "none"
+          : renderedElkRouteCount === 0
+            ? "fallback"
+            : renderedElkRouteCount === edges.length
+              ? "elk"
+              : "mixed";
     const dynamicPortCount = nodes.reduce((sum, node) =>
       sum + (((node.data as UmlNodeData).dynamicPorts ?? []).length), 0);
 
     useAppStore.getState().updateDebugDiagram({
       currentViewId,
       layoutKey: prevLayoutKeyRef.current,
+      layoutFingerprint: layoutFingerprintRef.current,
       layoutPass: layoutPassRef.current,
       layoutRunId: layoutRunIdRef.current,
       nodesRendered: nodes.length,
@@ -805,30 +858,35 @@ export function Canvas() {
       dynamicPortCount,
       routeMode,
       routeReason: summarizeRouteReason({
-        autoLayout: diagramSettings.autoLayout,
-        dragActive: isNodeDragActive,
-        persistedManualLayout,
-        localManualLayoutOverride,
+        autoLayout: isAutoLayoutActive,
+        effectiveManualLayout,
         routeMode,
         edgeCount: edges.length,
         elkRouteCount: renderedElkRouteCount,
+        layoutReady: layoutDone,
+        layoutError: lastElkErrorRef.current,
       }),
-      autoLayout: diagramSettings.autoLayout,
+      autoLayout: isAutoLayoutActive,
+      nodesDraggable,
       dragActive: isNodeDragActive,
       persistedManualLayout,
       localManualLayoutOverride,
-      manualLayoutActive: persistedManualLayout || localManualLayoutOverride,
+      manualLayoutActive: effectiveManualLayout,
+      effectiveManualLayout,
       savedPositionCount,
       allHaveSavedPositions,
+      lastLayoutTrigger: lastLayoutTriggerRef.current,
     });
   }, [
     currentView,
     currentViewId,
     currentViewIgnoresManualLayout,
-    diagramSettings.autoLayout,
+    isAutoLayoutActive,
     dynamicPortState.nodeIds.length,
     edges,
     isNodeDragActive,
+    layoutDone,
+    nodesDraggable,
     nodes,
     viewEdges.length,
     viewNodes,
@@ -846,6 +904,10 @@ export function Canvas() {
       setNodes([]);
       setEdges([]);
       prevLayoutKeyRef.current = "";
+      layoutFingerprintRef.current = "";
+      prevLayoutFingerprintPartsRef.current = null;
+      lastLayoutTriggerRef.current = "empty view";
+      lastElkErrorRef.current = null;
       edgeHandlesRef.current = new Map();
       edgeRoutesRef.current = new Map();
       return;
@@ -857,35 +919,33 @@ export function Canvas() {
     const nodeFingerprint = viewNodes
       .map((n) => {
         const d = n.data as UmlNodeData;
-        return `${n.id}:${d.inputs?.length ?? 0}:${d.outputs?.length ?? 0}`;
+        return `${n.id}:${n.type}:${d.inputs?.length ?? 0}:${d.outputs?.length ?? 0}`;
       })
       .sort()
       .join(",");
     const edgeFingerprint = viewEdges
-      .map((e) => `${e.id}:${e.source}:${e.target}:${e.label ?? ""}`)
+      .map((e) => {
+        const relationType = (e.data as { relationType?: string } | undefined)?.relationType ?? "";
+        return `${e.id}:${e.source}:${e.target}:${relationType}`;
+      })
       .sort()
       .join(",");
-    const layoutKey = `${currentViewId}|${diagramSettings.autoLayout ? "auto" : "manual"}|${nodeFingerprint}|${edgeFingerprint}|${layoutVersion}`;
+    const layoutFingerprint = `${currentViewId}|${isAutoLayoutActive ? "auto" : "manual"}|${nodeFingerprint}|${edgeFingerprint}`;
+    const layoutKey = `${layoutFingerprint}|${layoutVersion}`;
     const isExplicitRelayout = layoutVersion !== lastResolvedLayoutVersionRef.current;
     const view = currentView;
-    const persistedManualLayout =
-      !currentViewIgnoresManualLayout &&
-      !!view?.manualLayout;
+    const { effectiveManualLayout } = resolveManualLayoutState({
+      autoLayout: isAutoLayoutActive,
+      currentViewId,
+      currentViewIgnoresManualLayout,
+      view,
+      manualLayoutViewIds: manualLayoutViewIdsRef.current,
+    });
     if (isExplicitRelayout) {
       manualLayoutViewIdsRef.current.clear();
     }
-    const hasManualLayoutOverride =
-      persistedManualLayout ||
-      (
-        !currentViewIgnoresManualLayout &&
-        !!currentViewId &&
-        manualLayoutViewIdsRef.current.has(currentViewId)
-      );
-    const shouldRespectSavedPositions = hasManualLayoutOverride && !isExplicitRelayout;
-    const shouldUseElkRoutes =
-      diagramSettings.autoLayout &&
-      !isNodeDragActive &&
-      !hasManualLayoutOverride;
+    const shouldRespectSavedPositions = effectiveManualLayout && !isExplicitRelayout;
+    const shouldUseElkRoutes = isAutoLayoutActive;
 
     if (layoutKey === prevLayoutKeyRef.current) {
       // Node structure unchanged — update node data & edges without repositioning
@@ -899,6 +959,8 @@ export function Canvas() {
           return {
             ...n,
             type: updated.type,
+            selected: updated.selected,
+            draggable: updated.draggable,
             // Do NOT overwrite position — keep ELK/user-dragged position from prev
             data: { ...updated.data, dynamicPorts: prevPorts },
             className: updated.className,
@@ -916,10 +978,32 @@ export function Canvas() {
       );
       return;
     }
+    const previousFingerprint = prevLayoutFingerprintPartsRef.current;
+    let nextLayoutTrigger = "layout settings change";
+    if (isExplicitRelayout) {
+      nextLayoutTrigger = "explicit relayout";
+    } else if (!previousFingerprint || previousFingerprint.viewId !== currentViewId) {
+      nextLayoutTrigger = "view change";
+    } else if (previousFingerprint.autoLayout !== isAutoLayoutActive) {
+      nextLayoutTrigger = isAutoLayoutActive ? "auto-layout enabled" : "auto-layout disabled";
+    } else if (previousFingerprint.nodeFingerprint !== nodeFingerprint) {
+      nextLayoutTrigger = "node structure change";
+    } else if (previousFingerprint.edgeFingerprint !== edgeFingerprint) {
+      nextLayoutTrigger = "edge structure change";
+    }
+    layoutFingerprintRef.current = layoutFingerprint;
+    prevLayoutFingerprintPartsRef.current = {
+      viewId: currentViewId,
+      autoLayout: isAutoLayoutActive,
+      nodeFingerprint,
+      edgeFingerprint,
+    };
+    lastLayoutTriggerRef.current = nextLayoutTrigger;
     prevLayoutKeyRef.current = layoutKey;
     lastResolvedLayoutVersionRef.current = layoutVersion;
     const layoutRunId = layoutRunIdRef.current + 1;
     layoutRunIdRef.current = layoutRunId;
+    lastElkErrorRef.current = null;
 
     // Check which nodes have saved positions
     const savedMap = new Map(
@@ -927,7 +1011,7 @@ export function Canvas() {
     );
     const allHaveSavedPos = viewNodes.every((n) => savedMap.has(n.id));
 
-    if (allHaveSavedPos && (!diagramSettings.autoLayout || shouldRespectSavedPositions)) {
+    if (allHaveSavedPos && (!isAutoLayoutActive || shouldRespectSavedPositions)) {
       // Manual drag overrides keep persisted positions until the user explicitly re-applies layout.
       edgeHandlesRef.current = new Map();
       edgeRoutesRef.current = new Map();
@@ -959,6 +1043,7 @@ export function Canvas() {
       diagramSettings.nodeCompactMode,
     ).then(({ nodes: laid, portsByNode, edgeHandles, routesByEdge }) => {
       if (!canApplyLayoutResult(expectedViewId, layoutRunId, layoutKey)) return;
+      lastElkErrorRef.current = null;
       edgeHandlesRef.current = edgeHandles;
       edgeRoutesRef.current = shouldUseElkRoutes ? routesByEdge : new Map();
       // Manual drag overrides pin the saved positions; new nodes still receive layout positions.
@@ -982,6 +1067,26 @@ export function Canvas() {
       );
       layoutPassRef.current = 1;
       setLayoutDone(true);
+    }).catch((error) => {
+      if (!canApplyLayoutResult(expectedViewId, layoutRunId, layoutKey)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[Canvas] ELK layout failed during pass 1", error);
+      lastElkErrorRef.current = message;
+      edgeHandlesRef.current = new Map();
+      edgeRoutesRef.current = new Map();
+      setNodes(viewNodes);
+      setEdges(
+        withLayoutGeometry(
+          viewEdges,
+          edgeHandlesRef.current,
+          edgeRoutesRef.current,
+          false,
+          diagramSettings.edgeType,
+        ),
+      );
+      layoutRef.current = false;
+      layoutPassRef.current = 2;
+      setLayoutDone(true);
     });
   }, [
     canApplyLayoutResult,
@@ -993,11 +1098,10 @@ export function Canvas() {
     currentViewId,
     currentViewIgnoresManualLayout,
     layoutVersion,
-    diagramSettings.autoLayout,
+    isAutoLayoutActive,
     diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
-    isNodeDragActive,
   ]);
 
   // Pass 2: re-layout with measured sizes (React Flow measures after first render)
@@ -1012,21 +1116,15 @@ export function Canvas() {
     const layoutRunId = layoutRunIdRef.current;
     const expectedLayoutKey = prevLayoutKeyRef.current;
     const view = currentView;
-    const persistedManualLayout =
-      !currentViewIgnoresManualLayout &&
-      !!view?.manualLayout;
-    const hasManualLayoutOverride =
-      persistedManualLayout ||
-      (
-        !currentViewIgnoresManualLayout &&
-        !!currentViewId &&
-        manualLayoutViewIdsRef.current.has(currentViewId)
-      );
-    const shouldRespectSavedPositions = hasManualLayoutOverride;
-    const shouldUseElkRoutes =
-      diagramSettings.autoLayout &&
-      !isNodeDragActive &&
-      !hasManualLayoutOverride;
+    const { effectiveManualLayout } = resolveManualLayoutState({
+      autoLayout: isAutoLayoutActive,
+      currentViewId,
+      currentViewIgnoresManualLayout,
+      view,
+      manualLayoutViewIds: manualLayoutViewIdsRef.current,
+    });
+    const shouldRespectSavedPositions = effectiveManualLayout;
+    const shouldUseElkRoutes = isAutoLayoutActive;
 
     // Preserve saved positions in pass 2 as well
     const savedMap = new Map(
@@ -1040,6 +1138,7 @@ export function Canvas() {
       diagramSettings.nodeCompactMode,
     ).then(({ nodes: laid, portsByNode, edgeHandles, routesByEdge }) => {
       if (!canApplyLayoutResult(expectedViewId, layoutRunId, expectedLayoutKey)) return;
+      lastElkErrorRef.current = null;
       edgeHandlesRef.current = edgeHandles;
       edgeRoutesRef.current = shouldUseElkRoutes ? routesByEdge : new Map();
       const positioned = laid.map((n) => {
@@ -1074,6 +1173,12 @@ export function Canvas() {
           scheduleViewportPersist(360, expectedViewId);
         }, 60);
       }
+    }).catch((error) => {
+      if (!canApplyLayoutResult(expectedViewId, layoutRunId, expectedLayoutKey)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[Canvas] ELK layout failed during pass 2", error);
+      lastElkErrorRef.current = message;
+      setLayoutDone(true);
     });
   }, [
     canApplyLayoutResult,
@@ -1085,11 +1190,10 @@ export function Canvas() {
     currentView,
     currentViewId,
     currentViewIgnoresManualLayout,
-    diagramSettings.autoLayout,
+    isAutoLayoutActive,
     diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
-    isNodeDragActive,
     currentViewSnapshot?.viewport,
     pendingRestoreForCurrentView,
     scheduleViewportPersist,
@@ -1634,13 +1738,18 @@ export function Canvas() {
       };
       addSymbolToGraph(newSym, currentViewId);
 
-      // Save the drop position so ELK relayout preserves it
+      if (isAutoLayoutActive) {
+        return;
+      }
+
+      // Save the drop position so manual layouts preserve it.
       saveNodePositions([{ symbolId: symId, x: position.x, y: position.y }]);
 
       // Also add to local React Flow nodes immediately for visual feedback
       const newNode: Node = {
         id: symId,
         type: "uml",
+        draggable: nodesDraggable,
         position,
         data: {
           label: newSym.label,
@@ -1651,7 +1760,7 @@ export function Canvas() {
       };
       setNodes((nds) => [...nds, newNode]);
     },
-    [reactFlowInstance, setNodes, currentViewId, addSymbolToGraph, saveNodePositions],
+    [reactFlowInstance, setNodes, currentViewId, addSymbolToGraph, isAutoLayoutActive, nodesDraggable, saveNodePositions],
   );
 
   // Click on canvas background → deselect
@@ -1664,23 +1773,21 @@ export function Canvas() {
 
   // Save node positions after drag (auto-persist)
   const onNodeDragStart = useCallback((_event: React.MouseEvent, _node: Node, _draggedNodes: Node[]) => {
+    if (isAutoLayoutActive) return;
     setHoverInteractionBlocked(true);
     setHoverNodeId(null);
     setIsNodeDragActive(true);
-  }, []);
+  }, [isAutoLayoutActive]);
 
   const onNodeDrag = useCallback((_event: React.MouseEvent, _node: Node, _draggedNodes: Node[]) => {
+    if (isAutoLayoutActive) return;
     setHoverNodeId(null);
-  }, []);
+  }, [isAutoLayoutActive]);
 
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, _node: Node, draggedNodes: Node[]) => {
-      if (diagramSettings.autoLayout) {
-        if (currentViewId) {
-          manualLayoutViewIdsRef.current.delete(currentViewId);
-        }
+      if (isAutoLayoutActive) {
         setIsNodeDragActive(false);
-        applyDiagramLayout();
         setHoverInteractionBlocked(false, 560);
         return;
       }
@@ -1700,7 +1807,7 @@ export function Canvas() {
       // Prevent immediate hover re-open right after drag release.
       setHoverInteractionBlocked(false, 560);
     },
-    [applyDiagramLayout, currentViewId, diagramSettings.autoLayout, saveNodePositions],
+    [currentViewId, isAutoLayoutActive, saveNodePositions],
   );
 
   const onMoveStart = useCallback(() => {
@@ -1765,6 +1872,7 @@ export function Canvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         defaultEdgeOptions={{ type: diagramSettings.edgeType }}
+        nodesDraggable={nodesDraggable}
         fitView
         minZoom={0.05}
         proOptions={proOptions}

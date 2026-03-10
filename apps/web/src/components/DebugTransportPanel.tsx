@@ -59,11 +59,12 @@ export function DebugTransportPanel() {
           </span>
         </div>
         <div className="debug-row">
-          <span className="debug-label">Manual state</span>
+          <span className="debug-label">Layout state</span>
           <span className="debug-value">
             auto={debugDiagram?.autoLayout ? "on" : "off"}
+            {" · "}draggable={debugDiagram?.nodesDraggable ? "on" : "off"}
             {" · "}drag={debugDiagram?.dragActive ? "on" : "off"}
-            {" · "}manual={debugDiagram?.manualLayoutActive ? "on" : "off"}
+            {" · "}manual={debugDiagram?.effectiveManualLayout ? "on" : "off"}
           </span>
         </div>
         <div className="debug-row">
@@ -75,8 +76,16 @@ export function DebugTransportPanel() {
           </span>
         </div>
         <div className="debug-row">
+          <span className="debug-label">Last trigger</span>
+          <span className="debug-value">{debugDiagram?.lastLayoutTrigger ?? "—"}</span>
+        </div>
+        <div className="debug-row">
           <span className="debug-label">View</span>
           <span className="debug-value debug-value--mono">{debugDiagram?.currentViewId ?? "—"}</span>
+        </div>
+        <div className="debug-row">
+          <span className="debug-label">Fingerprint</span>
+          <span className="debug-value debug-value--mono">{debugDiagram?.layoutFingerprint || "—"}</span>
         </div>
         <div className="debug-row">
           <span className="debug-label">Layout key</span>
