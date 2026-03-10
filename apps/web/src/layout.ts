@@ -1,4 +1,9 @@
-import ELK, { type ElkNode, type ElkExtendedEdge } from "elkjs/lib/elk.bundled.js";
+import ELK, {
+  type ElkNode,
+  type ElkExtendedEdge,
+  type ElkEdgeSection,
+  type ElkPoint,
+} from "elkjs/lib/elk.bundled.js";
 import type { Node, Edge } from "@xyflow/react";
 import {
   DEFAULT_DIAGRAM_LAYOUT_SETTINGS,
@@ -24,12 +29,25 @@ export interface PortInfo {
   type: "source" | "target";
 }
 
+export interface EdgeRoutePoint {
+  x: number;
+  y: number;
+}
+
+export interface EdgeRoute {
+  points: EdgeRoutePoint[];
+  labelX: number;
+  labelY: number;
+}
+
 export interface LayoutResult {
   nodes: Node[];
   /** Port positions per node, keyed by node ID */
   portsByNode: Map<string, PortInfo[]>;
   /** Edge handle mapping: edgeId → { sourceHandle, targetHandle } */
   edgeHandles: Map<string, { sourceHandle: string; targetHandle: string }>;
+  /** Routed edge geometry from ELK, keyed by edge ID */
+  routesByEdge: Map<string, EdgeRoute>;
 }
 
 /* ── Dynamic node sizing based on content ──────── */
@@ -109,6 +127,104 @@ function estimateNodeSize(node: Node, compactMode: boolean): { width: number; he
   return {
     width: Math.max(compactMode ? 170 : DEFAULT_WIDTH, label.length * CHAR_WIDTH + (compactMode ? 30 : 40)),
     height: compactMode ? 52 : 60,
+  };
+}
+
+function appendUniquePoint(points: EdgeRoutePoint[], point: ElkPoint) {
+  const last = points[points.length - 1];
+  if (last && Math.abs(last.x - point.x) < 0.5 && Math.abs(last.y - point.y) < 0.5) {
+    return;
+  }
+
+  points.push({ x: point.x, y: point.y });
+}
+
+function orderedSections(sections: ElkEdgeSection[]): ElkEdgeSection[] {
+  if (sections.length <= 1) return sections;
+
+  const byId = new Map(sections.map((section) => [section.id, section]));
+  const start =
+    sections.find((section) => (section.incomingSections?.length ?? 0) === 0) ??
+    sections[0];
+  const ordered: ElkEdgeSection[] = [];
+  const visited = new Set<string>();
+  let current: ElkEdgeSection | undefined = start;
+
+  while (current && !visited.has(current.id)) {
+    ordered.push(current);
+    visited.add(current.id);
+    const nextId: string | undefined = current.outgoingSections?.find(
+      (sectionId) => !visited.has(sectionId),
+    );
+    current = nextId ? byId.get(nextId) : undefined;
+  }
+
+  for (const section of sections) {
+    if (!visited.has(section.id)) {
+      ordered.push(section);
+    }
+  }
+
+  return ordered;
+}
+
+function midpointAlongRoute(points: EdgeRoutePoint[]): { x: number; y: number } {
+  if (points.length === 0) return { x: 0, y: 0 };
+  if (points.length === 1) return points[0];
+
+  let totalLength = 0;
+  const segmentLengths: number[] = [];
+
+  for (let index = 1; index < points.length; index += 1) {
+    const dx = points[index].x - points[index - 1].x;
+    const dy = points[index].y - points[index - 1].y;
+    const length = Math.hypot(dx, dy);
+    segmentLengths.push(length);
+    totalLength += length;
+  }
+
+  if (totalLength < 0.5) {
+    return points[Math.floor(points.length / 2)] ?? points[0];
+  }
+
+  const targetLength = totalLength / 2;
+  let traversed = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const segmentLength = segmentLengths[index - 1] ?? 0;
+    if (traversed + segmentLength >= targetLength && segmentLength > 0) {
+      const ratio = (targetLength - traversed) / segmentLength;
+      return {
+        x: points[index - 1].x + (points[index].x - points[index - 1].x) * ratio,
+        y: points[index - 1].y + (points[index].y - points[index - 1].y) * ratio,
+      };
+    }
+    traversed += segmentLength;
+  }
+
+  return points[points.length - 1] ?? points[0];
+}
+
+function buildEdgeRoute(edge: ElkExtendedEdge): EdgeRoute | null {
+  const sections = edge.sections ? orderedSections(edge.sections) : [];
+  if (sections.length === 0) return null;
+
+  const points: EdgeRoutePoint[] = [];
+  for (const section of sections) {
+    appendUniquePoint(points, section.startPoint);
+    for (const bendPoint of section.bendPoints ?? []) {
+      appendUniquePoint(points, bendPoint);
+    }
+    appendUniquePoint(points, section.endPoint);
+  }
+
+  if (points.length < 2) return null;
+
+  const labelPoint = midpointAlongRoute(points);
+  return {
+    points,
+    labelX: labelPoint.x,
+    labelY: labelPoint.y,
   };
 }
 
@@ -249,6 +365,7 @@ export async function layoutNodes(
 
   /* ── Extract port positions from ELK output ─────────────────── */
   const portsByNode = new Map<string, PortInfo[]>();
+  const routesByEdge = new Map<string, EdgeRoute>();
 
   for (const layoutNode of layout.children ?? []) {
     const ports: PortInfo[] = [];
@@ -277,6 +394,13 @@ export async function layoutNodes(
     portsByNode.set(layoutNode.id, ports);
   }
 
+  for (const layoutEdge of layout.edges ?? []) {
+    const route = buildEdgeRoute(layoutEdge);
+    if (route) {
+      routesByEdge.set(layoutEdge.id, route);
+    }
+  }
+
   /* ── Build positioned nodes ─────────────────────────────────── */
   const positionedNodes = nodes.map((n) => {
     const layoutNode = layout.children?.find((c) => c.id === n.id);
@@ -289,5 +413,5 @@ export async function layoutNodes(
     };
   });
 
-  return { nodes: positionedNodes, portsByNode, edgeHandles: edgeHandleMap };
+  return { nodes: positionedNodes, portsByNode, edgeHandles: edgeHandleMap, routesByEdge };
 }

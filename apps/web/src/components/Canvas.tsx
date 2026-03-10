@@ -20,9 +20,10 @@ import "@xyflow/react/dist/style.css";
 
 import { useAppStore } from "../store";
 import { UmlNode, UmlClassNode, UmlFunctionNode, UmlArtifactNode, UmlGroupNode } from "./UmlNode";
+import { ElkEdge } from "./ElkEdge";
 import { SymbolHoverCard } from "./SymbolHoverCard";
 import { setHoverInteractionBlocked } from "./hoverCardController";
-import { layoutNodes, type LayoutResult, type PortInfo } from "../layout";
+import { layoutNodes, type EdgeRoute, type PortInfo } from "../layout";
 import { exportDiagramAsHtml, exportProjectAsHtml } from "../exportHtml";
 import { exportProjectPackage } from "../projectTransfer";
 import type { UmlNodeData } from "./UmlNode";
@@ -33,6 +34,7 @@ import {
   EDGE_CLASS_BY_RELATION,
   RELATION_VERBS,
   type DiagramArtifactMode,
+  type DiagramEdgeType,
   type DiagramLabelMode,
 } from "../diagramSettings";
 import { resolveArtifactView } from "../artifactVisibility";
@@ -44,6 +46,10 @@ const nodeTypes = {
   umlFunction: UmlFunctionNode,
   umlArtifact: UmlArtifactNode,
   umlGroup: UmlGroupNode,
+};
+
+const edgeTypes = {
+  elk: ElkEdge,
 };
 
 const proOptions = { hideAttribution: true };
@@ -86,15 +92,28 @@ function positionFromHandle(handle: string): Position {
   return Position.Bottom;
 }
 
-/** Apply dynamic port handle IDs from the layout result onto edges.
- *  DISABLED: React Flow cannot reliably resolve dynamically-added Handle
- *  elements in the same render cycle, causing all edges to disappear.
- *  Keep the infrastructure for future use; edges use static handles for now. */
-function withDynamicHandles(
+/** Attach layout geometry onto edges.
+ *  Dynamic handles are still kept disabled for stability, but routed ELK
+ *  paths can be attached and rendered via the custom "elk" edge type. */
+function withLayoutGeometry(
   edges: Edge[],
   _handleMap: Map<string, { sourceHandle: string; targetHandle: string }>,
+  routeMap: Map<string, EdgeRoute>,
+  useElkRoutes: boolean,
+  fallbackEdgeType: DiagramEdgeType,
 ): Edge[] {
-  return edges; // pass-through — use static handles
+  return edges.map((edge) => {
+    const elkRoute = useElkRoutes ? routeMap.get(edge.id) : undefined;
+    return {
+      ...edge,
+      type: elkRoute ? "elk" : fallbackEdgeType,
+      data: {
+        ...(edge.data as Record<string, unknown> | undefined),
+        elkRoute,
+        fallbackEdgeType,
+      },
+    };
+  });
 }
 
 /** Attach dynamic port data from layout result onto node.data */
@@ -295,6 +314,7 @@ export function Canvas() {
   const removeSymbol = useAppStore((s) => s.removeSymbol);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const saveNodePositions = useAppStore((s) => s.saveNodePositions);
+  const applyDiagramLayout = useAppStore((s) => s.applyDiagramLayout);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
   const layoutVersion = useAppStore((s) => s.diagramLayoutVersion);
   const updateDiagramSettings = useAppStore((s) => s.updateDiagramSettings);
@@ -330,6 +350,7 @@ export function Canvas() {
 
   // Dynamic port handle mapping from ELK layout (persists across layout passes)
   const edgeHandlesRef = useRef<Map<string, { sourceHandle: string; targetHandle: string }>>(new Map());
+  const edgeRoutesRef = useRef<Map<string, EdgeRoute>>(new Map());
 
   // Node hover highlighting — dims unrelated edges
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
@@ -618,6 +639,8 @@ export function Canvas() {
       setNodes([]);
       setEdges([]);
       prevLayoutKeyRef.current = "";
+      edgeHandlesRef.current = new Map();
+      edgeRoutesRef.current = new Map();
       return;
     }
 
@@ -631,7 +654,11 @@ export function Canvas() {
       })
       .sort()
       .join(",");
-    const layoutKey = `${currentViewId}|${nodeFingerprint}|${layoutVersion}`;
+    const edgeFingerprint = viewEdges
+      .map((e) => `${e.id}:${e.source}:${e.target}:${e.label ?? ""}`)
+      .sort()
+      .join(",");
+    const layoutKey = `${currentViewId}|${diagramSettings.autoLayout ? "auto" : "manual"}|${nodeFingerprint}|${edgeFingerprint}|${layoutVersion}`;
 
     if (layoutKey === prevLayoutKeyRef.current) {
       // Node structure unchanged — update node data & edges without repositioning
@@ -651,7 +678,15 @@ export function Canvas() {
           };
         });
       });
-      setEdges(withDynamicHandles(viewEdges, edgeHandlesRef.current));
+      setEdges(
+        withLayoutGeometry(
+          viewEdges,
+          edgeHandlesRef.current,
+          edgeRoutesRef.current,
+          diagramSettings.autoLayout,
+          diagramSettings.edgeType,
+        ),
+      );
       return;
     }
     prevLayoutKeyRef.current = layoutKey;
@@ -663,20 +698,20 @@ export function Canvas() {
     );
     const allHaveSavedPos = viewNodes.every((n) => savedMap.has(n.id));
 
-    if (allHaveSavedPos) {
-      // All nodes already have manual/saved positions — skip ELK entirely
-      // Still run layout just for port computation (dynamic handles)
+    if (allHaveSavedPos && !diagramSettings.autoLayout) {
+      // Manual layout mode: respect persisted node positions and use fallback edges.
       edgeHandlesRef.current = new Map();
-      layoutNodes(
-        viewNodes,
-        viewEdges,
-        diagramSettings.layout,
-        diagramSettings.nodeCompactMode,
-      ).then(({ portsByNode, edgeHandles }) => {
-        edgeHandlesRef.current = edgeHandles;
-        setNodes(attachDynamicPorts(viewNodes, portsByNode));
-        setEdges(withDynamicHandles(viewEdges, edgeHandles));
-      });
+      edgeRoutesRef.current = new Map();
+      setNodes(viewNodes);
+      setEdges(
+        withLayoutGeometry(
+          viewEdges,
+          edgeHandlesRef.current,
+          edgeRoutesRef.current,
+          false,
+          diagramSettings.edgeType,
+        ),
+      );
       layoutRef.current = false;
       layoutPassRef.current = 2;
       setLayoutDone(true);
@@ -693,17 +728,28 @@ export function Canvas() {
       viewEdges,
       diagramSettings.layout,
       diagramSettings.nodeCompactMode,
-    ).then(({ nodes: laid, portsByNode, edgeHandles }) => {
+    ).then(({ nodes: laid, portsByNode, edgeHandles, routesByEdge }) => {
       edgeHandlesRef.current = edgeHandles;
+      edgeRoutesRef.current = diagramSettings.autoLayout ? routesByEdge : new Map();
       // Preserve saved positions; use ELK only for new/unsaved nodes
       const positioned = laid.map((n) => {
         const saved = savedMap.get(n.id);
         return saved
-          ? { ...n, position: { x: saved.x, y: saved.y } }
+          ? !diagramSettings.autoLayout
+            ? { ...n, position: { x: saved.x, y: saved.y } }
+            : n
           : n;
       });
       setNodes(attachDynamicPorts(positioned, portsByNode));
-      setEdges(withDynamicHandles(viewEdges, edgeHandles));
+      setEdges(
+        withLayoutGeometry(
+          viewEdges,
+          edgeHandles,
+          edgeRoutesRef.current,
+          diagramSettings.autoLayout,
+          diagramSettings.edgeType,
+        ),
+      );
       layoutPassRef.current = 1;
       setLayoutDone(true);
     });
@@ -715,6 +761,8 @@ export function Canvas() {
     graph,
     currentViewId,
     layoutVersion,
+    diagramSettings.autoLayout,
+    diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
   ]);
@@ -739,16 +787,27 @@ export function Canvas() {
       edges,
       diagramSettings.layout,
       diagramSettings.nodeCompactMode,
-    ).then(({ nodes: laid, portsByNode, edgeHandles }) => {
+    ).then(({ nodes: laid, portsByNode, edgeHandles, routesByEdge }) => {
       edgeHandlesRef.current = edgeHandles;
+      edgeRoutesRef.current = diagramSettings.autoLayout ? routesByEdge : new Map();
       const positioned = laid.map((n) => {
         const saved = savedMap.get(n.id);
         return saved
-          ? { ...n, position: { x: saved.x, y: saved.y } }
+          ? !diagramSettings.autoLayout
+            ? { ...n, position: { x: saved.x, y: saved.y } }
+            : n
           : n;
       });
       setNodes(attachDynamicPorts(positioned, portsByNode));
-      setEdges((prev) => withDynamicHandles(prev, edgeHandles));
+      setEdges((prev) =>
+        withLayoutGeometry(
+          prev,
+          edgeHandles,
+          edgeRoutesRef.current,
+          diagramSettings.autoLayout,
+          diagramSettings.edgeType,
+        ),
+      );
       if (!pendingRestoreForCurrentView || !currentViewSnapshot?.viewport) {
         setTimeout(() => {
           const expectedViewId = currentViewId;
@@ -765,6 +824,8 @@ export function Canvas() {
     reactFlowInstance,
     graph,
     currentViewId,
+    diagramSettings.autoLayout,
+    diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
     currentViewSnapshot?.viewport,
@@ -1319,10 +1380,13 @@ export function Canvas() {
         height: n.measured?.height,
       }));
       saveNodePositions(positions);
+      if (diagramSettings.autoLayout) {
+        applyDiagramLayout();
+      }
       // Prevent immediate hover re-open right after drag release.
       setHoverInteractionBlocked(false, 560);
     },
-    [saveNodePositions],
+    [applyDiagramLayout, diagramSettings.autoLayout, saveNodePositions],
   );
 
   const onMoveStart = useCallback(() => {
@@ -1384,6 +1448,7 @@ export function Canvas() {
         onDrop={onDrop}
         onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         defaultEdgeOptions={{ type: diagramSettings.edgeType }}
         fitView
         minZoom={0.05}
