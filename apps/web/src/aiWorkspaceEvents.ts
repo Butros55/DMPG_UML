@@ -26,6 +26,7 @@ export function isAiDataEvent(
 ): boolean {
   return event.action === "generated"
     || (event.phase === "labels" && !event.action && !!event.new_)
+    || (event.phase === "relation_labels" && event.action === "updated" && !!event.relationId && !!event.relationLabel)
     || (event.phase === "dead-code" && !event.action && !!event.reason)
     || (event.phase === "relations" && event.action === "added")
     || isWorkspaceNavigationEvent(event, runKind);

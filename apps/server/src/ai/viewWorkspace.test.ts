@@ -100,6 +100,10 @@ function buildBaseDependencies(graph: ProjectGraph): ViewWorkspaceDependencies {
       };
       return review;
     },
+    improveSequenceRelationLabelsForView: async () => ({
+      viewId: "view:root",
+      improvements: [],
+    }),
     runReferenceDrivenUmlAutorefactor: async () => {
       throw new Error("reference step not expected");
     },

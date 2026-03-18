@@ -5,12 +5,13 @@ import {
   AiViewActionRequestSchema,
   AiViewRequestSchema,
 } from "@dmpg/shared";
-import { getCurrentProjectPath, getGraph, setGraph } from "../store.js";
+import { getConfiguredProjectPath, getCurrentProjectPath, getGraph, setGraph } from "../store.js";
 import {
   collectViewOpportunities,
   enrichSymbolInGraph,
   enrichViewSymbolsInGraph,
   improveLabelsForView,
+  improveSequenceRelationLabelsForView,
   reviewExternalContextForView,
   reviewViewStructure,
   suggestMissingRelationsForView,
@@ -47,7 +48,7 @@ aiUmlRouter.post("/enrich-symbol", async (req, res) => {
     const result = await enrichSymbolInGraph(
       graph,
       parsed.data.symbolId,
-      getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH,
+      getCurrentProjectPath() ?? getConfiguredProjectPath() ?? undefined,
     );
     setGraph(graph);
     res.json(result);
@@ -68,7 +69,7 @@ aiUmlRouter.post("/enrich-view-symbols", async (req, res) => {
     const result = await enrichViewSymbolsInGraph(
       graph,
       parsed.data.viewId,
-      getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH,
+      getCurrentProjectPath() ?? getConfiguredProjectPath() ?? undefined,
       parsed.data.limit ?? 12,
     );
     setGraph(graph);
@@ -90,7 +91,7 @@ aiUmlRouter.post("/suggest-missing-relations", async (req, res) => {
     const result = await suggestMissingRelationsForView(
       graph,
       parsed.data.viewId,
-      getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH,
+      getCurrentProjectPath() ?? getConfiguredProjectPath() ?? undefined,
       parsed.data.limit ?? 15,
       parsed.data.apply ?? true,
     );
@@ -164,10 +165,18 @@ aiUmlRouter.post("/improve-view-labels", async (req, res) => {
       parsed.data.viewId,
       parsed.data.persist ?? true,
     );
+    const sequenceRelations = await improveSequenceRelationLabelsForView(
+      graph,
+      parsed.data.viewId,
+      parsed.data.persist ?? true,
+    );
     if (parsed.data.persist ?? true) {
       setGraph(graph);
     }
-    res.json(result);
+    res.json({
+      ...result,
+      sequenceRelations,
+    });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "UML label improvement failed" });
   }
@@ -196,11 +205,13 @@ aiUmlRouter.post("/review-view", async (req, res) => {
     const graph = requireGraph();
     const structure = await reviewViewStructure(graph, parsed.data.viewId, true, true);
     const labels = await improveLabelsForView(graph, parsed.data.viewId, true);
+    const sequenceRelations = await improveSequenceRelationLabelsForView(graph, parsed.data.viewId, true);
     setGraph(graph);
     res.json({
       viewId: parsed.data.viewId,
       structure,
       labels,
+      sequenceRelations,
     });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "UML composite review failed" });

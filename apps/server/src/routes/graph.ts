@@ -1,6 +1,5 @@
 import { Router, type Router as RouterType } from "express";
-import { getGraph, setGraph, getCurrentProjectPath } from "../store.js";
-import { buildDemoGraph } from "../demo-graph.js";
+import { getConfiguredProjectPath, getGraph, setGraph, getCurrentProjectPath } from "../store.js";
 import { ProjectGraphSchema } from "@dmpg/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -8,12 +7,12 @@ import { augmentGraphWithUmlOverlays } from "../scanner/processOverview.js";
 
 export const graphRouter: RouterType = Router();
 
-/** GET /api/graph — return current graph (or demo if none) */
+/** GET /api/graph — return current graph */
 graphRouter.get("/", (_req, res) => {
-  let g = getGraph();
+  const g = getGraph();
   if (!g) {
-    g = buildDemoGraph();
-    setGraph(g);
+    res.status(404).json({ error: "no graph loaded" });
+    return;
   }
   res.json(g);
 });
@@ -64,7 +63,7 @@ graphRouter.get("/source/:id", (req, res) => {
     res.status(404).json({ error: "symbol has no file location" });
     return;
   }
-  const scanRoot = g.sourceProjectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "";
+  const scanRoot = g.sourceProjectPath ?? getCurrentProjectPath() ?? getConfiguredProjectPath() ?? "";
   const absPath = path.isAbsolute(loc.file) ? loc.file : path.join(scanRoot, loc.file);
   try {
     const src = fs.readFileSync(absPath, "utf-8");

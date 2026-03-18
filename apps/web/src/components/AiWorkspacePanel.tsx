@@ -134,6 +134,13 @@ function renderWorkspaceLogEntry(ev: AnalyzeEvent) {
   if (ev.phase === "error") {
     return <span style={{ color: "var(--red)" }}><i className="bi bi-x-octagon" /> {ev.message ?? "Workspace fehlgeschlagen"}</span>;
   }
+  if (ev.phase === "relation_labels" && ev.action === "updated") {
+    return (
+      <span>
+        <i className="bi bi-arrow-left-right" /> Beziehung: {ev.sourceLabel ?? ev.source} → {ev.targetLabel ?? ev.target} · {ev.relationLabel}
+      </span>
+    );
+  }
   if (ev.action === "saved") {
     return (
       <span>

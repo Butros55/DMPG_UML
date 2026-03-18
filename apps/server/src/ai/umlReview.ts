@@ -21,6 +21,7 @@ import {
 } from "@dmpg/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { z } from "zod";
 import { resolveAiConfig, type AiConfig } from "../env.js";
 import { callAiJson } from "./client.js";
 import { resolveModelForTask } from "./modelRouting.js";
@@ -42,6 +43,13 @@ const AI_DISCOVERABLE_RELATION_TYPES = [
   "instantiates",
 ] as const satisfies readonly RelationType[];
 const AI_DISCOVERABLE_RELATION_TYPE_SET = new Set<string>(AI_DISCOVERABLE_RELATION_TYPES);
+const SEQUENCE_RELATION_TYPES = new Set<RelationType>([
+  "calls",
+  "instantiates",
+  "reads",
+  "writes",
+  "uses_config",
+]);
 
 type AiDiscoverableRelationType = typeof AI_DISCOVERABLE_RELATION_TYPES[number];
 
@@ -50,6 +58,29 @@ interface AiRelationCandidate {
   targetName: string;
   confidence?: number;
   rationale?: string;
+}
+
+const SequenceRelationLabelImprovementSchema = z.object({
+  relationId: z.string(),
+  newLabel: z.string(),
+  reason: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+});
+
+const SequenceRelationLabelImprovementResponseSchema = z.object({
+  viewId: z.string(),
+  improvements: z.array(SequenceRelationLabelImprovementSchema).default([]),
+});
+
+export type SequenceRelationLabelImprovement = z.infer<typeof SequenceRelationLabelImprovementSchema> & {
+  sourceId: string;
+  targetId: string;
+  oldLabel: string;
+};
+
+export interface SequenceRelationLabelImprovementResult {
+  viewId: string;
+  improvements: SequenceRelationLabelImprovement[];
 }
 
 export interface UmlViewHeuristics {
@@ -128,6 +159,58 @@ function getViewRelations(graph: ProjectGraph, view: DiagramView) {
     isNonStructuralRelation(rel) && (nodeIds.has(rel.source) !== nodeIds.has(rel.target))
   );
   return { internal, external };
+}
+
+function isRootChildGroupView(graph: ProjectGraph, view: DiagramView): boolean {
+  if (view.scope !== "group" || !view.parentViewId) return false;
+  if (view.parentViewId === "view:root") return true;
+  const parentView = graph.views.find((candidate) => candidate.id === view.parentViewId);
+  return parentView?.scope === "root";
+}
+
+function normalizeSequenceTextLabel(value: string): string {
+  return value
+    .replace(/[_./\\]+/g, " ")
+    .replace(/\b(pd|df|csv|json|xlsx|xls|tsv|sql)\b/gi, (match) => match.toUpperCase())
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function shortSymbolName(sym: Sym | undefined, fallback: string): string {
+  const label = sym?.label?.trim() || fallback;
+  const normalized = label.replace(/\\/g, "/");
+  const pathTail = normalized.split("/").at(-1) ?? normalized;
+  const dotTail = pathTail.split(/[.:]/).at(-1) ?? pathTail;
+  return dotTail || fallback;
+}
+
+function buildFallbackSequenceRelationLabel(relation: Relation, sourceSym: Sym | undefined, targetSym: Sym | undefined): string {
+  const targetLabel = normalizeSequenceTextLabel(shortSymbolName(targetSym, relation.target));
+  const sourceLabel = normalizeSequenceTextLabel(shortSymbolName(sourceSym, relation.source));
+  const existing = normalizeSequenceTextLabel(relation.label?.trim() || "");
+
+  if (existing.length >= 6 && !/^(calls|reads|writes|instantiates|uses config|use config)$/i.test(existing)) {
+    return existing;
+  }
+
+  if (relation.type === "reads") {
+    return targetLabel ? `Load ${targetLabel}` : "Load input data";
+  }
+  if (relation.type === "writes") {
+    return targetLabel ? `Write ${targetLabel}` : "Write output data";
+  }
+  if (relation.type === "uses_config") {
+    return targetLabel ? `Apply ${targetLabel}` : "Apply configuration";
+  }
+  if (relation.type === "instantiates") {
+    return targetLabel ? `Create ${targetLabel}` : "Create instance";
+  }
+
+  if (existing.length > 0) {
+    return existing;
+  }
+
+  return targetLabel ? `${sourceLabel} calls ${targetLabel}` : "Trigger processing step";
 }
 
 function detectLayoutPattern(view: DiagramView): UmlViewHeuristics["layoutPattern"] {
@@ -1095,4 +1178,147 @@ ${JSON.stringify({
     view.labelSuggestions = mergeLabelImprovements(view.labelSuggestions, decoratedImprovements);
   }
   return response;
+}
+
+export async function improveSequenceRelationLabelsForView(
+  graph: ProjectGraph,
+  viewId: string,
+  persist = true,
+): Promise<SequenceRelationLabelImprovementResult> {
+  const view = findView(graph, viewId);
+  if (!isRootChildGroupView(graph, view)) {
+    return { viewId, improvements: [] };
+  }
+
+  const nodeIds = new Set(view.nodeRefs);
+  const symbolById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
+  const candidateRelations = graph.relations
+    .filter((relation) =>
+      SEQUENCE_RELATION_TYPES.has(relation.type) &&
+      (nodeIds.has(relation.source) || nodeIds.has(relation.target))
+    )
+    .sort((left, right) => {
+      const leftEvidence = left.evidence?.[0];
+      const rightEvidence = right.evidence?.[0];
+      const leftFile = leftEvidence?.file ?? symbolById.get(left.source)?.location?.file ?? "";
+      const rightFile = rightEvidence?.file ?? symbolById.get(right.source)?.location?.file ?? "";
+      if (leftFile !== rightFile) return leftFile.localeCompare(rightFile);
+      const leftLine = leftEvidence?.startLine ?? Number.MAX_SAFE_INTEGER;
+      const rightLine = rightEvidence?.startLine ?? Number.MAX_SAFE_INTEGER;
+      return leftLine - rightLine;
+    })
+    .slice(0, 20);
+
+  if (candidateRelations.length === 0) {
+    return { viewId, improvements: [] };
+  }
+
+  const fallbackMap = new Map<string, SequenceRelationLabelImprovement>();
+  const relationTargets = candidateRelations.map((relation) => {
+    const sourceSym = symbolById.get(relation.source);
+    const targetSym = symbolById.get(relation.target);
+    const oldLabel = relation.label?.trim() || buildFallbackSequenceRelationLabel(relation, sourceSym, targetSym);
+    fallbackMap.set(relation.id, {
+      relationId: relation.id,
+      sourceId: relation.source,
+      targetId: relation.target,
+      oldLabel,
+      newLabel: buildFallbackSequenceRelationLabel(relation, sourceSym, targetSym),
+      confidence: 0.36,
+      reason: "Fallback sequence label based on relation type and endpoint names.",
+    });
+
+    return {
+      relationId: relation.id,
+      sourceId: relation.source,
+      sourceLabel: shortSymbolName(sourceSym, relation.source),
+      targetId: relation.target,
+      targetLabel: shortSymbolName(targetSym, relation.target),
+      relationType: relation.type,
+      currentLabel: relation.label?.trim() || "",
+      suggestedBaseLabel: fallbackMap.get(relation.id)?.newLabel,
+      evidence: relation.evidence?.[0]
+        ? {
+            file: relation.evidence[0].file,
+            startLine: relation.evidence[0].startLine,
+          }
+        : undefined,
+    };
+  });
+
+  let improvements: SequenceRelationLabelImprovement[] = [];
+  try {
+    const { data } = await callAiJson({
+      taskType: getTaskTypeForUseCase(AI_USE_CASES.UML_LABEL_IMPROVEMENT),
+      systemPrompt: `You improve message labels for UML sequence diagrams.
+Return JSON exactly in this format:
+{
+  "viewId": "${view.id}",
+  "improvements": [
+    {
+      "relationId": "relation-id",
+      "newLabel": "short clearer message",
+      "reason": "why it is clearer",
+      "confidence": 0.0
+    }
+  ]
+}
+Rules:
+- Improve only sequence-message labels that are too technical, file-like, code-like or unclear.
+- Keep the behavior stable. Do not invent new domain meaning.
+- newLabel must stay short and readable in a sequence arrow label, usually 2 to 8 words.
+- Prefer action phrasing such as "Load input data", "Normalize worker clusters", "Persist grouped output".
+- Avoid raw implementation tokens such as pd.read_csv, __init__, route.csv, or bare relation types unless they are the clearest available wording.
+- Use relationId values exactly as provided.
+- Return an empty improvements array if the current labels are already clear.
+Respond ONLY with valid JSON.`,
+      userPrompt: `Sequence relation label targets:
+${JSON.stringify({
+        viewId: view.id,
+        viewTitle: view.title,
+        relations: relationTargets,
+      }, null, 2)}`,
+    });
+
+    const parsed = SequenceRelationLabelImprovementResponseSchema.parse({
+      ...(typeof data === "object" && data ? data : {}),
+      viewId,
+    });
+
+    const mappedImprovements = parsed.improvements
+      .map((improvement): SequenceRelationLabelImprovement | null => {
+        const relation = candidateRelations.find((entry) => entry.id === improvement.relationId);
+        const fallback = fallbackMap.get(improvement.relationId);
+        if (!relation || !fallback) return null;
+        const nextLabel = normalizeSequenceTextLabel(improvement.newLabel);
+        if (!nextLabel || nextLabel === fallback.oldLabel) return null;
+        return {
+          relationId: relation.id,
+          sourceId: relation.source,
+          targetId: relation.target,
+          oldLabel: fallback.oldLabel,
+          newLabel: nextLabel,
+          reason: improvement.reason,
+          confidence: improvement.confidence,
+        } satisfies SequenceRelationLabelImprovement;
+      })
+      .filter((improvement): improvement is SequenceRelationLabelImprovement => !!improvement);
+    improvements = mappedImprovements;
+  } catch {
+    improvements = [...fallbackMap.values()].filter((improvement) => improvement.newLabel !== improvement.oldLabel);
+  }
+
+  if (persist) {
+    for (const improvement of improvements) {
+      const relation = graph.relations.find((entry) => entry.id === improvement.relationId);
+      if (!relation) continue;
+      relation.label = improvement.newLabel;
+      relation.aiGenerated = relation.aiGenerated ?? true;
+    }
+  }
+
+  return {
+    viewId,
+    improvements,
+  };
 }

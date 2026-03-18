@@ -6,7 +6,15 @@ import {
   type ProjectAnalysisFinding,
 } from "@dmpg/shared";
 import type { Symbol as Sym, Relation, DiagramView, RelationType } from "@dmpg/shared";
-import { getGraph, setGraph, getCurrentProjectPath, loadAiProgress, saveAiProgress, clearAiProgress } from "../store.js";
+import {
+  getConfiguredProjectPath,
+  getGraph,
+  setGraph,
+  getCurrentProjectPath,
+  loadAiProgress,
+  saveAiProgress,
+  clearAiProgress,
+} from "../store.js";
 import { callAiJson } from "../ai/client.js";
 import { formatAiModelRoutingSummary } from "../ai/modelRouting.js";
 import { listRunningOllamaModels } from "../ai/ollamaLocalModels.js";
@@ -216,7 +224,7 @@ aiRouter.post("/summarize", async (req, res) => {
 
   const code =
     codeSnippet ??
-    (sym ? readSourceForSymbol(sym as any, getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH) : undefined);
+    (sym ? readSourceForSymbol(sym as any, getCurrentProjectPath() ?? getConfiguredProjectPath() ?? undefined) : undefined);
 
   const systemPrompt = `You are a code documentation assistant. Given the symbol name, code snippet and surrounding context, produce a JSON object with these fields:
 - summary (string): a short description
@@ -288,7 +296,7 @@ aiRouter.post("/batch-summarize", async (req, res) => {
       errors[id] = "Symbol not found";
       continue;
     }
-    const code = readSourceCode(sym, getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH);
+    const code = readSourceCode(sym, getCurrentProjectPath() ?? getConfiguredProjectPath() ?? undefined);
     const systemPrompt = `You are a code documentation assistant. Given the symbol name and code, produce a JSON object with fields: summary (string), inputs (array of {name, type?, description?}), outputs (array of {name, type?, description?}), sideEffects (array of strings). Respond ONLY with valid JSON.`;
     const userPrompt = `Symbol: ${sym.label}\nKind: ${sym.kind}\n${code ? `Code:\n${code}` : ""}`;
 
@@ -508,7 +516,7 @@ aiRouter.post("/analyze", async (req, res) => {
   res.write(":ok\n\n");
   if (typeof (res as any).flush === "function") (res as any).flush();
 
-  const scanRoot = g.sourceProjectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? g.projectPath ?? "";
+  const scanRoot = g.sourceProjectPath ?? getCurrentProjectPath() ?? getConfiguredProjectPath() ?? g.projectPath ?? "";
   let clientGone = false;
   req.on("close", () => { clientGone = true; console.log("[AI-Analyze] Client disconnected (server continues processing)"); });
 

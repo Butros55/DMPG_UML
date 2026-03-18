@@ -7,6 +7,8 @@ import {
   fetchProjects,
   switchProject as switchProjectApi,
   deleteProjectApi,
+  pickProjectFolder,
+  openProjectFolder,
   replaceGraph,
 } from "../api";
 import type { ProjectMeta } from "../api";
@@ -79,6 +81,36 @@ function KindBadge({ kind }: { kind: string }) {
 function queryMatches(text: string | undefined, query: string): boolean {
   if (!query) return false;
   return (text ?? "").toLowerCase().includes(query);
+}
+
+function normalizeProjectPathValue(projectPath: string | null | undefined): string {
+  const trimmed = projectPath?.trim() ?? "";
+  if (!trimmed) return "";
+  const normalized = trimmed.replace(/\//g, "\\");
+  return navigator.platform.toLowerCase().includes("win")
+    ? normalized.toLowerCase()
+    : normalized;
+}
+
+function sameProjectPath(left: string | null | undefined, right: string | null | undefined): boolean {
+  const normalizedLeft = normalizeProjectPathValue(left);
+  const normalizedRight = normalizeProjectPathValue(right);
+  return normalizedLeft !== "" && normalizedLeft === normalizedRight;
+}
+
+function projectNameFromPath(projectPath: string): string {
+  const segments = projectPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  return segments[segments.length - 1] ?? projectPath;
+}
+
+function formatProjectTimestamp(value: string | undefined): string {
+  if (!value) return "Noch nicht gescannt";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Unbekannt";
+  return parsed.toLocaleString("de-DE", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function HighlightText({ text, query }: { text: string; query: string }) {
@@ -385,6 +417,7 @@ export function Sidebar() {
   const [scanError, setScanError] = useState("");
   const [showBrowser, setShowBrowser] = useState(false);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  const [configuredProjectPath, setConfiguredProjectPath] = useState("");
   const [activeProjectPath, setActiveProjectPath] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // Collapsible sidebar sections
@@ -431,6 +464,32 @@ export function Sidebar() {
     return activeProject;
   }, []);
 
+  const activeProjectMeta = useMemo(
+    () => projects.find((project) => sameProjectPath(project.projectPath, activeProjectPath)) ?? null,
+    [activeProjectPath, projects],
+  );
+  const currentProjectPath = activeProjectMeta?.projectPath
+    || activeProjectPath
+    || configuredProjectPath
+    || scanPath;
+  const currentProjectName = currentProjectPath
+    ? activeProjectMeta?.name ?? projectNameFromPath(currentProjectPath)
+    : "";
+  const libraryProjects = useMemo(() => {
+    const sortedProjects = [...projects].sort((left, right) => {
+      const leftIsDefault = sameProjectPath(left.projectPath, configuredProjectPath);
+      const rightIsDefault = sameProjectPath(right.projectPath, configuredProjectPath);
+      if (leftIsDefault !== rightIsDefault) return leftIsDefault ? -1 : 1;
+
+      const leftTime = new Date(left.lastScanned).getTime();
+      const rightTime = new Date(right.lastScanned).getTime();
+      return rightTime - leftTime;
+    });
+
+    if (!activeProjectMeta) return sortedProjects;
+    return sortedProjects.filter((project) => !sameProjectPath(project.projectPath, activeProjectMeta.projectPath));
+  }, [activeProjectMeta, configuredProjectPath, projects]);
+
   const handleActivityTabClick = useCallback((tab: SidebarTab) => {
     if (!sidebarCollapsed && activeTab === tab) {
       setSidebarCollapsed(true);
@@ -440,35 +499,120 @@ export function Sidebar() {
     setSidebarCollapsed(false);
   }, [activeTab, sidebarCollapsed, setSidebarCollapsed]);
 
-  // Load default scan path, AI config, and project list on mount
-  useEffect(() => {
-    fetchConfig().then((cfg) => {
-      if (cfg.scanProjectPath) {
-        setScanPath((prev) => prev || cfg.scanProjectPath);
-      }
-      setAiProvider(cfg.aiProvider ?? "cloud");
-      setOllamaModel(cfg.ollamaModel ?? "");
-    });
-    refreshProjects().catch(() => {});
-  }, [refreshProjects]);
+  const loadProjectWorkspace = useCallback(async (
+    projectPath: string,
+    options?: { forceRescan?: boolean },
+  ) => {
+    const targetPath = projectPath.trim();
+    if (!targetPath) return null;
 
-  const handleScan = useCallback(async () => {
-    if (!scanPath.trim()) return;
     setScanning(true);
     setScanError("");
     try {
       exitValidateMode();
       resetPlaybackQueue();
-      const g = await scanProject(scanPath.trim());
-      setGraph(g);
-      // Refresh project list after successful scan
-      await refreshProjects();
+
+      let graphResult = null as Awaited<ReturnType<typeof scanProject>> | null;
+      if (!options?.forceRescan) {
+        const { graph } = await switchProjectApi(targetPath);
+        graphResult = graph;
+      }
+      if (!graphResult) {
+        graphResult = await scanProject(targetPath);
+      }
+
+      setGraph(graphResult);
+      const effectiveProjectPath = graphResult.sourceProjectPath ?? graphResult.projectPath ?? targetPath;
+      setScanPath(effectiveProjectPath);
+      const refreshedActiveProject = await refreshProjects();
+      setActiveProjectPath(refreshedActiveProject ?? effectiveProjectPath);
+      return graphResult;
     } catch (err: any) {
       setScanError(err.message);
+      return null;
     } finally {
       setScanning(false);
     }
-  }, [scanPath, setGraph, exitValidateMode, refreshProjects, resetPlaybackQueue]);
+  }, [exitValidateMode, refreshProjects, resetPlaybackQueue, setGraph]);
+
+  // Load configured project path and open the preferred project on mount.
+  useEffect(() => {
+    let cancelled = false;
+
+    const bootstrapProjectWorkspace = async () => {
+      try {
+        const cfg = await fetchConfig();
+        if (cancelled) return;
+
+        const configuredPath = cfg.scanProjectPath?.trim() ?? "";
+        setConfiguredProjectPath(configuredPath);
+        setAiProvider(cfg.aiProvider ?? "cloud");
+        setOllamaModel(cfg.ollamaModel ?? "");
+
+        const { projects: initialProjects, activeProject } = await fetchProjects();
+        if (cancelled) return;
+
+        setProjects(initialProjects);
+        setActiveProjectPath(activeProject);
+
+        const preferredProjectPath = configuredPath || activeProject || initialProjects[0]?.projectPath || "";
+        if (!preferredProjectPath) {
+          setScanPath("");
+          return;
+        }
+
+        setScanPath(preferredProjectPath);
+        await loadProjectWorkspace(preferredProjectPath);
+      } catch (err: any) {
+        if (!cancelled) {
+          setScanError(err.message ?? "Projektkonfiguration konnte nicht geladen werden");
+        }
+      }
+    };
+
+    void bootstrapProjectWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadProjectWorkspace]);
+
+  const handleSwitchProject = useCallback(async (projectPath: string) => {
+    await loadProjectWorkspace(projectPath);
+  }, [loadProjectWorkspace]);
+
+  const handleRescanProject = useCallback(async (projectPath?: string | null) => {
+    const targetPath = projectPath?.trim() || currentProjectPath.trim();
+    if (!targetPath) {
+      setScanError("Kein Projekt ausgewählt");
+      return;
+    }
+    await loadProjectWorkspace(targetPath, { forceRescan: true });
+  }, [currentProjectPath, loadProjectWorkspace]);
+
+  const handlePickProject = useCallback(async () => {
+    try {
+      const pickedProjectPath = await pickProjectFolder(currentProjectPath || configuredProjectPath || undefined);
+      if (!pickedProjectPath) return;
+      setShowBrowser(false);
+      await loadProjectWorkspace(pickedProjectPath);
+    } catch {
+      setShowBrowser(true);
+    }
+  }, [configuredProjectPath, currentProjectPath, loadProjectWorkspace]);
+
+  const handleOpenProjectFolderClick = useCallback(async (projectPath?: string | null) => {
+    const targetPath = projectPath?.trim() || currentProjectPath.trim();
+    if (!targetPath) {
+      setScanError("Kein Projekt ausgewählt");
+      return;
+    }
+    try {
+      await openProjectFolder(targetPath);
+      setScanError("");
+    } catch (err: any) {
+      setScanError(err.message ?? "Ordner konnte nicht geöffnet werden");
+    }
+  }, [currentProjectPath]);
 
   const handleImportProject = useCallback(async (file: File) => {
     setScanning(true);
@@ -479,7 +623,7 @@ export function Sidebar() {
       const importedGraph = await importProjectPackageFile(file);
       const normalizedGraph = await replaceGraph(importedGraph);
       setGraph(normalizedGraph);
-      setScanPath(normalizedGraph.sourceProjectPath ?? "");
+      setScanPath(normalizedGraph.sourceProjectPath ?? normalizedGraph.projectPath ?? "");
       await refreshProjects();
     } catch (err: any) {
       setScanError(err.message ?? "Import failed");
@@ -490,20 +634,6 @@ export function Sidebar() {
       }
     }
   }, [exitValidateMode, refreshProjects, resetPlaybackQueue, setGraph]);
-
-  const handleSwitchProject = useCallback(async (projectPath: string) => {
-    try {
-      const { graph: g } = await switchProjectApi(projectPath);
-      if (g) {
-        setGraph(g);
-      }
-      setScanPath(g?.sourceProjectPath ?? projectPath);
-      setActiveProjectPath(projectPath);
-      setScanError("");
-    } catch (err: any) {
-      setScanError(err.message);
-    }
-  }, [setGraph]);
 
   const handleDeleteProject = useCallback(async (projectPath: string) => {
     try {
@@ -546,11 +676,12 @@ export function Sidebar() {
           aiAnalysis: null,
           validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
         });
-        setScanPath("");
+        setScanPath((result.activeProject ?? configuredProjectPath) || "");
+        setActiveProjectPath(result.activeProject ?? (configuredProjectPath || null));
       }
       setScanError("");
     } catch { /* ignore */ }
-  }, [setGraph, exitValidateMode, resetPlaybackQueue]);
+  }, [configuredProjectPath, setGraph, exitValidateMode, resetPlaybackQueue]);
 
   useEffect(() => {
     const onSidebarCommand = (event: Event) => {
@@ -561,11 +692,11 @@ export function Sidebar() {
       switch (action) {
         case "scan":
           activateTab("project");
-          void handleScan();
+          void handleRescanProject();
           break;
         case "open-folder-browser":
           activateTab("project");
-          setShowBrowser(true);
+          void handlePickProject();
           break;
         case "import-project-package":
           activateTab("project");
@@ -600,7 +731,8 @@ export function Sidebar() {
   }, [
     activeProjectPath,
     handleDeleteProject,
-    handleScan,
+    handlePickProject,
+    handleRescanProject,
     handleSwitchProject,
     activateTab,
   ]);
@@ -903,74 +1035,178 @@ export function Sidebar() {
 
       {activeTab === "project" && (
       <div className="sidebar-section scan-section">
-        <h2>Scan Project</h2>
+        <div className="project-workspace">
+          <div className="project-hero">
+            <div className="project-hero__eyebrow">Projektverwaltung</div>
+            <div className="project-hero__title">Aktives Projekt</div>
+            <div className="project-hero__description">
+              {configuredProjectPath
+                ? "Das konfigurierte Default-Projekt wird beim Neuladen automatisch geoeffnet und nur gescannt, wenn noch kein Scan vorliegt."
+                : "Waehle ein Projekt ueber den Windows-Explorer und lade es direkt in den Workspace."}
+            </div>
 
-        {/* ── Project Quick-Switch List ── */}
-        {projects.length > 0 && (
-          <div className="project-list">
-            {projects.map((p) => (
-              <div
-                key={p.hash}
-                className={`project-item${p.projectPath === activeProjectPath ? " project-item--active" : ""}`}
-                onClick={() => handleSwitchProject(p.projectPath)}
-                title={p.projectPath}
-              >
-                <div className="project-item__info">
-                  <span className="project-item__name">{p.name}</span>
-                  <span className="project-item__meta">
-                    {p.symbolCount} Symbole · {new Date(p.lastScanned).toLocaleDateString("de-DE")}
-                  </span>
+            {currentProjectPath ? (
+              <div className="project-card project-card--active">
+                <div className="project-card__top">
+                  <div className="project-card__title-wrap">
+                    <div className="project-card__title">{currentProjectName}</div>
+                    <div className="project-card__path" title={currentProjectPath}>{currentProjectPath}</div>
+                  </div>
+                  <div className="project-card__badges">
+                    <span className="project-pill project-pill--active">Aktiv</span>
+                    {sameProjectPath(currentProjectPath, configuredProjectPath) && (
+                      <span className="project-pill project-pill--default">Env Default</span>
+                    )}
+                    {scanning && <span className="project-pill project-pill--muted">Laedt...</span>}
+                  </div>
                 </div>
-                <button
-                  className="project-item__delete"
-                  onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.projectPath); }}
-                  title="Projekt entfernen"
-                >
-                  <i className="bi bi-x-lg" />
-                </button>
+                <div className="project-card__meta">
+                  <span>{activeProjectMeta ? `${activeProjectMeta.symbolCount} Symbole` : "Noch kein gespeicherter Scan"}</span>
+                  <span>{formatProjectTimestamp(activeProjectMeta?.lastScanned)}</span>
+                </div>
+                <div className="project-card__actions">
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => void handlePickProject()}
+                    disabled={scanning}
+                    type="button"
+                  >
+                    <i className="bi bi-folder2-open" /> Projekt waehlen
+                  </button>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    onClick={() => void handleOpenProjectFolderClick(currentProjectPath)}
+                    disabled={!currentProjectPath}
+                    type="button"
+                  >
+                    <i className="bi bi-windows" /> Im Explorer oeffnen
+                  </button>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    onClick={() => void handleRescanProject(currentProjectPath)}
+                    disabled={!currentProjectPath || scanning}
+                    type="button"
+                  >
+                    <i className="bi bi-arrow-repeat" /> Rescan
+                  </button>
+                </div>
               </div>
-            ))}
+            ) : (
+              <div className="project-empty">
+                Noch kein Projekt aktiv. Waehle ein Verzeichnis ueber den Explorer, um den ersten Scan zu starten.
+              </div>
+            )}
           </div>
-        )}
 
-        <div style={{ display: "flex", gap: 4 }}>
-          <input
-            type="text"
-            placeholder="Project path…"
-            value={scanPath}
-            onChange={(e) => setScanPath(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleScan()}
-            style={{ flex: 1 }}
-          />
-          <button
-            className="btn btn-sm btn-outline"
-            onClick={() => setShowBrowser(true)}
-            title="Browse folders"
-            style={{ whiteSpace: "nowrap" }}
-          >
-            <i className="bi bi-folder2-open" />
-          </button>
-        </div>
-        <button className="btn" onClick={handleScan} disabled={scanning} style={{ marginTop: 4 }}>
-          {scanning ? "Scanning…" : "Scan"}
-        </button>
-        <div className="project-transfer-actions">
-          <button
-            className="btn btn-sm btn-outline"
-            onClick={() => importInputRef.current?.click()}
-            disabled={scanning}
-            title="Projektpaket (.dmpg-uml.json) importieren"
-          >
-            <i className="bi bi-box-arrow-in-down" /> Import Paket
-          </button>
-          <button
-            className="btn btn-sm btn-outline"
-            onClick={() => graph && exportProjectPackage(graph)}
-            disabled={!graph}
-            title="Aktuelles UML-Projekt als importierbares Paket exportieren"
-          >
-            <i className="bi bi-box-arrow-up" /> Export Paket
-          </button>
+          <div className="project-library">
+            <div className="project-library__header">
+              <div className="project-library__title">Gespeicherte Projekte</div>
+              <span className="project-library__count">{projects.length}</span>
+            </div>
+
+            {libraryProjects.length > 0 ? (
+              <div className="project-list">
+                {libraryProjects.map((project) => (
+                  <article
+                    key={project.hash}
+                    className={`project-card project-card--saved${sameProjectPath(project.projectPath, configuredProjectPath) ? " project-card--default" : ""}`}
+                    onClick={() => void handleSwitchProject(project.projectPath)}
+                    title={project.projectPath}
+                  >
+                    <div className="project-card__top">
+                      <div className="project-card__title-wrap">
+                        <div className="project-card__title">{project.name}</div>
+                        <div className="project-card__path">{project.projectPath}</div>
+                      </div>
+                      <div className="project-card__badges">
+                        {sameProjectPath(project.projectPath, configuredProjectPath) && (
+                          <span className="project-pill project-pill--default">Env Default</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="project-card__meta">
+                      <span>{project.symbolCount} Symbole</span>
+                      <span>{formatProjectTimestamp(project.lastScanned)}</span>
+                    </div>
+                    <div className="project-card__actions">
+                      <button
+                        className="btn btn-sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleSwitchProject(project.projectPath);
+                        }}
+                        disabled={scanning}
+                        type="button"
+                      >
+                        <i className="bi bi-box-arrow-in-right" /> Oeffnen
+                      </button>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleOpenProjectFolderClick(project.projectPath);
+                        }}
+                        type="button"
+                      >
+                        <i className="bi bi-windows" /> Explorer
+                      </button>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleRescanProject(project.projectPath);
+                        }}
+                        disabled={scanning}
+                        type="button"
+                      >
+                        <i className="bi bi-arrow-repeat" /> Rescan
+                      </button>
+                      <button
+                        className="btn btn-sm btn-ghost-danger"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleDeleteProject(project.projectPath);
+                        }}
+                        type="button"
+                      >
+                        <i className="bi bi-trash3" /> Entfernen
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="project-empty">
+                Keine weiteren gespeicherten Projekte vorhanden.
+              </div>
+            )}
+          </div>
+
+          <div className="project-library">
+            <div className="project-library__header">
+              <div className="project-library__title">Projektpaket</div>
+            </div>
+            <div className="project-transfer-actions">
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={() => importInputRef.current?.click()}
+                disabled={scanning}
+                title="Projektpaket (.dmpg-uml.json) importieren"
+                type="button"
+              >
+                <i className="bi bi-box-arrow-in-down" /> Import Paket
+              </button>
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={() => graph && exportProjectPackage(graph)}
+                disabled={!graph}
+                title="Aktuelles UML-Projekt als importierbares Paket exportieren"
+                type="button"
+              >
+                <i className="bi bi-box-arrow-up" /> Export Paket
+              </button>
+            </div>
+          </div>
         </div>
         <input
           ref={importInputRef}
@@ -984,7 +1220,7 @@ export function Sidebar() {
             }
           }}
         />
-        {scanError && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4 }}>{scanError}</div>}
+        {scanError && <div className="project-error">{scanError}</div>}
       </div>
       )}
 
@@ -992,7 +1228,7 @@ export function Sidebar() {
 
       {showBrowser && (
         <FolderBrowser
-          onSelect={(p) => setScanPath(p)}
+          onSelect={(p) => { void handleSwitchProject(p); }}
           onClose={() => setShowBrowser(false)}
         />
       )}

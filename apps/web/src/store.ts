@@ -26,8 +26,9 @@ import {
 
 /* ── Playback Queue Item ── */
 export interface PlaybackItem {
-  symbolId: string;
+  symbolId: string | null;
   viewId: string | null;
+  relationId?: string;
   event: AnalyzeEvent;
   /** Timestamp when this item became ready */
   readyAt: number;
@@ -1009,6 +1010,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
+      if (event.phase === "relation_labels" && event.action === "updated" && event.relationId && event.relationLabel) {
+        const relationIndex = relations.findIndex((relation) => relation.id === event.relationId);
+        const relation = relationIndex >= 0 ? relations[relationIndex] : undefined;
+        if (relation && relation.label !== event.relationLabel) {
+          relations[relationIndex] = {
+            ...relation,
+            label: event.relationLabel,
+            aiGenerated: relation.aiGenerated ?? true,
+          };
+          graphChanged = true;
+          contentChangedSymbolId = event.symbolId ?? event.source ?? event.target ?? contentChangedSymbolId;
+        }
+      }
+
       if (event.phase === "dead-code" && event.symbolId && event.reason) {
         const symbolIndex = symbols.findIndex((s) => s.id === event.symbolId);
         const sym = symbolIndex >= 0 ? symbols[symbolIndex] : undefined;
@@ -1050,22 +1065,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? (event.total ?? undefined)
       : (event.total ?? aiAnalysis.total);
 
-    const nextAnalysisSeq = isDataEvent && event.symbolId
+    const playbackSymbolId = event.symbolId ?? event.source ?? event.target ?? event.targetIds?.[0] ?? null;
+    const playbackTargetIds = Array.from(new Set([
+      ...(event.targetIds ?? []),
+      ...(event.source ? [event.source] : []),
+      ...(event.target ? [event.target] : []),
+    ].filter((value) => value.length > 0)));
+
+    const nextAnalysisSeq = isDataEvent && playbackSymbolId
       ? (aiAnalysis.analysisSeq ?? 0) + 1
       : (aiAnalysis.analysisSeq ?? 0);
 
     // ── Playback Queue: enqueue data events for sequential navigation ──
     let nextPlaybackQueue = [...aiAnalysis.playbackQueue];
-    if (isDataEvent && event.symbolId && !aiAnalysis.navPaused) {
+    if (isDataEvent && !aiAnalysis.navPaused && (playbackSymbolId || event.relationId)) {
       const targetViewId = graph
-        ? bestNavigableViewForSymbol(graph, event.symbolId, {
-            preferredViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
-            currentViewId: get().currentViewId,
-          })
+        ? event.relationId && playbackTargetIds.length > 0
+          ? bestNavigableViewForTargetIds(
+              graph,
+              event.viewId ?? aiAnalysis.aiFocusViewId ?? get().currentViewId,
+              playbackTargetIds,
+            )
+          : playbackSymbolId
+            ? bestNavigableViewForSymbol(graph, playbackSymbolId, {
+                preferredViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
+                currentViewId: get().currentViewId,
+              })
+            : null
         : null;
       nextPlaybackQueue.push({
-        symbolId: event.symbolId,
+        symbolId: playbackSymbolId,
         viewId: targetViewId,
+        relationId: event.relationId,
         event,
         readyAt: Date.now(),
       });
@@ -1086,7 +1117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       total: newTotal,
       thought,
       aiFocusViewId: event.viewId ?? aiAnalysis.aiFocusViewId,
-      aiCurrentSymbolId: event.symbolId ?? aiAnalysis.aiCurrentSymbolId,
+      aiCurrentSymbolId: playbackSymbolId ?? aiAnalysis.aiCurrentSymbolId,
       // aiWorkingSymbolId is driven by the playback queue, not by live events
       aiWorkingSymbolId: aiAnalysis.aiWorkingSymbolId,
       navPaused: aiAnalysis.navPaused,
@@ -1189,32 +1220,50 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const setPatch: Partial<AppState> = { aiAnalysis: nextAi };
 
-    if (item.symbolId && graph) {
-      const targetViewId = item.viewId ?? bestNavigableViewForSymbol(graph, item.symbolId, {
-        preferredViewId: aiAnalysis.aiFocusViewId,
-        currentViewId,
-      });
+    if ((item.symbolId || item.relationId) && graph) {
+      const fallbackSymbolId = item.symbolId ?? item.event.source ?? item.event.target ?? item.event.targetIds?.[0] ?? null;
+      const relationTargetIds = Array.from(new Set([
+        ...(item.event.targetIds ?? []),
+        ...(item.event.source ? [item.event.source] : []),
+        ...(item.event.target ? [item.event.target] : []),
+      ].filter((value) => value.length > 0)));
+      const targetViewId = item.viewId ?? (
+        item.relationId && relationTargetIds.length > 0
+          ? bestNavigableViewForTargetIds(
+              graph,
+              aiAnalysis.aiFocusViewId ?? currentViewId,
+              relationTargetIds,
+            )
+          : fallbackSymbolId
+            ? bestNavigableViewForSymbol(graph, fallbackSymbolId, {
+                preferredViewId: aiAnalysis.aiFocusViewId,
+                currentViewId,
+              })
+            : null
+      );
       if (targetViewId) {
         setPatch.currentViewId = targetViewId;
         setPatch.breadcrumb = buildViewPath(graph, targetViewId);
         setPatch.viewFitViewId = targetViewId;
         setPatch.viewFitSeq = (get().viewFitSeq ?? 0) + 1;
       }
-      setPatch.focusNodeId = item.symbolId;
-      setPatch.focusSeq = (get().focusSeq ?? 0) + 1;
-      setPatch.selectedSymbolId = item.symbolId;
-      setPatch.selectedEdgeId = null;
+      if (fallbackSymbolId) {
+        setPatch.focusNodeId = fallbackSymbolId;
+        setPatch.focusSeq = (get().focusSeq ?? 0) + 1;
+      }
+      setPatch.selectedSymbolId = item.relationId ? null : fallbackSymbolId;
+      setPatch.selectedEdgeId = item.relationId ?? null;
       setPatch.inspectorCollapsed = false;
 
       const nextNavReqSeq = (nextAi.navigationRequestedSeq ?? 0) + 1;
       nextAi.navigationRequestedSeq = nextNavReqSeq;
-      nextAi.navigationTargetSymbolId = item.symbolId;
-      nextAi.pendingAnimationSymbolId = item.symbolId;
+      nextAi.navigationTargetSymbolId = fallbackSymbolId;
+      nextAi.pendingAnimationSymbolId = fallbackSymbolId;
       // Drive the working-symbol highlight from the playback queue so it
       // matches the node we are actually navigating to (not the live AI stream)
-      nextAi.aiWorkingSymbolId = item.symbolId;
+      nextAi.aiWorkingSymbolId = fallbackSymbolId;
 
-      console.debug(`[AI-Playback] Nav → symbol=${item.symbolId} view=${targetViewId} queueLen=${rest.length} fast=${fastMode}`);
+      console.debug(`[AI-Playback] Nav → symbol=${fallbackSymbolId ?? "-"} edge=${item.relationId ?? "-"} view=${targetViewId} queueLen=${rest.length} fast=${fastMode}`);
     }
 
     set(setPatch);

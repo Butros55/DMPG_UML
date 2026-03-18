@@ -4,11 +4,18 @@ import type {
   AiWorkspaceRunStep,
   AiExternalContextReviewResponse,
   AiLabelImprovementResponse,
+  Relation,
   AiStructureReviewResponse,
   ProjectGraph,
   UmlReferenceAutorefactorResponse,
 } from "@dmpg/shared";
-import { improveLabelsForView, reviewExternalContextForView, reviewViewStructure } from "./umlReview.js";
+import {
+  improveLabelsForView,
+  improveSequenceRelationLabelsForView,
+  reviewExternalContextForView,
+  reviewViewStructure,
+  type SequenceRelationLabelImprovementResult,
+} from "./umlReview.js";
 import { runReferenceDrivenUmlAutorefactor } from "./referenceAutorefactor.js";
 import { setGraph } from "../store.js";
 
@@ -26,6 +33,13 @@ export interface ViewWorkspaceRunEvent {
   symbolLabel?: string;
   targetIds?: string[];
   focusViewId?: string;
+  relationId?: string;
+  relationType?: Relation["type"];
+  relationLabel?: string;
+  source?: string;
+  target?: string;
+  sourceLabel?: string;
+  targetLabel?: string;
   appliedCount?: number;
   reviewOnlyCount?: number;
   autoApplied?: boolean;
@@ -49,6 +63,7 @@ export interface ViewWorkspaceDependencies {
   reviewViewStructure: typeof reviewViewStructure;
   reviewExternalContextForView: typeof reviewExternalContextForView;
   improveLabelsForView: typeof improveLabelsForView;
+  improveSequenceRelationLabelsForView: typeof improveSequenceRelationLabelsForView;
   runReferenceDrivenUmlAutorefactor: typeof runReferenceDrivenUmlAutorefactor;
   persistGraph: (graph: ProjectGraph) => void;
 }
@@ -57,6 +72,7 @@ const DEFAULT_DEPENDENCIES: ViewWorkspaceDependencies = {
   reviewViewStructure,
   reviewExternalContextForView,
   improveLabelsForView,
+  improveSequenceRelationLabelsForView,
   runReferenceDrivenUmlAutorefactor,
   persistGraph: setGraph,
 };
@@ -87,6 +103,10 @@ function collectContextTargets(review: AiExternalContextReviewResponse): string[
 
 function collectLabelTargets(review: AiLabelImprovementResponse): string[] {
   return unique(review.improvements.map((improvement) => improvement.targetId));
+}
+
+function collectSequenceRelationTargets(review: SequenceRelationLabelImprovementResult): string[] {
+  return unique(review.improvements.flatMap((improvement) => [improvement.sourceId, improvement.targetId]));
 }
 
 function describeStep(step: AiWorkspaceRunStep): string {
@@ -238,9 +258,35 @@ export async function runViewWorkspaceSession(
 
     if (step === "labels") {
       const result = await deps.improveLabelsForView(graph, view.id, true);
-      deps.persistGraph(graph);
       const targetIds = collectLabelTargets(result);
       targetIds.forEach((targetId) => highlightTargets.add(targetId));
+      const sequenceResult = await deps.improveSequenceRelationLabelsForView(graph, view.id, true);
+      const relationTargetIds = collectSequenceRelationTargets(sequenceResult);
+      relationTargetIds.forEach((targetId) => highlightTargets.add(targetId));
+      deps.persistGraph(graph);
+
+      for (const improvement of sequenceResult.improvements) {
+        params.emit({
+          runKind: "view_workspace",
+          phase: "relation_labels",
+          action: "updated",
+          step,
+          viewId: view.id,
+          current: index + 1,
+          total: steps.length,
+          message: improvement.newLabel,
+          thought: improvement.reason,
+          symbolId: improvement.sourceId,
+          targetIds: [improvement.sourceId, improvement.targetId],
+          focusViewId: view.id,
+          relationId: improvement.relationId,
+          relationLabel: improvement.newLabel,
+          source: improvement.sourceId,
+          target: improvement.targetId,
+          sourceLabel: graph.symbols.find((symbol) => symbol.id === improvement.sourceId)?.label,
+          targetLabel: graph.symbols.find((symbol) => symbol.id === improvement.targetId)?.label,
+        });
+      }
 
       params.emit({
         runKind: "view_workspace",
@@ -250,9 +296,9 @@ export async function runViewWorkspaceSession(
         viewId: view.id,
         current: index + 1,
         total: steps.length,
-        message: `${result.improvements.length} Label-Hinweise aktualisiert.`,
-        symbolId: firstSymbolId(targetIds),
-        targetIds,
+        message: `${result.improvements.length} Label-Hinweise und ${sequenceResult.improvements.length} Sequenz-Beziehungen aktualisiert.`,
+        symbolId: firstSymbolId(unique([...targetIds, ...relationTargetIds])),
+        targetIds: unique([...targetIds, ...relationTargetIds]),
         focusViewId: view.id,
       });
       continue;

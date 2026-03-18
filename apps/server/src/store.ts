@@ -51,6 +51,11 @@ function hashPath(p: string): string {
   return crypto.createHash("sha256").update(p.toLowerCase().replace(/\\/g, "/")).digest("hex").slice(0, 12);
 }
 
+function comparableProjectPath(projectPath: string): string {
+  const resolved = path.resolve(projectPath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
 function projectDir(hash: string): string {
   return path.join(PROJECTS_DIR, hash);
 }
@@ -61,6 +66,11 @@ function graphDisplayName(graph: Pick<ProjectGraph, "projectName" | "projectPath
   const fromPath = graph.projectPath?.trim();
   if (fromPath) return path.basename(fromPath);
   return "Imported Project";
+}
+
+export function getConfiguredProjectPath(): string | null {
+  const raw = (process.env.FSCAN_PROJECT_PATH ?? process.env.SCAN_PROJECT_PATH ?? "").trim();
+  return raw ? path.resolve(raw) : null;
 }
 
 export function normalizePersistedGraph(graph: ProjectGraph): {
@@ -112,7 +122,7 @@ function migrateLegacy(): void {
   try {
     const raw = fs.readFileSync(LEGACY_GRAPH_FILE, "utf-8");
     const graph = JSON.parse(raw) as ProjectGraph;
-    const pp = graph.projectPath ?? process.env.SCAN_PROJECT_PATH ?? "";
+    const pp = graph.projectPath ?? getConfiguredProjectPath() ?? "";
     if (!pp) {
       console.log("[store] Legacy graph has no projectPath, skipping migration");
       return;
@@ -163,24 +173,38 @@ export interface GraphSnapshotInfo {
 // Load the active project on startup
 {
   const idx = loadProjectsIndex();
-  if (idx.activeProject) {
-    const meta = idx.projects.find((p) => p.projectPath === idx.activeProject);
+  const preferredProjectPath = getConfiguredProjectPath() ?? idx.activeProject;
+  if (preferredProjectPath) {
+    const resolvedProjectPath = path.resolve(preferredProjectPath);
+    const preferredComparablePath = comparableProjectPath(resolvedProjectPath);
+    const meta = idx.projects.find((p) => comparableProjectPath(p.projectPath) === preferredComparablePath);
     if (meta) {
       const gFile = path.join(projectDir(meta.hash), "graph.json");
       try {
         const loaded = loadNormalizedGraphFile(gFile);
         if (loaded) {
           currentGraph = loaded.graph;
-          currentProjectPath = meta.projectPath;
+          currentProjectPath = resolvedProjectPath;
           if (loaded.changed) {
             persistGraphForProject(currentGraph, currentProjectPath);
             console.log(`[store] Re-normalized persisted project "${meta.name}"`);
+          }
+          if (
+            !idx.activeProject ||
+            comparableProjectPath(idx.activeProject) !== comparableProjectPath(resolvedProjectPath)
+          ) {
+            idx.activeProject = resolvedProjectPath;
+            saveProjectsIndex(idx);
           }
           console.log(`[store] Loaded project "${meta.name}" (${currentGraph.symbols.length} symbols)`);
         }
       } catch (err) {
         console.warn(`[store] Failed to load project "${meta.name}":`, (err as Error).message);
       }
+    } else if (getConfiguredProjectPath() === resolvedProjectPath) {
+      currentProjectPath = resolvedProjectPath;
+      idx.activeProject = resolvedProjectPath;
+      saveProjectsIndex(idx);
     }
   }
 }
@@ -198,7 +222,7 @@ export function getPersistedProjectGraph(projectPath: string): ProjectGraph | nu
   if (
     currentGraph &&
     currentProjectPath &&
-    path.resolve(currentProjectPath) === resolvedProjectPath
+    comparableProjectPath(currentProjectPath) === comparableProjectPath(resolvedProjectPath)
   ) {
     return currentGraph;
   }
@@ -300,25 +324,26 @@ export function setGraph(g: ProjectGraph): void {
   currentGraph = g;
   // Track the project path from the graph
   if (g.projectPath) {
-    currentProjectPath = g.projectPath;
+    currentProjectPath = path.resolve(g.projectPath);
     // Update or add project metadata
     const idx = loadProjectsIndex();
-    const hash = hashPath(g.projectPath);
+    const hash = hashPath(currentProjectPath);
     const existing = idx.projects.find((p) => p.hash === hash);
     if (existing) {
       existing.name = graphDisplayName(g);
       existing.symbolCount = g.symbols.length;
       existing.lastScanned = new Date().toISOString();
+      existing.projectPath = currentProjectPath;
     } else {
       idx.projects.push({
-        projectPath: g.projectPath,
+        projectPath: currentProjectPath,
         name: graphDisplayName(g),
         symbolCount: g.symbols.length,
         lastScanned: new Date().toISOString(),
         hash,
       });
     }
-    idx.activeProject = g.projectPath;
+    idx.activeProject = currentProjectPath;
     saveProjectsIndex(idx);
   }
   // Debounce: coalesce rapid successive writes
@@ -352,7 +377,8 @@ export function switchProject(projectPath: string): ProjectGraph | null {
   // Save current project first
   flushGraph();
 
-  const hash = hashPath(projectPath);
+  const normalizedProjectPath = path.resolve(projectPath);
+  const hash = hashPath(normalizedProjectPath);
   const gFile = path.join(projectDir(hash), "graph.json");
 
   if (fs.existsSync(gFile)) {
@@ -360,18 +386,18 @@ export function switchProject(projectPath: string): ProjectGraph | null {
       const loaded = loadNormalizedGraphFile(gFile);
       if (!loaded) return null;
       currentGraph = loaded.graph;
-      currentProjectPath = projectPath;
+      currentProjectPath = normalizedProjectPath;
       if (loaded.changed) {
         persistGraphForProject(currentGraph, currentProjectPath);
-        console.log(`[store] Re-normalized persisted project "${path.basename(projectPath)}" during switch`);
+        console.log(`[store] Re-normalized persisted project "${path.basename(normalizedProjectPath)}" during switch`);
       }
 
       // Update active in index
       const idx = loadProjectsIndex();
-      idx.activeProject = projectPath;
+      idx.activeProject = normalizedProjectPath;
       saveProjectsIndex(idx);
 
-      console.log(`[store] Switched to project "${path.basename(projectPath)}" (${currentGraph!.symbols.length} symbols)`);
+      console.log(`[store] Switched to project "${path.basename(normalizedProjectPath)}" (${currentGraph!.symbols.length} symbols)`);
       return currentGraph;
     } catch (err) {
       console.warn(`[store] Failed to load project:`, (err as Error).message);
@@ -380,9 +406,9 @@ export function switchProject(projectPath: string): ProjectGraph | null {
 
   // Project not yet scanned — set as active but no graph
   currentGraph = null;
-  currentProjectPath = projectPath;
+  currentProjectPath = normalizedProjectPath;
   const idx = loadProjectsIndex();
-  idx.activeProject = projectPath;
+  idx.activeProject = normalizedProjectPath;
   saveProjectsIndex(idx);
 
   return null;
@@ -390,13 +416,14 @@ export function switchProject(projectPath: string): ProjectGraph | null {
 
 /** Remove a project from the index and delete its data */
 export function deleteProject(projectPath: string): boolean {
+  const normalizedProjectPath = path.resolve(projectPath);
   const idx = loadProjectsIndex();
-  const hash = hashPath(projectPath);
+  const hash = hashPath(normalizedProjectPath);
   const i = idx.projects.findIndex((p) => p.hash === hash);
   if (i === -1) return false;
 
   idx.projects.splice(i, 1);
-  if (idx.activeProject === projectPath) {
+  if (idx.activeProject === normalizedProjectPath) {
     idx.activeProject = idx.projects[0]?.projectPath ?? null;
   }
   saveProjectsIndex(idx);
@@ -412,7 +439,10 @@ export function deleteProject(projectPath: string): boolean {
   }
 
   // If we deleted the current project, switch to another
-  if (currentProjectPath === projectPath) {
+  if (
+    currentProjectPath &&
+    comparableProjectPath(currentProjectPath) === comparableProjectPath(normalizedProjectPath)
+  ) {
     if (idx.activeProject) {
       switchProject(idx.activeProject);
     } else {

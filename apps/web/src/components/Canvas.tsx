@@ -20,7 +20,15 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { useAppStore } from "../store";
-import { UmlNode, UmlClassNode, UmlFunctionNode, UmlArtifactNode, UmlGroupNode } from "./UmlNode";
+import {
+  UmlNode,
+  UmlClassNode,
+  UmlFunctionNode,
+  UmlArtifactNode,
+  UmlGroupNode,
+  SequenceParticipantNode,
+  SequenceFrameNode,
+} from "./UmlNode";
 import { ElkEdge } from "./ElkEdge";
 import { SymbolHoverCard } from "./SymbolHoverCard";
 import { setHoverInteractionBlocked } from "./hoverCardController";
@@ -41,6 +49,7 @@ import {
 import { resolveArtifactView } from "../artifactVisibility";
 import { buildArtifactPreview } from "../artifactPreview";
 import { isManagedProcessLayoutViewId } from "../viewNavigation";
+import { buildPackageSequenceDiagram, isPackageSequenceView } from "../sequenceDiagram";
 
 const nodeTypes = {
   uml: UmlNode,
@@ -48,6 +57,8 @@ const nodeTypes = {
   umlFunction: UmlFunctionNode,
   umlArtifact: UmlArtifactNode,
   umlGroup: UmlGroupNode,
+  sequenceParticipant: SequenceParticipantNode,
+  sequenceFrame: SequenceFrameNode,
 };
 
 const edgeTypes = {
@@ -533,9 +544,14 @@ export function Canvas() {
     () => (graph && currentViewId ? graph.views.find((view) => view.id === currentViewId) ?? null : null),
     [graph, currentViewId],
   );
+  const isSequenceView = useMemo(
+    () => isPackageSequenceView(currentView, graph),
+    [currentView, graph],
+  );
+  const currentViewPersistedViewport = isSequenceView ? null : currentViewSnapshot?.viewport ?? null;
   const currentViewIgnoresManualLayout = useMemo(
-    () => !!currentViewId && isManagedProcessLayoutViewId(currentViewId),
-    [currentViewId],
+    () => !!currentViewId && (isManagedProcessLayoutViewId(currentViewId) || isSequenceView),
+    [currentViewId, isSequenceView],
   );
 
   // AI analysis highlight
@@ -576,11 +592,15 @@ export function Canvas() {
   }, []);
 
   // Build nodes/edges from current view using edge projection
-  const { viewNodes, viewEdges } = useMemo(() => {
-    if (!graph || !currentViewId) return { viewNodes: [] as Node[], viewEdges: [] as Edge[] };
+  const { viewNodes, viewEdges, renderMode } = useMemo(() => {
+    if (!graph || !currentViewId) {
+      return { viewNodes: [] as Node[], viewEdges: [] as Edge[], renderMode: "standard" as const };
+    }
 
     const view = graph.views.find((v) => v.id === currentViewId);
-    if (!view) return { viewNodes: [] as Node[], viewEdges: [] as Edge[] };
+    if (!view) {
+      return { viewNodes: [] as Node[], viewEdges: [] as Edge[], renderMode: "standard" as const };
+    }
 
     const scope = (view as any).scope as string | undefined;
     const resolvedArtifactView = resolveArtifactView(graph, view, {
@@ -595,6 +615,26 @@ export function Canvas() {
       (rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target),
     );
     const relationMap = new Map(visibleRelations.map((rel) => [rel.id, rel]));
+
+    if (isPackageSequenceView(view, graph)) {
+      const sequenceDiagram = buildPackageSequenceDiagram({
+        graph,
+        view,
+        visibleViewNodeRefs,
+        hiddenSymbolIds,
+        symbolOverrides,
+        relationFilters: diagramSettings.relationFilters,
+        labelsMode: diagramSettings.labels,
+        selectedSymbolId,
+        selectedEdgeId,
+      });
+      return {
+        viewNodes: sequenceDiagram.nodes,
+        viewEdges: sequenceDiagram.edges,
+        renderMode: "sequence" as const,
+      };
+    }
+
     const badgeRelations = visibleRelations;
     const persistentReviewNodeIds = reviewHighlight.viewId === view.id
       ? reviewHighlight.nodeIds.filter((id) => visibleViewNodeRefSet.has(id))
@@ -803,7 +843,7 @@ export function Canvas() {
       };
     });
 
-    return { viewNodes: scopedNodes, viewEdges: vEdges };
+    return { viewNodes: scopedNodes, viewEdges: vEdges, renderMode: "standard" as const };
   }, [
     graph,
     currentViewId,
@@ -940,8 +980,56 @@ export function Canvas() {
       })
       .sort()
       .join(",");
-    const layoutFingerprint = `${currentViewId}|${isAutoLayoutActive ? "auto" : "manual"}|${nodeFingerprint}|${edgeFingerprint}`;
+    const layoutMode = renderMode === "sequence" ? "sequence" : (isAutoLayoutActive ? "auto" : "manual");
+    const layoutFingerprint = `${currentViewId}|${layoutMode}|${nodeFingerprint}|${edgeFingerprint}`;
     const layoutKey = `${layoutFingerprint}|${layoutVersion}`;
+    const sequenceLayoutRunId = layoutRunIdRef.current;
+
+    if (renderMode === "sequence") {
+      prevLayoutKeyRef.current = layoutKey;
+      layoutFingerprintRef.current = layoutFingerprint;
+      prevLayoutFingerprintPartsRef.current = {
+        viewId: currentViewId,
+        autoLayout: isAutoLayoutActive,
+        nodeFingerprint,
+        edgeFingerprint,
+      };
+      lastLayoutTriggerRef.current = "sequence projection";
+      lastResolvedLayoutVersionRef.current = layoutVersion;
+      lastElkErrorRef.current = null;
+      edgeHandlesRef.current = new Map();
+      edgeRoutesRef.current = new Map();
+      setNodes(viewNodes);
+      setEdges(viewEdges);
+      layoutRef.current = false;
+      layoutPassRef.current = 2;
+      setLayoutPass(2);
+      setLayoutDone(true);
+      const liveState = useAppStore.getState();
+      const pendingExplicitFit =
+        !!expectedViewId &&
+        liveState.viewFitViewId === expectedViewId &&
+        (liveState.viewFitSeq ?? 0) > appliedViewFitSeqRef.current;
+      if ((pendingRestoreForCurrentView && currentViewPersistedViewport) || liveState.focusNodeId || pendingExplicitFit) {
+        return;
+      }
+      clearScheduledTimeout(firstPassFitTimeoutRef);
+      clearScheduledTimeout(secondPassFitTimeoutRef);
+      firstPassFitTimeoutRef.current = setTimeout(() => {
+        firstPassFitTimeoutRef.current = null;
+        if (!canApplyLayoutResult(expectedViewId, sequenceLayoutRunId, layoutKey)) return;
+        reactFlowInstance.fitView({ padding: 0.06, duration: 320, maxZoom: 3.1 });
+        scheduleViewportPersist(380, expectedViewId);
+      }, 80);
+      secondPassFitTimeoutRef.current = setTimeout(() => {
+        secondPassFitTimeoutRef.current = null;
+        if (!canApplyLayoutResult(expectedViewId, sequenceLayoutRunId, layoutKey)) return;
+        reactFlowInstance.fitView({ padding: 0.15, duration: 280 });
+        scheduleViewportPersist(420, expectedViewId);
+      }, 820);
+      return;
+    }
+
     const isExplicitRelayout = layoutVersion !== lastResolvedLayoutVersionRef.current;
     const view = currentView;
     const { effectiveManualLayout } = resolveManualLayoutState({
@@ -1116,10 +1204,15 @@ export function Canvas() {
     currentViewId,
     currentViewIgnoresManualLayout,
     layoutVersion,
+    renderMode,
     isAutoLayoutActive,
     diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
+    currentViewPersistedViewport,
+    pendingRestoreForCurrentView,
+    reactFlowInstance,
+    scheduleViewportPersist,
   ]);
 
   // Pass 2: re-layout with measured sizes (React Flow measures after first render)
@@ -1184,7 +1277,7 @@ export function Canvas() {
         !!expectedViewId &&
         liveState.viewFitViewId === expectedViewId &&
         (liveState.viewFitSeq ?? 0) > appliedViewFitSeqRef.current;
-      if (!pendingRestoreForCurrentView && !currentViewSnapshot?.viewport && !liveState.focusNodeId && !pendingExplicitFit) {
+      if (!pendingRestoreForCurrentView && !currentViewPersistedViewport && !liveState.focusNodeId && !pendingExplicitFit) {
         clearScheduledTimeout(secondPassFitTimeoutRef);
         secondPassFitTimeoutRef.current = setTimeout(() => {
           secondPassFitTimeoutRef.current = null;
@@ -1214,7 +1307,7 @@ export function Canvas() {
     diagramSettings.edgeType,
     diagramSettings.layout,
     diagramSettings.nodeCompactMode,
-    currentViewSnapshot?.viewport,
+    currentViewPersistedViewport,
     pendingRestoreForCurrentView,
     scheduleViewportPersist,
   ]);
@@ -1228,7 +1321,7 @@ export function Canvas() {
         !!currentViewId &&
         liveState.viewFitViewId === currentViewId &&
         (liveState.viewFitSeq ?? 0) > appliedViewFitSeqRef.current;
-      if ((pendingRestoreForCurrentView && currentViewSnapshot?.viewport) || liveState.focusNodeId || pendingExplicitFit) {
+      if ((pendingRestoreForCurrentView && currentViewPersistedViewport) || liveState.focusNodeId || pendingExplicitFit) {
         return;
       }
       const expectedViewId = currentViewId;
@@ -1242,7 +1335,7 @@ export function Canvas() {
         scheduleViewportPersist(360, expectedViewId);
       }, 50);
     }
-  }, [canApplyLayoutResult, currentViewId, currentViewSnapshot?.viewport, layoutDone, pendingRestoreForCurrentView, reactFlowInstance, scheduleViewportPersist]);
+  }, [canApplyLayoutResult, currentViewId, currentViewPersistedViewport, layoutDone, pendingRestoreForCurrentView, reactFlowInstance, scheduleViewportPersist]);
 
   // AI highlight: When highlightSymbolId changes (or seq increments for same symbol),
   // flash the node if it exists in the current view. This is a lightweight visual cue;
@@ -1542,7 +1635,7 @@ export function Canvas() {
     if (!layoutDone || layoutPass < 2 || !nodesInitialized) return;
 
     appliedViewRestoreSeqRef.current = viewRestoreSeq;
-    const viewport = currentViewSnapshot?.viewport;
+    const viewport = currentViewPersistedViewport;
     if (!viewport) return;
 
     clearScheduledFrame(viewRestoreFrameRef);
@@ -1554,7 +1647,7 @@ export function Canvas() {
     });
   }, [
     currentViewId,
-    currentViewSnapshot?.viewport,
+    currentViewPersistedViewport,
     layoutDone,
     layoutPass,
     nodesInitialized,
@@ -1567,7 +1660,7 @@ export function Canvas() {
   useEffect(() => {
     if (viewFitSeq <= appliedViewFitSeqRef.current) return;
     if (!viewFitViewId || viewFitViewId !== currentViewId) return;
-    if (pendingRestoreForCurrentView) return;
+    if (pendingRestoreForCurrentView && currentViewPersistedViewport) return;
     if (focusNodeId) {
       // Consume the viewFitSeq so no stale fitView fires after focus is cleared
       appliedViewFitSeqRef.current = viewFitSeq;
@@ -1593,6 +1686,7 @@ export function Canvas() {
     nodes.length,
     nodesInitialized,
     pendingRestoreForCurrentView,
+    currentViewPersistedViewport,
     reactFlowInstance,
     scheduleViewportPersist,
     viewFitSeq,
@@ -1635,6 +1729,10 @@ export function Canvas() {
       el.classList.add("edge-hover-dim");
       el.classList.remove("edge-hover-highlight");
     });
+    document.querySelectorAll(".sequence-edge-label").forEach((el) => {
+      el.classList.add("edge-hover-dim");
+      el.classList.remove("edge-hover-highlight");
+    });
     // Find connected edges and highlight them
     for (const e of edges) {
       if (e.source === hoverNodeId || e.target === hoverNodeId) {
@@ -1644,6 +1742,12 @@ export function Canvas() {
         if (el) {
           el.classList.remove("edge-hover-dim");
           el.classList.add("edge-hover-highlight");
+        }
+        const labelSelector = `.sequence-edge-label[data-edge-id="${CSS.escape(e.id)}"]`;
+        const labelEl = document.querySelector(labelSelector);
+        if (labelEl) {
+          labelEl.classList.remove("edge-hover-dim");
+          labelEl.classList.add("edge-hover-highlight");
         }
       }
     }
@@ -1917,6 +2021,8 @@ export function Canvas() {
   return (
     <div className="canvas-area">
       <ReactFlow
+        className={renderMode === "sequence" ? "canvas-flow canvas-flow--sequence" : "canvas-flow"}
+        style={renderMode === "sequence" ? { background: "#f7f8fc" } : undefined}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
@@ -1944,7 +2050,12 @@ export function Canvas() {
         minZoom={0.05}
         proOptions={proOptions}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#2d3148" />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={renderMode === "sequence" ? 22 : 20}
+          size={1}
+          color={renderMode === "sequence" ? "#e3e7ef" : "#2d3148"}
+        />
         <Controls onFitView={handleFitView}>
           <ControlButton
             className={`canvas-control-button canvas-control-button--artifact-mode canvas-control-button--artifact-input canvas-control-button--mode-${diagramSettings.inputArtifactMode}`}

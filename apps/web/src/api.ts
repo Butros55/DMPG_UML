@@ -147,6 +147,34 @@ export async function deleteProjectApi(projectPath: string): Promise<{
   return res.json();
 }
 
+export async function pickProjectFolder(initialPath?: string): Promise<string | null> {
+  const res = await apiFetch(`${API_BASE}/projects/pick-folder`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initialPath }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error ?? "Ordnerauswahl fehlgeschlagen");
+  }
+  const payload = await res.json().catch(() => ({})) as { projectPath?: string | null };
+  return typeof payload.projectPath === "string" && payload.projectPath.trim()
+    ? payload.projectPath
+    : null;
+}
+
+export async function openProjectFolder(projectPath: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/projects/open-folder`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectPath }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error ?? "Ordner konnte nicht geöffnet werden");
+  }
+}
+
 /* ── Source code ────────────────────────────────── */
 
 export interface SourceCodeResult {

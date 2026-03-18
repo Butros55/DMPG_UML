@@ -11,7 +11,7 @@ import { resolveAiConfig } from "./env.js";
 import { getActiveAiModelConfig } from "./ai/modelRouting.js";
 import { getActiveAiUseCaseRouting } from "./ai/useCases.js";
 import { aiRequestContextMiddleware } from "./ai/requestContext.js";
-import { getCurrentProjectPath, getGraph } from "./store.js";
+import { getConfiguredProjectPath, getCurrentProjectPath, getGraph } from "./store.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
@@ -80,7 +80,7 @@ app.post("/api/open-in-ide", (req, res) => {
   const scanRootRaw = configuredProjectPath
     || getGraph()?.sourceProjectPath
     || getCurrentProjectPath()
-    || process.env.SCAN_PROJECT_PATH
+    || getConfiguredProjectPath()
     || process.cwd();
   const scanRoot = path.resolve(scanRootRaw);
   const absFile = resolvePathWithinScanRoot(scanRoot, file);
@@ -159,8 +159,9 @@ app.post("/api/open-in-ide", (req, res) => {
 app.get("/api/config", (_req, res) => {
   const aiConfig = resolveAiConfig();
   const graph = getGraph();
+  const configuredProjectPath = getConfiguredProjectPath();
   res.json({
-    scanProjectPath: graph?.sourceProjectPath ?? getCurrentProjectPath() ?? process.env.SCAN_PROJECT_PATH ?? "",
+    scanProjectPath: configuredProjectPath ?? graph?.sourceProjectPath ?? getCurrentProjectPath() ?? "",
     aiProvider: aiConfig.provider,
     ollamaModel: aiConfig.model,
     aiModelRouting: getActiveAiModelConfig(aiConfig),

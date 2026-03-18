@@ -35,3 +35,17 @@ test("workspace completion highlight keeps unique targets and a focus view", () 
     viewId: "view:detail",
   });
 });
+
+test("relation label updates count as workspace data events", () => {
+  const event = {
+    runKind: "view_workspace" as const,
+    phase: "relation_labels",
+    action: "updated",
+    relationId: "rel:1",
+    relationLabel: "Load route table",
+    source: "sym:1",
+    target: "sym:2",
+  };
+
+  assert.equal(isAiDataEvent(event, "view_workspace"), true);
+});

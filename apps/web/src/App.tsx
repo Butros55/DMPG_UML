@@ -9,7 +9,6 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ValidatePanel } from "./components/ValidatePanel";
 import { DebugTransportPanel } from "./components/DebugTransportPanel";
 import { useAppStore } from "./store";
-import { fetchGraph } from "./api";
 
 const PANEL_WIDTH_STORAGE_KEYS = {
   sidebar: "dmpg.layout.sidebar-width.v1",
@@ -87,7 +86,6 @@ function useResizeHandle(
 }
 
 export function App() {
-  const setGraph = useAppStore((s) => s.setGraph);
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const breadcrumb = useAppStore((s) => s.breadcrumb);
@@ -113,12 +111,6 @@ export function App() {
   const validatePanel = useResizeHandle("left", 380, 280, 560, PANEL_WIDTH_STORAGE_KEYS.validate);
   const sidebarActivityWidth = 50;
   const sidebarColumnWidth = sidebarCollapsed ? sidebarActivityWidth : sidebar.width;
-
-  useEffect(() => {
-    fetchGraph()
-      .then((g) => setGraph(g))
-      .catch((err) => console.error("Failed to load graph:", err));
-  }, [setGraph]);
 
   // Sync view changes to browser history
   useEffect(() => {

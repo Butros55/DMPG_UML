@@ -24,9 +24,23 @@ export interface UmlNodeData {
   artifactPreviewKind?: "cluster" | "single" | "plain";
   artifactPreviewItemCount?: number | null;
   artifactPreviewGroupCount?: number | null;
+  sequenceLaneKind?: "internal" | "external" | "artifact";
+  sequenceParticipantRole?: "actor" | "package" | "object" | "artifact" | "database" | "component";
+  sequenceSubtitle?: string;
+  sequenceFullLabel?: string;
+  sequenceParticipantWidth?: number;
+  sequenceLifelineHeight?: number;
+  sequenceLifelineOffset?: number;
+  sequenceActivationBars?: SequenceActivationBar[];
   /** Dynamic port handles computed by ELK layout */
   dynamicPorts?: PortInfo[];
   [key: string]: unknown;
+}
+
+export interface SequenceActivationBar {
+  top: number;
+  height: number;
+  depth?: number;
 }
 
 /* ── Relation badge icons & labels ──────────────── */
@@ -311,6 +325,133 @@ export const UmlGroupNode = memo(function UmlGroupNode({ data, selected }: NodeP
     </div>
   );
 });
+
+export const SequenceParticipantNode = memo(function SequenceParticipantNode({ data, selected }: NodeProps) {
+  const d = data as unknown as UmlNodeData;
+  const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
+  const animClass = useAiChangeDetection(d);
+  const nodeWidth = Math.max(118, Number(d.sequenceParticipantWidth ?? 124));
+  const lifelineHeight = Math.max(180, d.sequenceLifelineHeight ?? 240);
+  const lifelineOffset = Math.max(0, d.sequenceLifelineOffset ?? 0);
+  const activationBars = d.sequenceActivationBars ?? [];
+  const participantIcon = resolveSequenceParticipantIcon(d);
+  const participantRole = resolveSequenceParticipantRole(d);
+  const isActor = d.sequenceParticipantRole === "actor";
+
+  return (
+    <div
+      className={`uml-node sequence-node kind-${d.kind} ${d.umlType ? `uml-type-${d.umlType}` : ""} ${d.sequenceLaneKind ? `sequence-node--${d.sequenceLaneKind}` : ""} ${d.sequenceParticipantRole ? `sequence-node--${d.sequenceParticipantRole}` : ""} ${selected ? "selected" : ""} ${animClass}`}
+      onClick={handleClick}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      style={{ width: nodeWidth, minWidth: nodeWidth }}
+    >
+      {isActor ? (
+        <div className="sequence-node__actor-wrap" style={{ maxWidth: nodeWidth }}>
+          <div className="sequence-node__badge-row">
+            <span className="kind-badge">{renderKindBadge(d.kind, d.umlType)}</span>
+            {d.childViewId && (
+              <button className="sequence-node__drilldown" onClick={handleDrilldown} type="button">
+                <i className="bi bi-caret-right-fill" /> Drill down
+              </button>
+            )}
+          </div>
+          <div className="sequence-node__actor">
+            <span className="sequence-node__actor-head" />
+            <span className="sequence-node__actor-body" />
+            <span className="sequence-node__actor-arms" />
+            <span className="sequence-node__actor-leg sequence-node__actor-leg--left" />
+            <span className="sequence-node__actor-leg sequence-node__actor-leg--right" />
+          </div>
+          {d.sequenceSubtitle && <div className="sequence-node__subtitle">{d.sequenceSubtitle}</div>}
+          <div className="sequence-node__title" title={d.sequenceFullLabel ?? d.label}>{d.label}</div>
+          {d.sequenceFullLabel && d.sequenceFullLabel !== d.label && (
+            <div className="sequence-node__full-label" title={d.sequenceFullLabel}>{d.sequenceFullLabel}</div>
+          )}
+          <div className="sequence-node__role">{participantRole}</div>
+        </div>
+      ) : (
+        <div className="sequence-node__header" style={{ maxWidth: Math.max(112, nodeWidth - 12) }}>
+          <div className="sequence-node__badge-row">
+            <span className="kind-badge">{renderKindBadge(d.kind, d.umlType)}</span>
+            {d.childViewId && (
+              <button className="sequence-node__drilldown" onClick={handleDrilldown} type="button">
+                <i className="bi bi-caret-right-fill" /> Drill down
+              </button>
+            )}
+          </div>
+          {d.sequenceSubtitle && <div className="sequence-node__subtitle">{d.sequenceSubtitle}</div>}
+          <div className="sequence-node__title-row">
+            <span className={`sequence-node__participant-icon sequence-node__participant-icon--${d.sequenceLaneKind ?? "internal"}`}>
+              <i className={`bi ${participantIcon}`} />
+            </span>
+            <div className="sequence-node__title-stack">
+              <div className="sequence-node__title" title={d.sequenceFullLabel ?? d.label}>{d.label}</div>
+              {d.sequenceFullLabel && d.sequenceFullLabel !== d.label && (
+                <div className="sequence-node__full-label" title={d.sequenceFullLabel}>{d.sequenceFullLabel}</div>
+              )}
+            </div>
+          </div>
+          <div className="sequence-node__role">{participantRole}</div>
+        </div>
+      )}
+
+      <div className="sequence-node__lifeline" style={{ height: lifelineHeight }}>
+        <div className="sequence-node__lifeline-line" style={{ top: lifelineOffset }} />
+        {activationBars.map((bar, index) => (
+          <div
+            key={`${bar.top}:${bar.height}:${index}`}
+            className="sequence-node__activation"
+            style={{
+              top: Math.max(lifelineOffset, bar.top),
+              height: bar.height,
+              marginLeft: (bar.depth ?? 0) * 8,
+            }}
+          />
+        ))}
+      </div>
+      <DynamicPorts ports={d.dynamicPorts} />
+    </div>
+  );
+});
+
+export const SequenceFrameNode = memo(function SequenceFrameNode({ data }: NodeProps) {
+  const d = data as unknown as UmlNodeData;
+
+  return (
+    <div className="sequence-frame">
+      <div className="sequence-frame__tab">{d.label}</div>
+      {d.sequenceSubtitle && <div className="sequence-frame__subtitle">{d.sequenceSubtitle}</div>}
+      {d.summary && <div className="sequence-frame__note">{d.summary}</div>}
+    </div>
+  );
+});
+
+function resolveSequenceParticipantIcon(data: UmlNodeData): string {
+  if (data.sequenceParticipantRole === "actor") return "bi-person";
+  if (data.umlType === "database") return "bi-database";
+  if (data.umlType === "component") return "bi-cpu";
+  if (data.umlType === "artifact" || data.sequenceLaneKind === "artifact") return "bi-file-earmark-code";
+  if (data.umlType === "package" || data.kind === "group" || data.kind === "package") return "bi-box";
+  if (data.kind === "module") return "bi-file-earmark-code";
+  if (data.kind === "class") return "bi-bounding-box";
+  if (data.kind === "external") return "bi-person";
+  return "bi-circle";
+}
+
+function resolveSequenceParticipantRole(data: UmlNodeData): string {
+  if (data.sequenceParticipantRole === "actor") return "Actor";
+  if (data.sequenceParticipantRole === "database") return "Database";
+  if (data.sequenceParticipantRole === "component") return "Component";
+  if (data.sequenceParticipantRole === "artifact") return "Artifact";
+  if (data.sequenceParticipantRole === "package") return "Package";
+  if (data.sequenceLaneKind === "artifact") return "Artifact";
+  if (data.sequenceLaneKind === "external") return "External";
+  if (data.umlType === "package" || data.kind === "group") return "Package";
+  if (data.kind === "module") return "Module";
+  if (data.kind === "class") return "Class";
+  return "Participant";
+}
 
 /* ── UML Class Node with compartments ─────────── */
 
