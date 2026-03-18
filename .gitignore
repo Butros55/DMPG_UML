@@ -6,3 +6,4 @@ apps/server/.env
 .turbo
 demo_data
 apps/server/.dmpg-data
+.playwright-cli
