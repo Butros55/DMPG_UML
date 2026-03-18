@@ -7,3 +7,5 @@ apps/server/.env
 demo_data
 apps/server/.dmpg-data
 .playwright-cli
+apps/server/projects
+apps/server/output
