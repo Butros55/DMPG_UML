@@ -170,7 +170,10 @@ function isRootChildGroupView(graph: ProjectGraph, view: DiagramView): boolean {
 
 function normalizeSequenceTextLabel(value: string): string {
   return value
+    .replace(/^[^A-Za-z0-9\u00C0-\u024F]+/u, "")
     .replace(/[_./\\]+/g, " ")
+    .replace(/\((external|internal)\)/gi, " ")
+    .replace(/\(\d+\)/g, " ")
     .replace(/\b(pd|df|csv|json|xlsx|xls|tsv|sql)\b/gi, (match) => match.toUpperCase())
     .replace(/\s+/g, " ")
     .trim();
@@ -189,28 +192,107 @@ function buildFallbackSequenceRelationLabel(relation: Relation, sourceSym: Sym |
   const sourceLabel = normalizeSequenceTextLabel(shortSymbolName(sourceSym, relation.source));
   const existing = normalizeSequenceTextLabel(relation.label?.trim() || "");
 
-  if (existing.length >= 6 && !/^(calls|reads|writes|instantiates|uses config|use config)$/i.test(existing)) {
+  if (existing.length >= 6 && !isGenericSequenceFallbackLabel(existing)) {
     return existing;
   }
 
   if (relation.type === "reads") {
-    return targetLabel ? `Load ${targetLabel}` : "Load input data";
+    return buildSequenceFallbackPhrase("Load", targetLabel || "input data");
   }
   if (relation.type === "writes") {
-    return targetLabel ? `Write ${targetLabel}` : "Write output data";
+    return buildSequenceFallbackPhrase("Persist", targetLabel || "output data");
   }
   if (relation.type === "uses_config") {
-    return targetLabel ? `Apply ${targetLabel}` : "Apply configuration";
+    return buildSequenceFallbackPhrase("Load", describeSequenceFallbackConfig(targetLabel, sourceSym));
   }
   if (relation.type === "instantiates") {
-    return targetLabel ? `Create ${targetLabel}` : "Create instance";
+    return buildSequenceFallbackPhrase("Create", describeSequenceFallbackObject(targetLabel));
   }
-
-  if (existing.length > 0) {
-    return existing;
+  if (relation.type === "calls") {
+    return inferFallbackCallLabel(targetLabel, sourceLabel);
   }
 
   return targetLabel ? `${sourceLabel} calls ${targetLabel}` : "Trigger processing step";
+}
+
+function isGenericSequenceFallbackLabel(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (/^\d+x?\s+(calls?|reads?|writes?|creates?|loads?|persists?)$/.test(normalized)) return true;
+  if (/^(calls?|reads?|writes?|instantiates|uses config|use config|load|write|persist|create|apply)$/.test(normalized)) return true;
+  const prefixed = normalized.match(/^(call|create|read|write|config|load|persist|apply)\s+(.+)$/);
+  return !!prefixed && looksLikeTechnicalSequenceText(prefixed[2] ?? "");
+}
+
+function looksLikeTechnicalSequenceText(value: string): boolean {
+  return /[_./\\]|::|\(|\)|\b(pd|df|csv|xlsx|xls|json|tsv|sql)\b/i.test(value)
+    || /[a-z][A-Z]/.test(value)
+    || /\d/.test(value);
+}
+
+function buildSequenceFallbackPhrase(action: string, object: string): string {
+  return `${action} ${describeSequenceFallbackObject(object)}`.trim();
+}
+
+function describeSequenceFallbackConfig(targetLabel: string, sourceSym: Sym | undefined): string {
+  if (normalizeSequenceKey(targetLabel).includes("config")) return "pipeline configuration";
+  if (sourceSym?.doc?.summary?.toLowerCase().includes("config")) return "pipeline configuration";
+  return "configuration";
+}
+
+function inferFallbackCallLabel(targetLabel: string, sourceLabel: string): string {
+  const normalized = normalizeSequenceKey(targetLabel);
+  if (normalized.includes("to datetime") || normalized.includes("timestamp")) return "Normalize timestamps";
+  if (normalized.includes("dataframe")) return "Assemble dataframe";
+  if (normalized.includes("astype") || normalized.includes("cast")) return "Cast column types";
+  if (normalized.includes("find wt") || normalized.includes("work type")) return "Match work types";
+  if (normalized.includes("get cluster") || normalized.includes("cluster")) return "Assign clusters";
+  if (normalized.includes("imports") || normalized.includes("libraries")) return "Use import helpers";
+  if (normalized.includes("datenquellen") || normalized.includes("data sources")) return "Fetch source records";
+  if (normalized.includes("data files")) return "Load input tables";
+  if (normalized.includes("supporting artifacts") || normalized.includes("other artifacts")) return "Use support artifacts";
+  const object = describeSequenceFallbackObject(targetLabel);
+  if (object.length > 0 && object !== targetLabel) {
+    return `Run ${object}`;
+  }
+  return targetLabel ? `${sourceLabel} calls ${targetLabel}` : "Trigger processing step";
+}
+
+function describeSequenceFallbackObject(value: string): string {
+  const normalized = normalizeSequenceKey(value);
+  if (!normalized) return value;
+  if (normalized.includes("material cluster")) return "material-cluster mapping";
+  if (normalized.includes("wt to order")) return "work-type order mapping";
+  if (normalized.includes("with order worker")) return "worker-enriched order data";
+  if (normalized.includes("with order cluster")) return "clustered order data";
+  if (normalized.includes("with order")) return "order-enriched data";
+  if (normalized === "df data" || normalized.includes("df data csv")) return "extracted data";
+  if (normalized.includes("route")) return "route table";
+  if (normalized.includes("arrival gro")) return "large-arrival table";
+  if (normalized.includes("arrival klein")) return "small-arrival table";
+  if (normalized.includes("filter stats")) return "filter statistics";
+  if (normalized.includes("outliner") || normalized.includes("outlier")) return "outlier report";
+  if (normalized.includes("simulation result")) return "simulation results";
+  if (normalized.includes("libraries imports")) return "import helpers";
+  if (normalized.includes("data files")) return "input tables";
+  if (normalized.includes("datenquellen") || normalized.includes("data sources")) return "source systems";
+  if (normalized.includes("supporting artifacts") || normalized.includes("other artifacts")) return "support artifacts";
+  if (normalized.includes("druid connector")) return "Druid connector";
+  if (normalized.includes("mes connector")) return "MES connector";
+  return normalized
+    .replace(/\bdf\b/g, "data")
+    .replace(/\bwt\b/g, "work type")
+    .replace(/\bgro\b/g, "large")
+    .replace(/\bklein\b/g, "small")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeSequenceKey(value: string): string {
+  return normalizeSequenceTextLabel(value)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function detectLayoutPattern(view: DiagramView): UmlViewHeuristics["layoutPattern"] {
@@ -1207,7 +1289,7 @@ export async function improveSequenceRelationLabelsForView(
       const rightLine = rightEvidence?.startLine ?? Number.MAX_SAFE_INTEGER;
       return leftLine - rightLine;
     })
-    .slice(0, 20);
+    .slice(0, 28);
 
   if (candidateRelations.length === 0) {
     return { viewId, improvements: [] };
@@ -1232,8 +1314,14 @@ export async function improveSequenceRelationLabelsForView(
       relationId: relation.id,
       sourceId: relation.source,
       sourceLabel: shortSymbolName(sourceSym, relation.source),
+      sourceKind: sourceSym?.kind,
+      sourceSummary: sourceSym?.doc?.summary,
+      sourceOutputs: sourceSym?.doc?.outputs?.slice(0, 3)?.map((item) => item.name),
+      sourceSideEffects: sourceSym?.doc?.sideEffects?.slice(0, 3),
       targetId: relation.target,
       targetLabel: shortSymbolName(targetSym, relation.target),
+      targetKind: targetSym?.kind,
+      targetSummary: targetSym?.doc?.summary,
       relationType: relation.type,
       currentLabel: relation.label?.trim() || "",
       suggestedBaseLabel: fallbackMap.get(relation.id)?.newLabel,
@@ -1267,7 +1355,8 @@ Rules:
 - Improve only sequence-message labels that are too technical, file-like, code-like or unclear.
 - Keep the behavior stable. Do not invent new domain meaning.
 - newLabel must stay short and readable in a sequence arrow label, usually 2 to 8 words.
-- Prefer action phrasing such as "Load input data", "Normalize worker clusters", "Persist grouped output".
+- Prefer data-pipeline phrasing that explains the processing step, such as "Load input data", "Normalize worker clusters", "Persist grouped output", "Create Druid connector".
+- Use the source/target summaries, outputs and side effects as context when they help explain the actual pipeline step.
 - Avoid raw implementation tokens such as pd.read_csv, __init__, route.csv, or bare relation types unless they are the clearest available wording.
 - Use relationId values exactly as provided.
 - Return an empty improvements array if the current labels are already clear.

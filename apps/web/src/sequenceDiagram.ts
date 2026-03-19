@@ -1,6 +1,6 @@
 import { MarkerType, Position, type Edge, type Node } from "@xyflow/react";
 import type { DiagramView, ProjectGraph, Relation, RelationType, Symbol } from "@dmpg/shared";
-import { RELATION_VERBS, type DiagramLabelMode } from "./diagramSettings";
+import type { DiagramLabelMode } from "./diagramSettings";
 import type { SequenceActivationBar, UmlNodeData } from "./components/UmlNode";
 
 const SEQUENCE_RELATION_TYPES: RelationType[] = [
@@ -56,6 +56,7 @@ type RawSequenceMessage = {
   line: number;
   sortIndex: number;
   label?: string;
+  descriptor: SequenceLabelDescriptor;
   isSelfCall: boolean;
   isCreateMessage: boolean;
 };
@@ -73,8 +74,20 @@ type SequenceMessage = {
   sortIndex: number;
   label?: string;
   count: number;
+  descriptors: SequenceLabelDescriptor[];
+  signalScore: number;
   isSelfCall: boolean;
   isCreateMessage: boolean;
+};
+
+type SequenceLabelDescriptor = {
+  action: string;
+  object?: string;
+  text?: string;
+  mergeKey: string;
+  objectFamily: string;
+  signal: number;
+  generic: boolean;
 };
 
 type SequenceParticipantMeta = {
@@ -111,6 +124,13 @@ type SequenceMessageLayout = {
   labelWidth: number;
   labelLineCount: number;
   labelText?: string;
+};
+
+type SequenceProjectionSeed = {
+  symbolById: Map<string, Symbol>;
+  messages: SequenceMessage[];
+  displayBaseParticipantIds: string[];
+  extraParticipantOrder: Map<string, number>;
 };
 
 export function isPackageSequenceView(
@@ -150,6 +170,24 @@ export function buildPackageSequenceDiagram(params: {
   const symbolById = new Map<string, Symbol>(graph.symbols.map((symbol) => [symbol.id, symbol]));
   for (const [symbolId, symbol] of symbolOverrides.entries()) {
     symbolById.set(symbolId, symbol);
+  }
+
+  const stageSeed = buildStageSequenceProjectionSeed({
+    graph,
+    view,
+    visibleViewNodeRefs,
+    hiddenSymbolIds,
+    symbolById,
+    relationFilters,
+    labelsMode,
+  });
+  if (stageSeed) {
+    return buildSequenceProjectionElements({
+      view,
+      selectedSymbolId,
+      selectedEdgeId,
+      ...stageSeed,
+    });
   }
 
   const parentMap = new Map<string, string | undefined>(graph.symbols.map((symbol) => [symbol.id, symbol.parentId]));
@@ -211,13 +249,21 @@ export function buildPackageSequenceDiagram(params: {
     const sourceSymbol = symbolById.get(relation.source);
     const targetSymbol = symbolById.get(relation.target);
     const evidence = relation.evidence?.[0];
+    const descriptor = buildBaseSequenceMessageDescriptor(
+      relation,
+      sourceSymbol,
+      targetSymbol,
+      labelsMode,
+    );
+
     rawMessages.push({
       relation,
       sourceParticipantId: normalizedSourceParticipantId,
       targetParticipantId: normalizedTargetParticipantId,
       sourceSymbolId: relation.source,
       targetSymbolId: relation.target,
-      label: buildBaseSequenceMessageLabel(relation, targetSymbol, labelsMode),
+      label: descriptor.text,
+      descriptor,
       file: evidence?.file ?? sourceSymbol?.location?.file ?? targetSymbol?.location?.file ?? "",
       line: evidence?.startLine ?? Number.MAX_SAFE_INTEGER,
       sortIndex,
@@ -262,7 +308,34 @@ export function buildPackageSequenceDiagram(params: {
   }
 
   const messages = summarizeSequenceMessages(compactSequenceMessages(rawMessages, labelsMode));
+  return buildSequenceProjectionElements({
+    view,
+    symbolById,
+    messages,
+    displayBaseParticipantIds,
+    extraParticipantOrder,
+    selectedSymbolId,
+    selectedEdgeId,
+  });
+}
+
+function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
+  view: DiagramView;
+  selectedSymbolId: string | null;
+  selectedEdgeId: string | null;
+}): { nodes: Node[]; edges: Edge[] } {
+  const {
+    view,
+    symbolById,
+    messages,
+    displayBaseParticipantIds,
+    extraParticipantOrder,
+    selectedSymbolId,
+    selectedEdgeId,
+  } = params;
   const participantStats = collectParticipantStats(messages);
+  const displayBaseParticipantSet = new Set(displayBaseParticipantIds);
+  const baseParticipantOrder = new Map(displayBaseParticipantIds.map((participantId, index) => [participantId, index]));
   const initiatingActorParticipantId = resolveInitiatingActorParticipantId(
     messages,
     symbolById,
@@ -541,6 +614,431 @@ export function buildPackageSequenceDiagram(params: {
   });
 
   return { nodes, edges };
+}
+
+function buildStageSequenceProjectionSeed(params: {
+  graph: ProjectGraph;
+  view: DiagramView;
+  visibleViewNodeRefs: string[];
+  hiddenSymbolIds: Set<string>;
+  symbolById: Map<string, Symbol>;
+  relationFilters: Record<RelationType, boolean>;
+  labelsMode: DiagramLabelMode;
+}): SequenceProjectionSeed | null {
+  const {
+    graph,
+    view,
+    visibleViewNodeRefs,
+    hiddenSymbolIds,
+    symbolById,
+    relationFilters,
+    labelsMode,
+  } = params;
+
+  const stageSymbol = graph.symbols.find((symbol) =>
+    symbol.id.startsWith("proc:pkg:") && symbol.childViewId === view.id,
+  );
+  if (!stageSymbol) return null;
+  symbolById.set(stageSymbol.id, stageSymbol);
+
+  const internalNodeSet = new Set(visibleViewNodeRefs.filter((nodeId) => !hiddenSymbolIds.has(nodeId)));
+  const messages: SequenceMessage[] = [];
+  let sortIndex = 0;
+
+  const processRelations = graph.relations.filter((relation) =>
+    relationFilters[relation.type] && SEQUENCE_RELATION_TYPES.includes(relation.type),
+  );
+
+  const incoming = processRelations
+    .filter((relation) => relation.target === stageSymbol.id)
+    .sort(compareSequenceRelationEvidence(symbolById));
+  const outgoing = processRelations
+    .filter((relation) => relation.source === stageSymbol.id)
+    .sort(compareSequenceRelationEvidence(symbolById));
+
+  for (const relation of incoming) {
+    messages.push(buildStageProcessSequenceMessage({
+      relation,
+      stageSymbol,
+      symbolById,
+      labelsMode,
+      sortIndex: sortIndex++,
+    }));
+  }
+
+  const hasProcessArtifactOutputs = outgoing.some((relation) => isProcessArtifactId(relation.target));
+  const groupedInternal = buildGroupedStageMessages({
+    graph,
+    view,
+    stageSymbol,
+    internalNodeSet,
+    symbolById,
+    relationFilters,
+    labelsMode,
+    skipWrites: hasProcessArtifactOutputs,
+  });
+  for (const message of groupedInternal) {
+    messages.push({ ...message, sortIndex: sortIndex++ });
+  }
+
+  for (const relation of outgoing) {
+    messages.push(buildStageProcessSequenceMessage({
+      relation,
+      stageSymbol,
+      symbolById,
+      labelsMode,
+      sortIndex: sortIndex++,
+    }));
+  }
+
+  const downstreamArtifactMessages = buildDownstreamArtifactMessages({
+    processRelations,
+    outgoing,
+    stageSymbol,
+    symbolById,
+    labelsMode,
+    startSortIndex: sortIndex,
+  });
+  messages.push(...downstreamArtifactMessages);
+
+  if (messages.length === 0) {
+    return null;
+  }
+
+  const dedupedMessages = dedupeStageMessages(messages)
+    .sort((left, right) => left.sortIndex - right.sortIndex)
+    .slice(0, MAX_SEQUENCE_MESSAGES);
+
+  const extraParticipantOrder = new Map<string, number>();
+  for (const message of dedupedMessages) {
+    for (const participantId of [message.sourceParticipantId, message.targetParticipantId]) {
+      if (participantId === stageSymbol.id) continue;
+      if (!extraParticipantOrder.has(participantId)) {
+        extraParticipantOrder.set(participantId, extraParticipantOrder.size);
+      }
+    }
+  }
+
+  return {
+    symbolById,
+    messages: dedupedMessages,
+    displayBaseParticipantIds: [stageSymbol.id],
+    extraParticipantOrder,
+  };
+}
+
+function buildStageProcessSequenceMessage(params: {
+  relation: Relation;
+  stageSymbol: Symbol;
+  symbolById: Map<string, Symbol>;
+  labelsMode: DiagramLabelMode;
+  sortIndex: number;
+}): SequenceMessage {
+  const { relation, stageSymbol, symbolById, labelsMode, sortIndex } = params;
+  const sourceSymbol = symbolById.get(relation.source);
+  const targetSymbol = symbolById.get(relation.target);
+  const descriptor = inferProcessSequenceDescriptor(relation, sourceSymbol, targetSymbol);
+  const evidence = relation.evidence?.[0];
+
+  return {
+    id: relation.id,
+    relationIds: [relation.id],
+    relationType: relation.type,
+    sourceParticipantId: relation.source,
+    targetParticipantId: relation.target,
+    sourceSymbolId: relation.source,
+    targetSymbolId: relation.target,
+    file: evidence?.file ?? sourceSymbol?.location?.file ?? targetSymbol?.location?.file ?? "",
+    line: evidence?.startLine ?? Number.MAX_SAFE_INTEGER,
+    sortIndex,
+    label: pipelineTruncateSequenceMessageLabel(descriptor.text, labelsMode),
+    count: 1,
+    descriptors: [descriptor],
+    signalScore: descriptor.signal,
+    isSelfCall: relation.source === relation.target,
+    isCreateMessage: relation.type === "instantiates",
+  };
+}
+
+function buildGroupedStageMessages(params: {
+  graph: ProjectGraph;
+  view: DiagramView;
+  stageSymbol: Symbol;
+  internalNodeSet: Set<string>;
+  symbolById: Map<string, Symbol>;
+  relationFilters: Record<RelationType, boolean>;
+  labelsMode: DiagramLabelMode;
+  skipWrites: boolean;
+}): SequenceMessage[] {
+  const {
+    graph,
+    view,
+    stageSymbol,
+    internalNodeSet,
+    symbolById,
+    relationFilters,
+    labelsMode,
+    skipWrites,
+  } = params;
+
+  type GroupSeed = {
+    relationType: RelationType;
+    sourceParticipantId: string;
+    targetParticipantId: string;
+    relations: Relation[];
+  };
+
+  const groups = new Map<string, GroupSeed>();
+  for (const relation of graph.relations) {
+    if (!relationFilters[relation.type]) continue;
+    if (!["reads", "writes", "instantiates"].includes(relation.type)) continue;
+    if (relation.id.startsWith("stub-edge:") || relation.id.startsWith("process-edge:")) continue;
+
+    const sourceInternal = internalNodeSet.has(relation.source);
+    const targetInternal = internalNodeSet.has(relation.target);
+    if (sourceInternal === targetInternal) continue;
+
+    if (relation.type === "writes" && skipWrites) continue;
+
+    const externalSymbolId = sourceInternal ? relation.target : relation.source;
+    const externalSymbol = symbolById.get(externalSymbolId);
+    const participantId = resolveStageExternalParticipantId(symbolById, externalSymbolId, externalSymbol, relation.type);
+
+    let sourceParticipantId = stageSymbol.id;
+    let targetParticipantId = participantId;
+    if (relation.type === "reads" && sourceInternal) {
+      sourceParticipantId = participantId;
+      targetParticipantId = stageSymbol.id;
+    } else if (relation.type === "reads" && targetInternal) {
+      sourceParticipantId = participantId;
+      targetParticipantId = stageSymbol.id;
+    } else if (relation.type === "instantiates") {
+      sourceParticipantId = stageSymbol.id;
+      targetParticipantId = participantId;
+    }
+
+    const groupKey = `${relation.type}:${sourceParticipantId}:${targetParticipantId}`;
+    const current = groups.get(groupKey);
+    if (current) {
+      current.relations.push(relation);
+    } else {
+      groups.set(groupKey, {
+        relationType: relation.type,
+        sourceParticipantId,
+        targetParticipantId,
+        relations: [relation],
+      });
+    }
+  }
+
+  return [...groups.values()]
+    .map((group) => buildGroupedStageSequenceMessage({
+      group,
+      viewTitle: view.title,
+      stageSymbol,
+      symbolById,
+      labelsMode,
+    }))
+    .filter((message): message is SequenceMessage => !!message);
+}
+
+function buildGroupedStageSequenceMessage(params: {
+  group: {
+    relationType: RelationType;
+    sourceParticipantId: string;
+    targetParticipantId: string;
+    relations: Relation[];
+  };
+  viewTitle: string;
+  stageSymbol: Symbol;
+  symbolById: Map<string, Symbol>;
+  labelsMode: DiagramLabelMode;
+}): SequenceMessage | null {
+  const { group, viewTitle, stageSymbol, symbolById, labelsMode } = params;
+  const relations = [...group.relations].sort(compareSequenceRelationEvidence(symbolById));
+  const firstRelation = relations[0];
+  if (!firstRelation) return null;
+
+  const externalSymbolId = group.sourceParticipantId === stageSymbol.id
+    ? group.targetParticipantId
+    : group.sourceParticipantId;
+  const externalSymbol = symbolById.get(externalSymbolId);
+  const label = buildGroupedStageLabel({
+    relations,
+    relationType: group.relationType,
+    viewTitle,
+    externalSymbol,
+    labelsMode,
+  });
+  const descriptor = createSequenceDescriptor(
+    group.relationType === "instantiates"
+      ? "Create"
+      : group.relationType === "writes"
+        ? inferStageWriteAction(viewTitle)
+        : "Load",
+    label.replace(/^[A-Z][a-z]+\s+/, ""),
+    { signal: 5, generic: false },
+  );
+  const evidence = firstRelation.evidence?.[0];
+
+  return {
+    id: firstRelation.id,
+    relationIds: relations.map((relation) => relation.id),
+    relationType: group.relationType,
+    sourceParticipantId: group.sourceParticipantId,
+    targetParticipantId: group.targetParticipantId,
+    sourceSymbolId: firstRelation.source,
+    targetSymbolId: firstRelation.target,
+    file: evidence?.file ?? symbolById.get(firstRelation.source)?.location?.file ?? symbolById.get(firstRelation.target)?.location?.file ?? "",
+    line: evidence?.startLine ?? Number.MAX_SAFE_INTEGER,
+    sortIndex: firstRelation.evidence?.[0]?.startLine ?? Number.MAX_SAFE_INTEGER,
+    label,
+    count: relations.length,
+    descriptors: [descriptor],
+    signalScore: descriptor.signal,
+    isSelfCall: false,
+    isCreateMessage: group.relationType === "instantiates",
+  };
+}
+
+function buildGroupedStageLabel(params: {
+  relations: Relation[];
+  relationType: RelationType;
+  viewTitle: string;
+  externalSymbol: Symbol | undefined;
+  labelsMode: DiagramLabelMode;
+}): string {
+  const { relations, relationType, viewTitle, externalSymbol, labelsMode } = params;
+  const meaningful = relations
+    .map((relation) => pipelineSanitizeSequenceLabel(relation.label))
+    .filter((label) => label.length > 0 && !pipelineIsGenericSequenceLabel(label));
+  if (meaningful.length > 0) {
+    return pipelineTruncateSequenceMessageLabel(pipelineSummarizeSequenceObjects(meaningful), labelsMode) ?? meaningful[0]!;
+  }
+
+  const objects = relations
+    .map((relation) => humanizeSequenceObjectLabel(externalSymbol?.label ?? relation.target, relation.type))
+    .filter((value): value is string => !!value);
+  const objectText = objects.length > 0
+    ? pipelineSummarizeSequenceObjects(objects)
+    : relationType === "writes"
+      ? inferStageOutputObject(viewTitle)
+      : "reference data";
+
+  const action = relationType === "instantiates"
+    ? "Create"
+    : relationType === "writes"
+      ? inferStageWriteAction(viewTitle)
+      : "Load";
+  return pipelineTruncateSequenceMessageLabel(pipelineBuildSequenceText(action, objectText), labelsMode)
+    ?? pipelineBuildSequenceText(action, objectText);
+}
+
+function buildDownstreamArtifactMessages(params: {
+  processRelations: Relation[];
+  outgoing: Relation[];
+  stageSymbol: Symbol;
+  symbolById: Map<string, Symbol>;
+  labelsMode: DiagramLabelMode;
+  startSortIndex: number;
+}): SequenceMessage[] {
+  const { processRelations, outgoing, stageSymbol, symbolById, labelsMode, startSortIndex } = params;
+  const artifactIds = new Set(outgoing.filter((relation) => isProcessArtifactId(relation.target)).map((relation) => relation.target));
+  let offset = 0;
+  return processRelations
+    .filter((relation) => artifactIds.has(relation.source) && relation.target !== stageSymbol.id)
+    .sort(compareSequenceRelationEvidence(symbolById))
+    .map((relation) => buildStageProcessSequenceMessage({
+      relation,
+      stageSymbol,
+      symbolById,
+      labelsMode,
+      sortIndex: startSortIndex + offset++,
+    }));
+}
+
+function resolveStageExternalParticipantId(
+  symbolById: Map<string, Symbol>,
+  symbolId: string,
+  symbol: Symbol | undefined,
+  relationType: RelationType,
+): string {
+  if (symbolId.startsWith("proc:")) return symbolId;
+  const normalized = (symbol?.label ?? symbolId).toLowerCase();
+
+  if (symbol && (normalized.includes("druid") || normalized.includes("mes") || normalized.includes("database") || normalized.includes("sql"))) {
+    return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:data-sources", "Datenquellen", "component");
+  }
+  if (symbol && (normalized.includes(".csv") || normalized.includes(".xlsx") || normalized.includes(".xls") || normalized.includes("route") || normalized.includes("material") || normalized.includes("order"))) {
+    return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:data-files", "Data Files", "package");
+  }
+  if (relationType === "writes") {
+    return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:supporting-artifacts", "Supporting Artifacts", "artifact");
+  }
+  return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:data-files", "Data Files", "package");
+}
+
+function ensureStageBucketSymbol(
+  symbolById: Map<string, Symbol>,
+  id: string,
+  label: string,
+  umlType: Symbol["umlType"],
+): string {
+  if (!symbolById.has(id)) {
+    symbolById.set(id, {
+      id,
+      label,
+      kind: "external",
+      umlType,
+      tags: ["sequence-stage-bucket"],
+    });
+  }
+  return id;
+}
+
+function dedupeStageMessages(messages: SequenceMessage[]): SequenceMessage[] {
+  const seen = new Set<string>();
+  const deduped: SequenceMessage[] = [];
+  for (const message of messages) {
+    const key = `${message.sourceParticipantId}|${message.targetParticipantId}|${message.label}|${message.relationType}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(message);
+  }
+  return deduped;
+}
+
+function compareSequenceRelationEvidence(symbolById: Map<string, Symbol>) {
+  return (left: Relation, right: Relation) => {
+    const leftEvidence = left.evidence?.[0];
+    const rightEvidence = right.evidence?.[0];
+    const leftFile = leftEvidence?.file ?? symbolById.get(left.source)?.location?.file ?? symbolById.get(left.target)?.location?.file ?? "";
+    const rightFile = rightEvidence?.file ?? symbolById.get(right.source)?.location?.file ?? symbolById.get(right.target)?.location?.file ?? "";
+    if (leftFile !== rightFile) return leftFile.localeCompare(rightFile);
+    const leftLine = leftEvidence?.startLine ?? Number.MAX_SAFE_INTEGER;
+    const rightLine = rightEvidence?.startLine ?? Number.MAX_SAFE_INTEGER;
+    return leftLine - rightLine;
+  };
+}
+
+function isProcessArtifactId(symbolId: string): boolean {
+  return symbolId.startsWith("proc:artifact");
+}
+
+function inferStageWriteAction(viewTitle: string): string {
+  const normalized = viewTitle.toLowerCase();
+  if (normalized.includes("distribution") || normalized.includes("persistence")) return "Persist";
+  if (normalized.includes("simulation")) return "Publish";
+  return "Write";
+}
+
+function inferStageOutputObject(viewTitle: string): string {
+  const normalized = viewTitle.toLowerCase();
+  if (normalized.includes("extract")) return "prepared extraction tables";
+  if (normalized.includes("matching") || normalized.includes("filter")) return "matching outputs";
+  if (normalized.includes("distribution") || normalized.includes("persistence")) return "distribution outputs";
+  if (normalized.includes("simulation")) return "simulation outputs";
+  return "stage outputs";
 }
 
 function buildAncestorIndex(parentMap: Map<string, string | undefined>): Map<string, string[]> {
@@ -951,39 +1449,374 @@ function classifyParticipantRole(
   return "object";
 }
 
-function buildBaseSequenceMessageLabel(
+function buildBaseSequenceMessageDescriptor(
   relation: Relation,
+  sourceSymbol: Symbol | undefined,
   targetSymbol: Symbol | undefined,
   labelsMode: DiagramLabelMode,
-): string | undefined {
-  if (labelsMode === "off") return undefined;
-
-  if (relation.label?.trim()) {
-    return labelsMode === "compact"
-      ? truncateLabel(relation.label.trim(), 40)
-      : truncateLabel(relation.label.trim(), 92);
+): SequenceLabelDescriptor {
+  if (labelsMode === "off") {
+    return {
+      action: "",
+      mergeKey: relation.type,
+      objectFamily: relation.type,
+      signal: 0,
+      generic: true,
+    };
   }
 
-  const targetLabel = targetSymbol ? shortDisplayName(targetSymbol) : undefined;
-  const verb = RELATION_VERBS[relation.type] ?? relation.type;
-  if (labelsMode === "compact") {
-    return targetLabel ? truncateLabel(targetLabel, 28) : verb;
+  const explicitLabel = pipelineSanitizeSequenceLabel(relation.label);
+  if (explicitLabel && !pipelineIsGenericSequenceLabel(explicitLabel)) {
+    const explicitParts = pipelineSplitSequenceLabel(explicitLabel);
+    return {
+      action: explicitParts.action,
+      object: explicitParts.object,
+      text: pipelineTruncateSequenceMessageLabel(explicitLabel, labelsMode),
+      mergeKey: explicitParts.mergeKey,
+      objectFamily: explicitParts.objectFamily,
+      signal: explicitParts.object ? 5 : 4,
+      generic: false,
+    };
   }
+
+  const inferred = inferProcessAwareSequenceLabelFromRelation(relation, sourceSymbol, targetSymbol);
+  const text = pipelineBuildSequenceText(inferred.action, inferred.object);
+  return {
+    ...inferred,
+    text: pipelineTruncateSequenceMessageLabel(text, labelsMode),
+  };
+}
+
+function pipelineSanitizeSequenceLabel(label: string | null | undefined): string {
+  return (label ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/[_]+/g, " ")
+    .trim();
+}
+
+function pipelineIsGenericSequenceLabel(label: string): boolean {
+  const normalized = pipelineSanitizeSequenceLabel(label).toLowerCase();
+  if (!normalized) return true;
+  return /^(?:\d+\s*x?\s*)?(?:calls?|reads?|writes?|imports?|instantiates?|creates?|config|uses config|persists?|consumes?)(?:\s+(?:csv|xlsx|xls|json|pickle|pkl))?$/.test(normalized);
+}
+
+function pipelineSplitSequenceLabel(label: string): Omit<SequenceLabelDescriptor, "signal" | "generic" | "text"> {
+  const normalized = pipelineSanitizeSequenceLabel(label);
+  const parts = normalized.match(/^(call|create|load|read|write|persist|apply|hand off|handoff|pass|publish|collect|query|request|consume|use|config)\s+(.+)$/i);
+  if (!parts) {
+    return {
+      action: "",
+      object: normalized,
+      mergeKey: normalized.toLowerCase(),
+      objectFamily: normalizeSequenceObjectFamily(normalized),
+    };
+  }
+
+  const action = normalizeSequenceAction(parts[1] ?? "");
+  const object = pipelineSanitizeSequenceLabel(parts[2]);
+  return {
+    action,
+    object,
+    mergeKey: `${action}:${normalizeSequenceObjectFamily(object)}`,
+    objectFamily: normalizeSequenceObjectFamily(object),
+  };
+}
+
+function pipelineTruncateSequenceMessageLabel(label: string | undefined, labelsMode: DiagramLabelMode): string | undefined {
+  if (!label) return undefined;
+  return truncateLabel(label, labelsMode === "compact" ? 40 : 92);
+}
+
+function inferProcessAwareSequenceLabelFromRelation(
+  relation: Relation,
+  sourceSymbol: Symbol | undefined,
+  targetSymbol: Symbol | undefined,
+): SequenceLabelDescriptor {
+  if (relation.id.startsWith("process-edge:")) {
+    return inferProcessSequenceDescriptor(relation, sourceSymbol, targetSymbol);
+  }
+
+  const targetLabel = targetSymbol?.label ?? relation.target;
+  const sourceLabel = sourceSymbol?.label ?? relation.source;
+  const object = humanizeSequenceObjectLabel(targetLabel, relation.type);
 
   switch (relation.type) {
-    case "calls":
-      return targetLabel ? `call ${targetLabel}` : "call";
     case "instantiates":
-      return targetLabel ? `create ${targetLabel}` : "create";
+      return createSequenceDescriptor("Create", object, { signal: 5, generic: false });
     case "reads":
-      return targetLabel ? `read ${targetLabel}` : "read";
+      return createSequenceDescriptor("Load", object || humanizeSequenceObjectLabel(sourceLabel, relation.type), {
+        signal: object ? 5 : 3,
+        generic: !object,
+      });
     case "writes":
-      return targetLabel ? `write ${targetLabel}` : "write";
+      return createSequenceDescriptor(inferWriteAction(targetLabel), object, {
+        signal: object ? 5 : 3,
+        generic: !object,
+      });
     case "uses_config":
-      return targetLabel ? `config ${targetLabel}` : "config";
-    default:
-      return targetLabel ? `${verb} ${targetLabel}` : verb;
+      return createSequenceDescriptor("Apply", object || "configuration", {
+        signal: object ? 4 : 3,
+        generic: !object,
+      });
+    case "calls":
+    default: {
+      const action = inferCallAction(targetLabel);
+      const fallbackObject = humanizeSequenceObjectLabel(sourceLabel, relation.type);
+      return createSequenceDescriptor(action, object || fallbackObject, {
+        signal: object ? 4 : 2,
+        generic: !object,
+      });
+    }
   }
+}
+
+function inferProcessSequenceDescriptor(
+  relation: Relation,
+  sourceSymbol: Symbol | undefined,
+  targetSymbol: Symbol | undefined,
+): SequenceLabelDescriptor {
+  const label = pipelineSanitizeSequenceLabel(relation.label);
+  const targetId = relation.target;
+  const sourceId = relation.source;
+  const targetLabel = targetSymbol?.label ?? relation.target;
+  const sourceLabel = sourceSymbol?.label ?? relation.source;
+
+  if (sourceId.startsWith("proc:input:database-import")) {
+    return createSequenceDescriptor("Import", "database records", { signal: 5, generic: false });
+  }
+  if (sourceId.startsWith("proc:input:file-imports")) {
+    return createSequenceDescriptor("Load", "file imports", { signal: 5, generic: false });
+  }
+  if (sourceId.startsWith("proc:input:external-sources")) {
+    return createSequenceDescriptor("Collect", "external feeds", { signal: 5, generic: false });
+  }
+  if (relation.id.includes("process-edge:pipeline:")) {
+    const object = humanizePipelineFlowObject(label || targetLabel || sourceLabel);
+    const action = sourceId.startsWith("proc:pkg:") ? "Hand off" : "Receive";
+    return createSequenceDescriptor(action, object, { signal: 5, generic: false });
+  }
+  if (sourceId.startsWith("proc:artifact") || targetId.startsWith("proc:artifact")) {
+    const object = humanizeProcessArtifactObject(label, targetLabel, sourceLabel);
+    if (targetId.startsWith("proc:artifact")) {
+      return createSequenceDescriptor(inferWriteAction(label || targetLabel), object, { signal: 5, generic: false });
+    }
+    return createSequenceDescriptor("Load", object, { signal: 5, generic: false });
+  }
+  if (targetId.startsWith("proc:output:")) {
+    return createSequenceDescriptor("Publish", humanizeProcessArtifactObject(label, targetLabel, sourceLabel), {
+      signal: 5,
+      generic: false,
+    });
+  }
+  if (label && !pipelineIsGenericSequenceLabel(label)) {
+    const parts = pipelineSplitSequenceLabel(label);
+    return {
+      ...parts,
+      text: label,
+      signal: parts.object ? 5 : 4,
+      generic: false,
+    };
+  }
+  return createSequenceDescriptor(
+    relation.type === "writes" ? "Write" : relation.type === "reads" ? "Load" : "Hand off",
+    humanizePipelineFlowObject(label || targetLabel || sourceLabel),
+    { signal: 4, generic: false },
+  );
+}
+
+function pipelineBuildSequenceText(action: string, object: string | undefined): string {
+  if (!object) return action;
+  if (!action) return object;
+  return `${action} ${object}`;
+}
+
+function pipelineShouldMergeSequenceDescriptors(
+  relationType: RelationType,
+  previous: SequenceLabelDescriptor,
+  current: SequenceLabelDescriptor,
+): boolean {
+  if (previous.mergeKey === current.mergeKey) return true;
+  if (relationType === "instantiates") {
+    return previous.objectFamily === current.objectFamily;
+  }
+  if (previous.action === current.action && previous.objectFamily === current.objectFamily) {
+    return true;
+  }
+  return false;
+}
+
+function pipelineSummarizeSequenceDescriptors(
+  descriptors: SequenceLabelDescriptor[],
+  labelsMode: DiagramLabelMode,
+): string | undefined {
+  const unique = dedupeSequenceDescriptors(descriptors)
+    .filter((descriptor) => !!descriptor.text);
+
+  if (unique.length === 0) return undefined;
+  if (unique.length === 1) return pipelineTruncateSequenceMessageLabel(unique[0]?.text, labelsMode);
+
+  const commonAction = unique.every((descriptor) => descriptor.action === unique[0]?.action)
+    ? unique[0]?.action ?? ""
+    : "";
+  const objects = unique
+    .map((descriptor) => descriptor.object)
+    .filter((value): value is string => !!value);
+
+  if (commonAction && objects.length > 0) {
+    return pipelineTruncateSequenceMessageLabel(
+      pipelineBuildSequenceText(commonAction, pipelineSummarizeSequenceObjects(objects)),
+      labelsMode,
+    );
+  }
+
+  const preview = unique
+    .slice(0, 2)
+    .map((descriptor) => descriptor.text)
+    .filter((value): value is string => !!value)
+    .join(" / ");
+  const suffix = unique.length > 2 ? ` +${unique.length - 2} more` : "";
+  return pipelineTruncateSequenceMessageLabel(`${preview}${suffix}`, labelsMode);
+}
+
+function dedupeSequenceDescriptors(descriptors: SequenceLabelDescriptor[]): SequenceLabelDescriptor[] {
+  const seen = new Set<string>();
+  const deduped: SequenceLabelDescriptor[] = [];
+  for (const descriptor of descriptors) {
+    const key = descriptor.mergeKey || descriptor.text || `${descriptor.action}:${descriptor.objectFamily}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(descriptor);
+  }
+  return deduped;
+}
+
+function pipelineSummarizeSequenceObjects(objects: string[]): string {
+  const unique = Array.from(new Set(objects.map((value) => pipelineSanitizeSequenceLabel(value)).filter(Boolean)));
+  if (unique.length === 0) return "multiple steps";
+  if (unique.length === 1) return unique[0]!;
+  if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
+  return `${unique[0]}, ${unique[1]} +${unique.length - 2} more`;
+}
+
+function createSequenceDescriptor(
+  action: string,
+  object: string | undefined,
+  options: { signal?: number; generic?: boolean } = {},
+): SequenceLabelDescriptor {
+  const normalizedAction = normalizeSequenceAction(action);
+  const normalizedObject = object ? pipelineSanitizeSequenceLabel(object) : undefined;
+  return {
+    action: normalizedAction,
+    object: normalizedObject,
+    text: pipelineBuildSequenceText(normalizedAction, normalizedObject),
+    mergeKey: `${normalizedAction}:${normalizeSequenceObjectFamily(normalizedObject ?? normalizedAction)}`,
+    objectFamily: normalizeSequenceObjectFamily(normalizedObject ?? normalizedAction),
+    signal: options.signal ?? (normalizedObject ? 4 : 2),
+    generic: options.generic ?? !normalizedObject,
+  };
+}
+
+function normalizeSequenceAction(action: string): string {
+  const normalized = pipelineSanitizeSequenceLabel(action).toLowerCase();
+  switch (normalized) {
+    case "handoff":
+      return "Hand off";
+    case "persist":
+      return "Persist";
+    case "config":
+    case "use":
+      return "Apply";
+    case "call":
+      return "Run";
+    default:
+      return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "";
+  }
+}
+
+function normalizeSequenceObjectFamily(value: string): string {
+  return pipelineSanitizeSequenceLabel(value).toLowerCase();
+}
+
+function inferCallAction(targetLabel: string): string {
+  const normalized = pipelineSanitizeSequenceLabel(targetLabel).toLowerCase();
+  if (normalized.includes("read csv") || normalized.includes("read excel")) return "Load";
+  if (normalized.includes("dataframe")) return "Create";
+  if (normalized.includes("to datetime")) return "Normalize";
+  if (normalized.includes("astype")) return "Cast";
+  if (normalized.includes("connector")) return "Query";
+  if (normalized.includes("filter")) return "Apply";
+  return "Run";
+}
+
+function inferWriteAction(targetLabel: string): string {
+  const normalized = pipelineSanitizeSequenceLabel(targetLabel).toLowerCase();
+  if (normalized.includes("json") || normalized.includes("pickle") || normalized.includes("persist")) {
+    return "Persist";
+  }
+  if (normalized.includes("result") || normalized.includes("output")) {
+    return "Publish";
+  }
+  return "Write";
+}
+
+function humanizePipelineFlowObject(label: string): string {
+  const normalized = pipelineSanitizeSequenceLabel(label).toLowerCase();
+  if (!normalized) return "pipeline data";
+  if (normalized.includes("source records")) return "source records";
+  if (normalized.includes("prepared data")) return "prepared data";
+  if (normalized.includes("normalized entities")) return "normalized entities";
+  if (normalized.includes("matched") || normalized.includes("filtered")) return "matched and filtered data";
+  if (normalized.includes("distribution")) return "distribution inputs";
+  return normalized.replace(/\//g, " and ");
+}
+
+function humanizeProcessArtifactObject(label: string, targetLabel: string, sourceLabel: string): string {
+  const combined = `${label} ${targetLabel} ${sourceLabel}`.toLowerCase();
+  if (combined.includes("arrival")) return "arrival tables";
+  if (combined.includes("simulation")) return "simulation results";
+  if (combined.includes("distribution") || combined.includes("kde")) return "distribution outputs";
+  if (combined.includes("json")) return "JSON artifacts";
+  if (combined.includes("pickle") || combined.includes("pkl")) return "binary artifacts";
+  if (combined.includes("csv") || combined.includes("xlsx") || combined.includes("xls")) {
+    if (combined.includes("extract")) return "extracted tables";
+    return "tabular outputs";
+  }
+  return humanizeSequenceObjectLabel(targetLabel || sourceLabel, "writes") || "artifacts";
+}
+
+function humanizeSequenceObjectLabel(label: string, relationType: RelationType): string | undefined {
+  const raw = pipelineSanitizeSequenceLabel(label);
+  const normalized = raw.toLowerCase().replace(/\\/g, "/");
+  if (!normalized) return undefined;
+
+  if (normalized.includes("material cluster") || normalized.includes("cluster zuordnung")) return "material mapping";
+  if (normalized.includes("route")) return "route data";
+  if (normalized.includes("wegrezept") || normalized.includes("recipe")) return "recipe data";
+  if (normalized.includes("auftrag") || normalized.includes("order")) return "order overview";
+  if (normalized.includes("arrival")) return "arrival data";
+  if (normalized.includes("simulation")) return "simulation results";
+  if (normalized.includes("distribution") || normalized.includes("kde")) return "distribution outputs";
+  if (normalized.includes("druid")) return relationType === "instantiates" ? "Druid connector" : "Druid records";
+  if (normalized.includes("mes")) return relationType === "instantiates" ? "MES connector" : "MES records";
+  if (normalized.includes("dataframe")) return "DataFrame";
+  if (normalized.includes("to datetime")) return "timestamps";
+  if (normalized.includes("astype")) return "column types";
+  if (normalized.includes("filter")) return "filter rules";
+  if (/\.(csv|xlsx|xls|tsv)$/.test(normalized) || /\b(csv|xlsx|xls|tsv)\b/.test(normalized)) {
+    return relationType === "writes" ? "data files" : "input files";
+  }
+  if (normalized.includes("json")) return "JSON artifacts";
+  if (normalized.includes("pickle") || normalized.includes("pkl")) return "binary artifacts";
+
+  const basename = shortBasename(raw);
+  if (!basename) return undefined;
+  return basename.replace(/\.[a-z0-9]+$/i, "");
+}
+
+function shortBasename(label: string): string {
+  const normalized = label.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] ?? normalized;
 }
 
 function compactSequenceMessages(
@@ -997,7 +1830,9 @@ function compactSequenceMessages(
     if (previous && canMergeSequenceMessages(previous, message)) {
       previous.relationIds.push(message.relation.id);
       previous.count += 1;
-      previous.label = buildCompactedSequenceMessageLabel(previous, message, labelsMode);
+      previous.descriptors.push(message.descriptor);
+      previous.signalScore = Math.max(previous.signalScore, message.descriptor.signal);
+      previous.label = buildCompactedSequenceMessageLabel(previous, labelsMode);
       continue;
     }
 
@@ -1014,6 +1849,8 @@ function compactSequenceMessages(
       sortIndex: message.sortIndex,
       label: message.label,
       count: 1,
+      descriptors: [message.descriptor],
+      signalScore: message.descriptor.signal,
       isSelfCall: message.isSelfCall,
       isCreateMessage: message.isCreateMessage,
     });
@@ -1023,29 +1860,26 @@ function compactSequenceMessages(
 }
 
 function canMergeSequenceMessages(previous: SequenceMessage, current: RawSequenceMessage): boolean {
-  return (
-    previous.sourceParticipantId === current.sourceParticipantId &&
-    previous.targetParticipantId === current.targetParticipantId &&
-    previous.relationType === current.relation.type &&
-    previous.isSelfCall === current.isSelfCall
-  );
+  if (
+    previous.sourceParticipantId !== current.sourceParticipantId ||
+    previous.targetParticipantId !== current.targetParticipantId ||
+    previous.relationType !== current.relation.type ||
+    previous.isSelfCall !== current.isSelfCall
+  ) {
+    return false;
+  }
+
+  const previousDescriptor = previous.descriptors[previous.descriptors.length - 1];
+  if (!previousDescriptor) return true;
+  return pipelineShouldMergeSequenceDescriptors(previous.relationType, previousDescriptor, current.descriptor);
 }
 
 function buildCompactedSequenceMessageLabel(
   previous: SequenceMessage,
-  current: RawSequenceMessage,
   labelsMode: DiagramLabelMode,
 ): string | undefined {
   if (labelsMode === "off") return undefined;
-
-  if (previous.count + 1 <= 1) return previous.label ?? current.label;
-  if (previous.relationType === "instantiates") {
-    return labelsMode === "compact" ? `create x${previous.count + 1}` : `${previous.count + 1} creations`;
-  }
-
-  const verb = RELATION_VERBS[previous.relationType] ?? previous.relationType;
-  if (labelsMode === "compact") return `${verb} x${previous.count + 1}`;
-  return `${previous.count + 1} ${verb}`;
+  return pipelineSummarizeSequenceDescriptors(previous.descriptors, labelsMode);
 }
 
 function summarizeSequenceMessages(messages: SequenceMessage[]): SequenceMessage[] {
@@ -1061,23 +1895,29 @@ function summarizeSequenceMessages(messages: SequenceMessage[]): SequenceMessage
   };
 
   for (const message of messages) {
-    if (message.relationType !== "calls") {
+    if (message.signalScore >= 5) {
       keep(message);
     }
   }
 
   const seenSelfCalls = new Set<string>();
   for (const message of messages) {
-    if (message.relationType !== "calls" || !message.isSelfCall) continue;
+    if (!message.isSelfCall) continue;
     if (seenSelfCalls.has(message.sourceParticipantId)) continue;
     seenSelfCalls.add(message.sourceParticipantId);
     keep(message);
   }
 
+  for (const message of messages) {
+    if (message.relationType !== "calls") {
+      keep(message);
+    }
+  }
+
   const seenCallPairs = new Set<string>();
   for (const message of messages) {
     if (message.relationType !== "calls" || message.isSelfCall) continue;
-    const pairKey = `${message.sourceParticipantId}|${message.targetParticipantId}`;
+    const pairKey = `${message.sourceParticipantId}|${message.targetParticipantId}|${message.descriptors[0]?.mergeKey ?? message.id}`;
     if (seenCallPairs.has(pairKey)) continue;
     seenCallPairs.add(pairKey);
     keep(message);

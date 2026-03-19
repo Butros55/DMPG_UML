@@ -2628,7 +2628,9 @@ body,
 }
 
 .sequence-edge-label.edge-related--dim {
-  opacity: 0.46 !important;
+  opacity: 0.18 !important;
+  box-shadow: none !important;
+  filter: saturate(0.35);
 }
 
 .edge-related--active .react-flow__edge-textbg {
