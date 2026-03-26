@@ -183,9 +183,8 @@ function DynamicPorts({ ports }: { ports?: PortInfo[] }) {
           position={portSideToPosition(port.side)}
           className="dynamic-port-handle"
           style={{
-            ...(port.side === "EAST" || port.side === "WEST"
-              ? { top: port.y }
-              : { left: port.x }),
+            left: port.x,
+            top: port.y,
           }}
         />
       ))}

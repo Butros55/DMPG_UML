@@ -34,9 +34,10 @@ const PARTICIPANT_LEFT_MARGIN = 48;
 const PARTICIPANT_TOP_MARGIN = 52;
 const ACTIVATION_HALF_HEIGHT = 12;
 const ACTIVATION_GAP = 8;
+const SEQUENCE_ACTIVATION_WIDTH = 10;
 const SELF_CALL_VERTICAL_GAP = 12;
-const MAX_SEQUENCE_MESSAGES = 14;
-const MAX_SEQUENCE_PARTICIPANTS = 6;
+const MAX_SEQUENCE_MESSAGES = 20;
+const MAX_SEQUENCE_PARTICIPANTS = 8;
 
 type SequenceParticipantRole =
   | "actor"
@@ -418,14 +419,14 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
       const selfPorts = portsByParticipant.get(message.sourceParticipantId) ?? [];
       selfPorts.push({
         id: `seq-src:${message.id}`,
-        x: sourceLayout.width,
+        x: resolveSequenceLifelineAnchorX(sourceLayout.width, "EAST"),
         y,
         side: "EAST",
         type: "source",
       });
       selfPorts.push({
         id: `seq-tgt:${message.id}`,
-        x: sourceLayout.width,
+        x: resolveSequenceLifelineAnchorX(sourceLayout.width, "EAST", 1),
         y: y + SELF_CALL_VERTICAL_GAP,
         side: "EAST",
         type: "target",
@@ -454,14 +455,14 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
     const targetPorts = portsByParticipant.get(message.targetParticipantId) ?? [];
     sourcePorts.push({
       id: `seq-src:${message.id}`,
-      x: sourceSide === "EAST" ? sourceLayout.width : 0,
+      x: resolveSequenceLifelineAnchorX(sourceLayout.width, sourceSide),
       y,
       side: sourceSide,
       type: "source",
     });
     targetPorts.push({
       id: `seq-tgt:${message.id}`,
-      x: targetSide === "EAST" ? targetLayout.width : 0,
+      x: resolveSequenceLifelineAnchorX(targetLayout.width, targetSide),
       y,
       side: targetSide,
       type: "target",
@@ -964,18 +965,54 @@ function resolveStageExternalParticipantId(
   relationType: RelationType,
 ): string {
   if (symbolId.startsWith("proc:")) return symbolId;
-  const normalized = (symbol?.label ?? symbolId).toLowerCase();
+  const preferredParticipantId = resolveSpecificStageExternalParticipantId(symbolId, symbolById);
+  if (preferredParticipantId) {
+    return preferredParticipantId;
+  }
 
-  if (symbol && (normalized.includes("druid") || normalized.includes("mes") || normalized.includes("database") || normalized.includes("sql"))) {
-    return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:data-sources", "Datenquellen", "component");
-  }
-  if (symbol && (normalized.includes(".csv") || normalized.includes(".xlsx") || normalized.includes(".xls") || normalized.includes("route") || normalized.includes("material") || normalized.includes("order"))) {
-    return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:data-files", "Data Files", "package");
-  }
+  const normalized = (symbol?.label ?? symbolId).toLowerCase();
   if (relationType === "writes") {
     return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:supporting-artifacts", "Supporting Artifacts", "artifact");
   }
+  if (normalized.includes("druid") || normalized.includes("mes") || normalized.includes("database") || normalized.includes("sql")) {
+    return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:data-sources", "Datenquellen", "component");
+  }
   return ensureStageBucketSymbol(symbolById, "sequence-stage-bucket:data-files", "Data Files", "package");
+}
+
+function resolveSpecificStageExternalParticipantId(
+  symbolId: string,
+  symbolById: Map<string, Symbol>,
+): string | null {
+  let currentId: string | undefined = symbolId;
+  let classCandidateId: string | null = null;
+  let depth = 0;
+
+  while (currentId && depth < 12) {
+    const candidate = symbolById.get(currentId);
+    if (!candidate) break;
+
+    if (
+      isArtifactLikeSymbol(candidate) ||
+      candidate.kind === "group" ||
+      candidate.kind === "package" ||
+      candidate.kind === "module" ||
+      candidate.umlType === "package"
+    ) {
+      return currentId;
+    }
+    if (candidate.kind === "class" && !classCandidateId) {
+      classCandidateId = currentId;
+    }
+
+    currentId = candidate.parentId;
+    depth += 1;
+  }
+
+  if (classCandidateId) {
+    return classCandidateId;
+  }
+  return symbolById.has(symbolId) ? symbolId : null;
 }
 
 function ensureStageBucketSymbol(
@@ -1388,11 +1425,11 @@ function shortDisplayName(symbol: Symbol): string {
   if (!label) return symbol.id;
   if (label.includes("/") || label.includes("\\")) {
     const parts = label.replace(/\\/g, "/").split("/");
-    return parts[parts.length - 1] ?? label;
+    return parts[parts.length - 1]?.trim() ?? label;
   }
   if (symbol.kind === "module" || symbol.kind === "class" || symbol.kind === "function" || symbol.kind === "method") {
     const segments = label.split(/[.:]/);
-    return segments[segments.length - 1] ?? label;
+    return segments[segments.length - 1]?.trim() ?? label;
   }
   return label;
 }
@@ -2046,6 +2083,17 @@ function resolveSequenceLabelWidth(
 
   const corridorWidth = Math.abs(targetLayout.centerX - sourceLayout.centerX) - 36;
   return clampNumber(corridorWidth, MESSAGE_LABEL_MIN_WIDTH, MESSAGE_LABEL_MAX_WIDTH);
+}
+
+function resolveSequenceLifelineAnchorX(
+  layoutWidth: number,
+  side: "EAST" | "WEST",
+  depth = 0,
+): number {
+  const centerX = layoutWidth / 2;
+  const halfActivationWidth = SEQUENCE_ACTIVATION_WIDTH / 2;
+  const nestedOffset = depth * 8;
+  return centerX + nestedOffset + (side === "EAST" ? halfActivationWidth : -halfActivationWidth);
 }
 
 function estimateWrappedLabelLineCount(label: string | undefined, maxWidth: number): number {

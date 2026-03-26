@@ -43,7 +43,9 @@ function buildFallbackPath(
   props: EdgeProps<Edge<ElkEdgeData>>,
 ): { path: string; labelX: number; labelY: number } {
   if (props.data?.sequenceKind === "self" || props.source === props.target) {
-    const anchorX = Math.max(props.sourceX, props.targetX);
+    const startX = props.sourceX;
+    const endX = props.targetX;
+    const anchorX = Math.max(startX, endX);
     const topY = Math.min(props.sourceY, props.targetY);
     const bottomY = Math.max(props.sourceY, props.targetY);
     const loopWidth = 54;
@@ -52,9 +54,10 @@ function buildFallbackPath(
 
     return {
       path: [
-        `M ${anchorX},${topY}`,
+        `M ${startX},${topY}`,
+        `L ${anchorX},${topY}`,
         `C ${elbowX},${topY} ${elbowX},${topY} ${elbowX},${midY}`,
-        `S ${elbowX},${bottomY} ${anchorX},${bottomY}`,
+        `S ${elbowX},${bottomY} ${endX},${bottomY}`,
       ].join(" "),
       labelX: elbowX - 8,
       labelY: midY,
