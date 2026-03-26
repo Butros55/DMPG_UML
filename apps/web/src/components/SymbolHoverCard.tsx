@@ -14,6 +14,15 @@ import {
 } from "../hoverCardPlacement";
 import { resolveNavigableSymbolId } from "../viewNavigation";
 import { buildArtifactPreview, buildArtifactPreviewMetaChips, translateArtifactPreviewLabel } from "../artifactPreview";
+import { openInIde } from "../api";
+import {
+  buildPackageSequenceDiagramDetails,
+  isPackageSequenceView,
+  type SequenceMessagePanelData,
+  type SequenceParticipantMessagePreview,
+  type SequenceParticipantPanelData,
+  type SequenceProjectionMeta,
+} from "../sequenceDiagram";
 
 /* ── Enriched symbol info (computed from graph relations) ── */
 
@@ -464,20 +473,56 @@ function resolvePreviewReference(
   return lastSegment ? { symbolId: lastSegment.id, label: lastSegment.label } : null;
 }
 
+function formatSequenceKind(kind: SequenceMessagePanelData["kind"]): string {
+  switch (kind) {
+    case "create":
+      return "create";
+    case "async":
+      return "async";
+    case "self":
+      return "self";
+    default:
+      return "sync";
+  }
+}
+
+function formatSequenceDirection(direction: SequenceParticipantMessagePreview["direction"]): string {
+  switch (direction) {
+    case "incoming":
+      return "In";
+    case "outgoing":
+      return "Out";
+    case "self":
+      return "Self";
+    default:
+      return direction;
+  }
+}
+
+function formatProjectionFilters(projection: SequenceProjectionMeta | null): string {
+  if (!projection || projection.activeRelationFilters.length === 0) return "All relations";
+  return projection.activeRelationFilters.join(", ");
+}
+
 /* ── The Hover Card Component ── */
 
 export function SymbolHoverCard() {
-  const hoverSymbolId = useAppStore((s) => s.hoverSymbolId);
+  const hoverTarget = useAppStore((s) => s.hoverTarget);
   const hoverPosition = useAppStore((s) => s.hoverPosition);
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
+  const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
+  const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
   const focusSymbolInContext = useAppStore((s) => s.focusSymbolInContext);
   const openSourceViewer = useAppStore((s) => s.openSourceViewer);
   const cardRef = useRef<HTMLDivElement>(null);
-  const [resolvedPosition, setResolvedPosition] = useState<{ symbolId: string; x: number; y: number } | null>(null);
+  const [resolvedPosition, setResolvedPosition] = useState<{ targetKey: string; x: number; y: number } | null>(null);
   const hoverSource = hoverPosition?.source ?? "canvas";
+  const hoverTargetKey = hoverTarget ? `${hoverTarget.kind}:${hoverTarget.id}` : null;
+  const hoverSymbolId = hoverTarget?.kind === "symbol" ? hoverTarget.id : null;
   const currentView = currentViewId && graph ? graph.views.find((entry) => entry.id === currentViewId) ?? null : null;
+  const sequenceView = isPackageSequenceView(currentView, graph);
   const resolvedArtifactView = useMemo(
     () =>
       graph && currentView
@@ -497,6 +542,38 @@ export function SymbolHoverCard() {
       relations: resolvedArtifactView.relations,
     };
   }, [graph, resolvedArtifactView]);
+  const sequenceDetails = useMemo(() => {
+    if (!graph || !currentView || !resolvedArtifactView || !sequenceView) return null;
+    const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
+    const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    return buildPackageSequenceDiagramDetails({
+      graph,
+      view: currentView,
+      visibleViewNodeRefs,
+      hiddenSymbolIds,
+      symbolOverrides: resolvedArtifactView.symbolOverrides,
+      relationFilters: diagramSettings.relationFilters,
+      labelsMode: diagramSettings.labels,
+      selectedSymbolId,
+      selectedEdgeId,
+    });
+  }, [
+    currentView,
+    diagramSettings.labels,
+    diagramSettings.relationFilters,
+    graph,
+    resolvedArtifactView,
+    selectedEdgeId,
+    selectedSymbolId,
+    sequenceView,
+  ]);
+  const hoveredSequenceParticipant = hoverSymbolId && sequenceDetails
+    ? sequenceDetails.participants.get(hoverSymbolId) ?? null
+    : null;
+  const hoveredSequenceMessage = hoverTarget?.kind === "sequenceMessage" && sequenceDetails
+    ? sequenceDetails.messages.get(hoverTarget.id) ?? null
+    : null;
+  const sequenceProjection = sequenceDetails?.projection ?? null;
 
   const info = useMemo(() => {
     if (!hoverSymbolId || !viewGraph) return null;
@@ -521,7 +598,7 @@ export function SymbolHoverCard() {
   const previewData = useMemo(() => (info ? buildArtifactPreview(info.sym) : null), [info]);
 
   const relatedNodeIds = useMemo(() => {
-    if (!graph || !currentViewId || !hoverSymbolId) return [] as string[];
+    if (sequenceView || !graph || !currentViewId || !hoverSymbolId) return [] as string[];
 
     const view = graph.views.find((entry) => entry.id === currentViewId);
     if (!view) return [] as string[];
@@ -563,10 +640,11 @@ export function SymbolHoverCard() {
     graph,
     hoverSymbolId,
     resolvedArtifactView,
+    sequenceView,
   ]);
 
   useLayoutEffect(() => {
-    if (!cardRef.current || !hoverSymbolId || !hoverPosition) return;
+    if (!cardRef.current || !hoverTarget || !hoverTargetKey || !hoverPosition) return;
 
     if (hoverSource === "inspector") {
       const inspectorEl = document.querySelector(".inspector");
@@ -585,9 +663,18 @@ export function SymbolHoverCard() {
           )
         : hoverPosition.y;
       setResolvedPosition({
-        symbolId: hoverSymbolId,
+        targetKey: hoverTargetKey,
         x: hoverPosition.x,
         y: boundedY,
+      });
+      return;
+    }
+
+    if (hoverTarget.kind !== "symbol") {
+      setResolvedPosition({
+        targetKey: hoverTargetKey,
+        x: hoverPosition.x,
+        y: hoverPosition.y,
       });
       return;
     }
@@ -595,10 +682,10 @@ export function SymbolHoverCard() {
     const updatePlacement = () => {
       if (!cardRef.current) return;
 
-      const anchorRect = getNodeRect(hoverSymbolId);
+      const anchorRect = getNodeRect(hoverTarget.id);
       if (!anchorRect) {
         setResolvedPosition({
-          symbolId: hoverSymbolId,
+          targetKey: hoverTargetKey,
           x: hoverPosition.x,
           y: hoverPosition.y,
         });
@@ -621,7 +708,7 @@ export function SymbolHoverCard() {
       });
 
       setResolvedPosition({
-        symbolId: hoverSymbolId,
+        targetKey: hoverTargetKey,
         x: placement.x,
         y: placement.y,
       });
@@ -637,7 +724,7 @@ export function SymbolHoverCard() {
       resizeObserver.disconnect();
       window.removeEventListener("resize", updatePlacement);
     };
-  }, [hoverPosition, hoverSource, hoverSymbolId, info, relatedNodeIds]);
+  }, [hoverPosition, hoverSource, hoverTarget, hoverTargetKey, relatedNodeIds]);
 
   const handleNavigate = useCallback(
     (symId: string) => {
@@ -648,7 +735,7 @@ export function SymbolHoverCard() {
       focusSymbolInContext(resolvedId);
       // Close hover card
       setMouseOverCard(false);
-      useAppStore.getState().setHoverSymbol(null);
+      useAppStore.getState().setHoverTarget(null);
     },
     [graph, focusSymbolInContext],
   );
@@ -658,14 +745,179 @@ export function SymbolHoverCard() {
     clearLinkedNodeHighlight();
     openSourceViewer(info.sym.id, info.sym.label);
     setMouseOverCard(false);
-    useAppStore.getState().setHoverSymbol(null);
+    useAppStore.getState().setHoverTarget(null);
   }, [info, openSourceViewer]);
 
-  if (!info || !hoverPosition) return null;
+  const handleOpenEvidence = useCallback((file: string | null, line: number | null) => {
+    if (!file) return;
+    void openInIde("vscode", file, line ?? undefined).catch(() => undefined);
+  }, []);
 
-  const cardPosition = resolvedPosition?.symbolId === hoverSymbolId
+  if (!hoverTarget || !hoverPosition) return null;
+
+  const cardPosition = resolvedPosition?.targetKey === hoverTargetKey
     ? { x: resolvedPosition.x, y: resolvedPosition.y }
     : hoverPosition;
+
+  if (hoverTarget.kind === "sequenceMessage") {
+    if (!hoveredSequenceMessage) return null;
+    const messageLabel = hoveredSequenceMessage.label
+      ?? hoveredSequenceMessage.descriptorPreview[0]
+      ?? hoveredSequenceMessage.relationType;
+
+    return (
+      <div
+        ref={cardRef}
+        className={`symbol-hover-card${hoverSource === "inspector" ? " symbol-hover-card--inspector" : ""}`}
+        data-testid="sequence-message-hover-card"
+        style={{ left: cardPosition.x, top: cardPosition.y }}
+        onMouseEnter={() => setMouseOverCard(true)}
+        onMouseLeave={() => { clearLinkedNodeHighlight(); setMouseOverCard(false); scheduleHideHover(); }}
+      >
+        <div className="shc-header">
+          <span className="shc-kind-badge shc-kind-badge--sequence-message">Sequence Message</span>
+          <div className="shc-name">#{hoveredSequenceMessage.index} {messageLabel}</div>
+        </div>
+        <div className="shc-parent">
+          Kind: {formatSequenceKind(hoveredSequenceMessage.kind)} · Relation: {hoveredSequenceMessage.relationType} · Aggregated: {hoveredSequenceMessage.count}
+        </div>
+        <div className="shc-preview-box">
+          <div className="shc-preview-subsection-label">Route</div>
+          <div className="shc-preview-chip-row">
+            <span className="shc-preview-chip shc-preview-chip--link" onClick={() => handleNavigate(hoveredSequenceMessage.sourceParticipantId)}>
+              {hoveredSequenceMessage.sourceParticipantLabel}
+            </span>
+            <span className="shc-preview-chip">→</span>
+            <span className="shc-preview-chip shc-preview-chip--link" onClick={() => handleNavigate(hoveredSequenceMessage.targetParticipantId)}>
+              {hoveredSequenceMessage.targetParticipantLabel}
+            </span>
+          </div>
+        </div>
+        {hoveredSequenceMessage.descriptorPreview.length > 0 && (
+          <div className="shc-preview-box">
+            <div className="shc-preview-subsection-label">Descriptors</div>
+            <div className="shc-preview-chip-row">
+              {hoveredSequenceMessage.descriptorPreview.map((descriptor, index) => (
+                <span key={`${hoveredSequenceMessage.id}-descriptor-${index}`} className="shc-preview-chip">
+                  {descriptor}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {(hoveredSequenceMessage.evidenceFile || sequenceProjection) && (
+          <div className="shc-preview-box">
+            {hoveredSequenceMessage.evidenceFile && (
+              <>
+                <div className="shc-preview-subsection-label">Evidence</div>
+                <div className="shc-location">
+                  {hoveredSequenceMessage.evidenceFile}
+                  {hoveredSequenceMessage.evidenceLine != null ? `:${hoveredSequenceMessage.evidenceLine}` : ""}
+                </div>
+                <button className="source-view-btn" onClick={() => handleOpenEvidence(hoveredSequenceMessage.evidenceFile, hoveredSequenceMessage.evidenceLine)}>
+                  <i className="bi bi-box-arrow-up-right" /> Open in IDE
+                </button>
+              </>
+            )}
+            {sequenceProjection && (
+              <>
+                <div className="shc-preview-subsection-label" style={{ marginTop: hoveredSequenceMessage.evidenceFile ? 8 : 0 }}>Projection</div>
+                <div className="shc-parent">
+                  Participants: {sequenceProjection.usedParticipants}/{sequenceProjection.participantLimit} · Messages: {sequenceProjection.usedMessages}/{sequenceProjection.messageLimit}
+                </div>
+                <div className="shc-parent">
+                  Buckets: {sequenceProjection.bucketsActive ? "active" : "inactive"} · Filters: {formatProjectionFilters(sequenceProjection)}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (hoveredSequenceParticipant) {
+    const previewMessages = hoveredSequenceParticipant.messages.slice(0, 3);
+
+    return (
+      <div
+        ref={cardRef}
+        className={`symbol-hover-card${hoverSource === "inspector" ? " symbol-hover-card--inspector" : ""}`}
+        data-testid="sequence-participant-hover-card"
+        style={{ left: cardPosition.x, top: cardPosition.y }}
+        onMouseEnter={() => setMouseOverCard(true)}
+        onMouseLeave={() => { clearLinkedNodeHighlight(); setMouseOverCard(false); scheduleHideHover(); }}
+      >
+        <div className="shc-header">
+          <span className="shc-kind-badge shc-kind-badge--sequence-participant">Participant</span>
+          <div className="shc-name">{hoveredSequenceParticipant.label}</div>
+        </div>
+        <div className="shc-parent">
+          Role: {hoveredSequenceParticipant.role} · Lane: {hoveredSequenceParticipant.laneKind}
+        </div>
+        {hoveredSequenceParticipant.fullLabel && hoveredSequenceParticipant.fullLabel !== hoveredSequenceParticipant.label && (
+          <div className="shc-location">{hoveredSequenceParticipant.fullLabel}</div>
+        )}
+        <div className="shc-preview-box">
+          <div className="shc-preview-subsection-label">Sequence Stats</div>
+          <div className="shc-preview-chip-row">
+            <span className="shc-preview-chip">In {hoveredSequenceParticipant.incomingCount}</span>
+            <span className="shc-preview-chip">Out {hoveredSequenceParticipant.outgoingCount}</span>
+            <span className="shc-preview-chip">First #{hoveredSequenceParticipant.firstMessageIndex ?? "-"}</span>
+            <span className="shc-preview-chip">Created #{hoveredSequenceParticipant.createdAtMessageIndex ?? "-"}</span>
+          </div>
+          <div className="shc-preview-chip-row">
+            <span className="shc-preview-chip">sync {hoveredSequenceParticipant.breakdown.sync}</span>
+            <span className="shc-preview-chip">async {hoveredSequenceParticipant.breakdown.async}</span>
+            <span className="shc-preview-chip">create {hoveredSequenceParticipant.breakdown.create}</span>
+            <span className="shc-preview-chip">self {hoveredSequenceParticipant.breakdown.self}</span>
+          </div>
+        </div>
+        <div className="shc-preview-box">
+          <div className="shc-preview-subsection-label">Activations</div>
+          <div className="shc-preview-chip-row">
+            <span className="shc-preview-chip">Count {hoveredSequenceParticipant.activationCount}</span>
+            {hoveredSequenceParticipant.activationMaxDepth != null && (
+              <span className="shc-preview-chip">Max depth {hoveredSequenceParticipant.activationMaxDepth}</span>
+            )}
+          </div>
+        </div>
+        {previewMessages.length > 0 && (
+          <div className="shc-preview-box">
+            <div className="shc-preview-subsection-label">Messages</div>
+            <div className="shc-preview-detail-list">
+              {previewMessages.map((message) => (
+                <div key={`${hoveredSequenceParticipant.participantId}-${message.id}-${message.direction}`} className="shc-preview-detail-row">
+                  <div className="shc-preview-detail-label">#{message.index}</div>
+                  <div className="shc-preview-detail-value">
+                    <span className="shc-preview-chip">{formatSequenceDirection(message.direction)}</span>
+                    <span className="shc-preview-chip shc-preview-chip--link" onClick={() => handleNavigate(message.partnerId)}>
+                      {message.partnerLabel}
+                    </span>
+                    <span className="shc-preview-chip">{message.label}</span>
+                    {message.count > 1 && <span className="shc-preview-chip">x{message.count}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {sequenceProjection && (
+          <div className="shc-preview-box">
+            <div className="shc-preview-subsection-label">Projection</div>
+            <div className="shc-parent">
+              Participants: {sequenceProjection.usedParticipants}/{sequenceProjection.participantLimit} · Messages: {sequenceProjection.usedMessages}/{sequenceProjection.messageLimit}
+            </div>
+            <div className="shc-parent">
+              Buckets: {sequenceProjection.bucketsActive ? "active" : "inactive"} · Filters: {formatProjectionFilters(sequenceProjection)} · Labels: {sequenceProjection.labelMode}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (!info) return null;
 
   const { sym } = info;
   const doc = sym.doc;

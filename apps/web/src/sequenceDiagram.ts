@@ -39,13 +39,112 @@ const SELF_CALL_VERTICAL_GAP = 12;
 const MAX_SEQUENCE_MESSAGES = 20;
 const MAX_SEQUENCE_PARTICIPANTS = 8;
 
-type SequenceParticipantRole =
+export type SequenceParticipantLaneKind = "internal" | "external" | "artifact";
+
+export type SequenceParticipantRole =
   | "actor"
   | "package"
   | "object"
   | "artifact"
   | "database"
   | "component";
+
+export type SequenceEdgeKind = "sync" | "async" | "create" | "self";
+
+export type SequenceParticipantMessagePreview = {
+  id: string;
+  index: number;
+  direction: "incoming" | "outgoing" | "self";
+  partnerId: string;
+  partnerLabel: string;
+  partnerLaneKind: SequenceParticipantLaneKind;
+  partnerRole: SequenceParticipantRole;
+  label: string;
+  count: number;
+  kind: SequenceEdgeKind;
+  relationType: RelationType;
+};
+
+export type SequenceParticipantPanelData = {
+  participantId: string;
+  label: string;
+  fullLabel?: string;
+  subtitle: string;
+  laneKind: SequenceParticipantLaneKind;
+  role: SequenceParticipantRole;
+  location?: Symbol["location"];
+  incomingCount: number;
+  outgoingCount: number;
+  breakdown: Record<SequenceEdgeKind, number>;
+  firstMessageIndex: number | null;
+  createdAtMessageIndex: number | null;
+  activationCount: number;
+  activationMaxDepth: number | null;
+  messages: SequenceParticipantMessagePreview[];
+};
+
+export type SequenceMessagePanelData = {
+  id: string;
+  index: number;
+  kind: SequenceEdgeKind;
+  relationType: RelationType;
+  label: string | null;
+  count: number;
+  sourceParticipantId: string;
+  sourceParticipantLabel: string;
+  sourceParticipantRole: SequenceParticipantRole;
+  sourceLaneKind: SequenceParticipantLaneKind;
+  targetParticipantId: string;
+  targetParticipantLabel: string;
+  targetParticipantRole: SequenceParticipantRole;
+  targetLaneKind: SequenceParticipantLaneKind;
+  relationIds: string[];
+  descriptorPreview: string[];
+  evidenceFile: string | null;
+  evidenceLine: number | null;
+};
+
+export type SequenceProjectionMeta = {
+  frameNodeId: string;
+  usedParticipants: number;
+  participantLimit: number;
+  usedMessages: number;
+  messageLimit: number;
+  participantsCollapsed: boolean;
+  messagesCollapsed: boolean;
+  bucketsActive: boolean;
+  activeRelationFilters: RelationType[];
+  labelMode: DiagramLabelMode;
+};
+
+export type SequenceMessageEdgeData = {
+  relationIds: string[];
+  relationType: RelationType;
+  sequenceKind: SequenceEdgeKind;
+  sequenceLabelWidth: number;
+  sequenceLabelLineCount: number;
+  sequenceMessageIndex: number;
+  sequenceMessageCount: number;
+  sequenceEvidenceFile?: string;
+  sequenceEvidenceLine?: number;
+  sequenceDescriptorsPreview?: string[];
+  sequenceSourceParticipantId: string;
+  sequenceSourceParticipantLabel: string;
+  sequenceSourceParticipantRole: SequenceParticipantRole;
+  sequenceSourceLaneKind: SequenceParticipantLaneKind;
+  sequenceTargetParticipantId: string;
+  sequenceTargetParticipantLabel: string;
+  sequenceTargetParticipantRole: SequenceParticipantRole;
+  sequenceTargetLaneKind: SequenceParticipantLaneKind;
+};
+
+export type SequenceProjectionDetails = {
+  nodes: Node[];
+  edges: Edge[];
+  participants: Map<string, SequenceParticipantPanelData>;
+  messages: Map<string, SequenceMessagePanelData>;
+  projection: SequenceProjectionMeta;
+};
 
 type RawSequenceMessage = {
   relation: Relation;
@@ -94,7 +193,7 @@ type SequenceLabelDescriptor = {
 type SequenceParticipantMeta = {
   symbol: Symbol;
   role: SequenceParticipantRole;
-  laneKind: "internal" | "external" | "artifact";
+  laneKind: SequenceParticipantLaneKind;
   displayLabel: string;
   fullLabel?: string;
   subtitle: string;
@@ -108,8 +207,6 @@ type SequenceParticipantStats = {
   firstInvolvementIndex: number;
   firstIncomingCreateIndex: number | null;
 };
-
-type SequenceEdgeKind = "sync" | "async" | "create" | "self";
 
 type SequenceParticipantLayout = {
   x: number;
@@ -132,6 +229,11 @@ type SequenceProjectionSeed = {
   messages: SequenceMessage[];
   displayBaseParticipantIds: string[];
   extraParticipantOrder: Map<string, number>;
+  participantsCollapsed: boolean;
+  bucketsActive: boolean;
+  messagesCollapsed: boolean;
+  activeRelationFilters: RelationType[];
+  labelMode: DiagramLabelMode;
 };
 
 export function isPackageSequenceView(
@@ -145,7 +247,7 @@ export function isPackageSequenceView(
   return parentView?.scope === "root";
 }
 
-export function buildPackageSequenceDiagram(params: {
+export function buildPackageSequenceDiagramDetails(params: {
   graph: ProjectGraph;
   view: DiagramView;
   visibleViewNodeRefs: string[];
@@ -155,7 +257,7 @@ export function buildPackageSequenceDiagram(params: {
   labelsMode: DiagramLabelMode;
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
-}): { nodes: Node[]; edges: Edge[] } {
+}): SequenceProjectionDetails {
   const {
     graph,
     view,
@@ -308,7 +410,8 @@ export function buildPackageSequenceDiagram(params: {
     }
   }
 
-  const messages = summarizeSequenceMessages(compactSequenceMessages(rawMessages, labelsMode));
+  const compactedMessages = compactSequenceMessages(rawMessages, labelsMode);
+  const messages = summarizeSequenceMessages(compactedMessages);
   return buildSequenceProjectionElements({
     view,
     symbolById,
@@ -317,14 +420,34 @@ export function buildPackageSequenceDiagram(params: {
     extraParticipantOrder,
     selectedSymbolId,
     selectedEdgeId,
+    participantsCollapsed: syntheticSymbols.size > 0 || participantAliases.size > 0 || crowdedAliases.syntheticSymbols.size > 0,
+    bucketsActive: syntheticSymbols.size > 0 || crowdedAliases.syntheticSymbols.size > 0,
+    messagesCollapsed: messages.length < compactedMessages.length,
+    activeRelationFilters: activeRelationFilterList(relationFilters),
+    labelMode: labelsMode,
   });
+}
+
+export function buildPackageSequenceDiagram(params: {
+  graph: ProjectGraph;
+  view: DiagramView;
+  visibleViewNodeRefs: string[];
+  hiddenSymbolIds: Set<string>;
+  symbolOverrides: Map<string, Symbol>;
+  relationFilters: Record<RelationType, boolean>;
+  labelsMode: DiagramLabelMode;
+  selectedSymbolId: string | null;
+  selectedEdgeId: string | null;
+}): { nodes: Node[]; edges: Edge[] } {
+  const details = buildPackageSequenceDiagramDetails(params);
+  return { nodes: details.nodes, edges: details.edges };
 }
 
 function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
   view: DiagramView;
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
-}): { nodes: Node[]; edges: Edge[] } {
+}): SequenceProjectionDetails {
   const {
     view,
     symbolById,
@@ -333,6 +456,11 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
     extraParticipantOrder,
     selectedSymbolId,
     selectedEdgeId,
+    participantsCollapsed,
+    bucketsActive,
+    messagesCollapsed,
+    activeRelationFilters,
+    labelMode,
   } = params;
   const participantStats = collectParticipantStats(messages);
   const displayBaseParticipantSet = new Set(displayBaseParticipantIds);
@@ -493,8 +621,9 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
     PARTICIPANT_TOP_MARGIN + HEADER_HEIGHT + lifelineHeight + FRAME_BOTTOM_PADDING,
   );
 
+  const frameNodeId = `sequence-frame:${view.id}`;
   const nodes: Node[] = [{
-    id: `sequence-frame:${view.id}`,
+    id: frameNodeId,
     type: "sequenceFrame",
     draggable: false,
     selectable: false,
@@ -610,11 +739,218 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
         sequenceKind: edgeKind,
         sequenceLabelWidth: layout.labelWidth,
         sequenceLabelLineCount: layout.labelLineCount,
+        sequenceMessageIndex: index + 1,
+        sequenceMessageCount: message.count,
+        sequenceEvidenceFile: sanitizeSequenceEvidenceFile(message.file),
+        sequenceEvidenceLine: sanitizeSequenceEvidenceLine(message.line),
+        sequenceDescriptorsPreview: buildSequenceDescriptorPreview(message),
+        sequenceSourceParticipantId: message.sourceParticipantId,
+        sequenceSourceParticipantLabel: sequenceParticipantMeta.get(message.sourceParticipantId)?.displayLabel ?? message.sourceParticipantId,
+        sequenceSourceParticipantRole: sequenceParticipantMeta.get(message.sourceParticipantId)?.role ?? "object",
+        sequenceSourceLaneKind: sequenceParticipantMeta.get(message.sourceParticipantId)?.laneKind ?? "external",
+        sequenceTargetParticipantId: message.targetParticipantId,
+        sequenceTargetParticipantLabel: sequenceParticipantMeta.get(message.targetParticipantId)?.displayLabel ?? message.targetParticipantId,
+        sequenceTargetParticipantRole: sequenceParticipantMeta.get(message.targetParticipantId)?.role ?? "object",
+        sequenceTargetLaneKind: sequenceParticipantMeta.get(message.targetParticipantId)?.laneKind ?? "external",
       },
     }];
   });
 
-  return { nodes, edges };
+  const projection: SequenceProjectionMeta = {
+    frameNodeId,
+    usedParticipants: orderedParticipantIds.length,
+    participantLimit: MAX_SEQUENCE_PARTICIPANTS,
+    usedMessages: messages.length,
+    messageLimit: MAX_SEQUENCE_MESSAGES,
+    participantsCollapsed,
+    messagesCollapsed,
+    bucketsActive,
+    activeRelationFilters,
+    labelMode,
+  };
+  const frameNode = nodes[0];
+  if (frameNode?.data) {
+    (frameNode.data as UmlNodeData).sequenceProjectionMeta = projection;
+  }
+
+  const participants = buildSequenceParticipantPanelData({
+    orderedParticipantIds,
+    sequenceParticipantMeta,
+    messages,
+    activationsByParticipant,
+  });
+  const messageDetails = buildSequenceMessagePanelData({
+    messages,
+    sequenceParticipantMeta,
+  });
+
+  return {
+    nodes,
+    edges,
+    participants,
+    messages: messageDetails,
+    projection,
+  };
+}
+
+function activeRelationFilterList(relationFilters: Record<RelationType, boolean>): RelationType[] {
+  return (Object.entries(relationFilters) as Array<[RelationType, boolean]>)
+    .filter(([, enabled]) => enabled)
+    .map(([relationType]) => relationType);
+}
+
+function sanitizeSequenceEvidenceFile(file: string): string | undefined {
+  const trimmed = file.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function sanitizeSequenceEvidenceLine(line: number): number | undefined {
+  return Number.isFinite(line) && line !== Number.MAX_SAFE_INTEGER ? line : undefined;
+}
+
+function buildSequenceDescriptorPreview(message: SequenceMessage): string[] {
+  return dedupeSequenceDescriptors(message.descriptors)
+    .map((descriptor) => descriptor.text?.trim() || pipelineBuildSequenceText(descriptor.action, descriptor.object))
+    .filter((value): value is string => !!value)
+    .slice(0, 3);
+}
+
+function createSequenceBreakdown(): Record<SequenceEdgeKind, number> {
+  return {
+    sync: 0,
+    async: 0,
+    create: 0,
+    self: 0,
+  };
+}
+
+function buildSequenceParticipantPanelData(params: {
+  orderedParticipantIds: string[];
+  sequenceParticipantMeta: Map<string, SequenceParticipantMeta>;
+  messages: SequenceMessage[];
+  activationsByParticipant: Map<string, SequenceActivationBar[]>;
+}): Map<string, SequenceParticipantPanelData> {
+  const { orderedParticipantIds, sequenceParticipantMeta, messages, activationsByParticipant } = params;
+  const data = new Map<string, SequenceParticipantPanelData>();
+
+  for (const participantId of orderedParticipantIds) {
+    const meta = sequenceParticipantMeta.get(participantId);
+    if (!meta) continue;
+    const mergedActivations = mergeActivationBars(activationsByParticipant.get(participantId) ?? []);
+    const activationDepths = mergedActivations
+      .map((bar) => bar.depth)
+      .filter((depth): depth is number => typeof depth === "number" && Number.isFinite(depth));
+    data.set(participantId, {
+      participantId,
+      label: meta.displayLabel,
+      fullLabel: meta.fullLabel,
+      subtitle: meta.subtitle,
+      laneKind: meta.laneKind,
+      role: meta.role,
+      location: meta.symbol.location,
+      incomingCount: 0,
+      outgoingCount: 0,
+      breakdown: createSequenceBreakdown(),
+      firstMessageIndex: Number.isFinite(meta.firstMessageIndex) && meta.firstMessageIndex !== Number.MAX_SAFE_INTEGER
+        ? meta.firstMessageIndex + 1
+        : null,
+      createdAtMessageIndex: null,
+      activationCount: mergedActivations.length,
+      activationMaxDepth: activationDepths.length > 0 ? Math.max(...activationDepths) : null,
+      messages: [],
+    });
+  }
+
+  messages.forEach((message, index) => {
+    const messageIndex = index + 1;
+    const kind = resolveSequenceEdgeKind(message);
+    const label = message.label ?? buildSequenceDescriptorPreview(message)[0] ?? message.relationType;
+
+    const source = data.get(message.sourceParticipantId);
+    const target = data.get(message.targetParticipantId);
+    const sourceMeta = sequenceParticipantMeta.get(message.sourceParticipantId);
+    const targetMeta = sequenceParticipantMeta.get(message.targetParticipantId);
+
+    if (source && sourceMeta && targetMeta) {
+      source.outgoingCount += 1;
+      source.breakdown[kind] += 1;
+      source.messages.push({
+        id: message.id,
+        index: messageIndex,
+        direction: message.isSelfCall ? "self" : "outgoing",
+        partnerId: message.targetParticipantId,
+        partnerLabel: targetMeta.displayLabel,
+        partnerLaneKind: targetMeta.laneKind,
+        partnerRole: targetMeta.role,
+        label,
+        count: message.count,
+        kind,
+        relationType: message.relationType,
+      });
+    }
+
+    if (target && sourceMeta && targetMeta) {
+      target.incomingCount += 1;
+      if (message.targetParticipantId !== message.sourceParticipantId) {
+        target.breakdown[kind] += 1;
+        target.messages.push({
+          id: message.id,
+          index: messageIndex,
+          direction: "incoming",
+          partnerId: message.sourceParticipantId,
+          partnerLabel: sourceMeta.displayLabel,
+          partnerLaneKind: sourceMeta.laneKind,
+          partnerRole: sourceMeta.role,
+          label,
+          count: message.count,
+          kind,
+          relationType: message.relationType,
+        });
+      }
+      if (message.isCreateMessage && !message.isSelfCall && target.createdAtMessageIndex == null) {
+        target.createdAtMessageIndex = messageIndex;
+      }
+    }
+  });
+
+  return data;
+}
+
+function buildSequenceMessagePanelData(params: {
+  messages: SequenceMessage[];
+  sequenceParticipantMeta: Map<string, SequenceParticipantMeta>;
+}): Map<string, SequenceMessagePanelData> {
+  const { messages, sequenceParticipantMeta } = params;
+  const data = new Map<string, SequenceMessagePanelData>();
+
+  messages.forEach((message, index) => {
+    const sourceMeta = sequenceParticipantMeta.get(message.sourceParticipantId);
+    const targetMeta = sequenceParticipantMeta.get(message.targetParticipantId);
+    if (!sourceMeta || !targetMeta) return;
+
+    data.set(message.id, {
+      id: message.id,
+      index: index + 1,
+      kind: resolveSequenceEdgeKind(message),
+      relationType: message.relationType,
+      label: message.label ?? null,
+      count: message.count,
+      sourceParticipantId: message.sourceParticipantId,
+      sourceParticipantLabel: sourceMeta.displayLabel,
+      sourceParticipantRole: sourceMeta.role,
+      sourceLaneKind: sourceMeta.laneKind,
+      targetParticipantId: message.targetParticipantId,
+      targetParticipantLabel: targetMeta.displayLabel,
+      targetParticipantRole: targetMeta.role,
+      targetLaneKind: targetMeta.laneKind,
+      relationIds: [...message.relationIds],
+      descriptorPreview: buildSequenceDescriptorPreview(message),
+      evidenceFile: sanitizeSequenceEvidenceFile(message.file) ?? null,
+      evidenceLine: sanitizeSequenceEvidenceLine(message.line) ?? null,
+    });
+  });
+
+  return data;
 }
 
 function buildStageSequenceProjectionSeed(params: {
@@ -725,6 +1061,11 @@ function buildStageSequenceProjectionSeed(params: {
     messages: dedupedMessages,
     displayBaseParticipantIds: [stageSymbol.id],
     extraParticipantOrder,
+    participantsCollapsed: false,
+    bucketsActive: false,
+    messagesCollapsed: dedupedMessages.length < messages.length,
+    activeRelationFilters: activeRelationFilterList(relationFilters),
+    labelMode: labelsMode,
   };
 }
 

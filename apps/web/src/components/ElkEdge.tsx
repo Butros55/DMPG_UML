@@ -8,15 +8,15 @@ import {
 } from "@xyflow/react";
 import type { DiagramEdgeType } from "../diagramSettings";
 import type { EdgeRoute } from "../layout";
+import { scheduleHideHover, scheduleShowHoverSequenceMessage } from "./hoverCardController";
+import { useAppStore } from "../store";
+import type { SequenceMessageEdgeData } from "../sequenceDiagram";
 
 type ElkEdgeData = {
   elkRoute?: EdgeRoute;
   fallbackEdgeType?: DiagramEdgeType;
   hideFallback?: boolean;
-  sequenceKind?: "sync" | "async" | "create" | "self";
-  sequenceLabelWidth?: number;
-  sequenceLabelLineCount?: number;
-};
+} & Partial<SequenceMessageEdgeData>;
 
 type BaseEdgeConfig = {
   label?: EdgeProps<Edge<ElkEdgeData>>["label"];
@@ -87,6 +87,7 @@ function buildFallbackPath(
 }
 
 export function ElkEdge(props: EdgeProps<Edge<ElkEdgeData>>) {
+  const selectEdge = useAppStore((state) => state.selectEdge);
   const route = props.data?.elkRoute;
   const className = (props as EdgeProps<Edge<ElkEdgeData>> & { className?: string }).className;
   const isSequenceEdge = !!props.data?.sequenceKind;
@@ -116,6 +117,7 @@ export function ElkEdge(props: EdgeProps<Edge<ElkEdgeData>>) {
       className,
       data: props.data,
       selected: props.selected ?? false,
+      onSelectEdge: selectEdge,
     });
   }
 
@@ -134,6 +136,7 @@ export function ElkEdge(props: EdgeProps<Edge<ElkEdgeData>>) {
     className,
     data: props.data,
     selected: props.selected ?? false,
+    onSelectEdge: selectEdge,
   });
 }
 
@@ -147,8 +150,9 @@ function renderEdge(params: {
   className?: string;
   data?: ElkEdgeData;
   selected: boolean;
+  onSelectEdge: (id: string | null) => void;
 }) {
-  const { baseEdgeProps, path, labelX, labelY, edgeId, label, className, data, selected } = params;
+  const { baseEdgeProps, path, labelX, labelY, edgeId, label, className, data, selected, onSelectEdge } = params;
   const isSequenceEdge = !!data?.sequenceKind;
   const labelClassName = [
     "sequence-edge-label",
@@ -172,10 +176,21 @@ function renderEdge(params: {
           <div
             className={labelClassName}
             data-edge-id={edgeId}
+            data-testid="sequence-edge-label"
             style={{
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
               maxWidth: `${Math.max(72, data?.sequenceLabelWidth ?? 180)}px`,
+              pointerEvents: "all",
+            }}
+            onMouseEnter={(event) => {
+              if (event.buttons !== 0) return;
+              scheduleShowHoverSequenceMessage(edgeId, event.currentTarget.getBoundingClientRect());
+            }}
+            onMouseLeave={() => scheduleHideHover()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectEdge(edgeId);
             }}
           >
             {label}
@@ -185,4 +200,3 @@ function renderEdge(params: {
     </>
   );
 }
-

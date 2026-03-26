@@ -2560,8 +2560,9 @@ body,
   overflow-wrap: anywhere;
   word-break: break-word;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
-  pointer-events: none;
+  pointer-events: auto;
   user-select: none;
+  cursor: pointer;
   opacity: 0.98;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -4701,6 +4702,16 @@ body,
   border-radius: 4px;
   color: #0f1117;
   white-space: nowrap;
+}
+
+.shc-kind-badge--sequence-participant {
+  background: #c7d2fe;
+  color: #1e1b4b;
+}
+
+.shc-kind-badge--sequence-message {
+  background: #bfdbfe;
+  color: #0f172a;
 }
 
 .shc-name {

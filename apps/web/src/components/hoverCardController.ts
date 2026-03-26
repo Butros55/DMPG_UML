@@ -1,5 +1,5 @@
 import { HOVER_CARD_VIEWPORT_MARGIN, HOVER_CARD_WIDTH } from "../hoverCardPlacement";
-import { useAppStore } from "../store";
+import { useAppStore, type HoverSource, type HoverTarget } from "../store";
 
 let showTimer: ReturnType<typeof setTimeout> | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -57,24 +57,24 @@ export function setHoverInteractionBlocked(blocked: boolean, suppressMs = 0) {
       hideTimer = null;
     }
     clearInspectorNodeHighlight();
-    useAppStore.getState().setHoverSymbol(null);
+    useAppStore.getState().setHoverTarget(null);
     return;
   }
 
   hoverSuppressedUntil = suppressMs > 0 ? Date.now() + suppressMs : 0;
 }
 
-export function scheduleShowHover(
-  symbolId: string,
+function scheduleShowHoverTarget(
+  target: HoverTarget,
   rect: DOMRect,
-  options?: { source?: "canvas" | "inspector" },
+  options?: { source?: HoverSource },
 ) {
-  const source = options?.source ?? "canvas";
+  const source = options?.source ?? target.source ?? "canvas";
   if (hoverIsSuppressed()) return;
   cancelHideHover();
   if (showTimer) clearTimeout(showTimer);
-  if (source === "inspector") {
-    setInspectorNodeHighlight(symbolId);
+  if (source === "inspector" && target.kind === "symbol") {
+    setInspectorNodeHighlight(target.id);
   } else {
     clearInspectorNodeHighlight();
   }
@@ -94,14 +94,30 @@ export function scheduleShowHover(
         ? rect.left - (HOVER_CARD_WIDTH + 12)
         : rect.right + 12;
     const y = source === "inspector" && inspectorRect
-      ? Math.max(
-          inspectorRect.top + 8,
-          Math.min(rect.top - 6, inspectorRect.bottom - 520),
-        )
+        ? Math.max(
+            inspectorRect.top + 8,
+            Math.min(rect.top - 6, inspectorRect.bottom - 520),
+          )
       : Math.max(HOVER_CARD_VIEWPORT_MARGIN, Math.min(rect.top, window.innerHeight - 500));
-    useAppStore.getState().setHoverSymbol(symbolId, { x, y, source });
+    useAppStore.getState().setHoverTarget({ ...target, source }, { x, y, source });
     showTimer = null;
   }, HOVER_SHOW_DELAY_MS);
+}
+
+export function scheduleShowHover(
+  symbolId: string,
+  rect: DOMRect,
+  options?: { source?: HoverSource },
+) {
+  scheduleShowHoverTarget({ kind: "symbol", id: symbolId, source: options?.source }, rect, options);
+}
+
+export function scheduleShowHoverSequenceMessage(
+  messageId: string,
+  rect: DOMRect,
+  options?: { source?: HoverSource },
+) {
+  scheduleShowHoverTarget({ kind: "sequenceMessage", id: messageId, source: options?.source }, rect, options);
 }
 
 export function scheduleHideHover() {
@@ -116,14 +132,14 @@ export function scheduleHideHover() {
   if (hoverIsSuppressed()) {
     mouseOverCard = false;
     clearInspectorNodeHighlight();
-    useAppStore.getState().setHoverSymbol(null);
+    useAppStore.getState().setHoverTarget(null);
     return;
   }
   hideTimer = setTimeout(() => {
     hideTimer = null;
     if (mouseOverCard) return;
     clearInspectorNodeHighlight();
-    useAppStore.getState().setHoverSymbol(null);
+    useAppStore.getState().setHoverTarget(null);
   }, HOVER_HIDE_DELAY_MS);
 }
 

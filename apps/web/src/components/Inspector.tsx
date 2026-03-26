@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore } from "../store";
-import { summarizeSymbol } from "../api";
+import { openInIde, summarizeSymbol } from "../api";
 import { scheduleShowHover, scheduleHideHover } from "./hoverCardController";
 import { DiagramSettingsPanel } from "./DiagramSettingsPanel";
 import type { ProjectGraph, Relation, RelationType, Symbol as GraphSymbol } from "@dmpg/shared";
@@ -16,6 +16,13 @@ import {
   PROCESS_STAGE_PACKAGE_IDS,
 } from "../artifactPreview";
 import { resolveArtifactView } from "../artifactVisibility";
+import {
+  buildPackageSequenceDiagramDetails,
+  isPackageSequenceView,
+  type SequenceMessagePanelData,
+  type SequenceParticipantPanelData,
+  type SequenceProjectionMeta,
+} from "../sequenceDiagram";
 
 const RELATION_TYPES: RelationType[] = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"];
 const SYMBOL_KINDS = ["module", "class", "function", "method", "group", "package", "interface", "variable"] as const;
@@ -125,6 +132,246 @@ function CollapsibleSection({
         {badge && <RelBadgeTag badgeKey={badge} />}
       </div>
       {open && children}
+    </div>
+  );
+}
+
+function formatSequenceProjectionFilters(projection: SequenceProjectionMeta | null): string {
+  if (!projection || projection.activeRelationFilters.length === 0) return "All relations";
+  return projection.activeRelationFilters.join(", ");
+}
+
+function formatSequenceMessageKind(kind: SequenceMessagePanelData["kind"]): string {
+  switch (kind) {
+    case "create":
+      return "create";
+    case "async":
+      return "async";
+    case "self":
+      return "self";
+    default:
+      return "sync";
+  }
+}
+
+function formatSequenceDirection(direction: SequenceParticipantPanelData["messages"][number]["direction"]): string {
+  switch (direction) {
+    case "incoming":
+      return "In";
+    case "outgoing":
+      return "Out";
+    case "self":
+      return "Self";
+    default:
+      return direction;
+  }
+}
+
+function SequenceProjectionCard({
+  projection,
+  empty,
+}: {
+  projection: SequenceProjectionMeta;
+  empty?: boolean;
+}) {
+  return (
+    <div className="inspector-card">
+      <div className="field-label">Sequence Projection</div>
+      {empty && (
+        <div className="summary" style={{ marginBottom: 10 }}>
+          Select a participant or message
+        </div>
+      )}
+      <div className="shc-preview-chip-row">
+        <span className="shc-preview-chip">Participants {projection.usedParticipants}/{projection.participantLimit}</span>
+        <span className="shc-preview-chip">Messages {projection.usedMessages}/{projection.messageLimit}</span>
+        <span className="shc-preview-chip">Buckets {projection.bucketsActive ? "active" : "inactive"}</span>
+      </div>
+      <div className="shc-preview-chip-row" style={{ marginTop: 8 }}>
+        <span className="shc-preview-chip">Labels {projection.labelMode}</span>
+        <span className="shc-preview-chip">Filters {formatSequenceProjectionFilters(projection)}</span>
+        {(projection.participantsCollapsed || projection.messagesCollapsed) && (
+          <span className="shc-preview-chip">
+            Collapsing {projection.participantsCollapsed || projection.messagesCollapsed ? "active" : "inactive"}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SequenceParticipantSections({
+  participant,
+  projection,
+  onSymbolClick,
+}: {
+  participant: SequenceParticipantPanelData;
+  projection: SequenceProjectionMeta | null;
+  onSymbolClick: (symbolId: string) => void;
+}) {
+  const previewMessages = participant.messages.slice(0, 10);
+
+  return (
+    <>
+      <div className="inspector-card">
+        <div className="field-label">Participant</div>
+        <h3 style={{ marginBottom: 6 }}>{participant.label}</h3>
+        <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+          Role: <strong style={{ color: "var(--text)" }}>{participant.role}</strong>
+          {" · "}
+          Lane: <strong style={{ color: "var(--text)" }}>{participant.laneKind}</strong>
+        </div>
+        {participant.fullLabel && participant.fullLabel !== participant.label && (
+          <div className="location" style={{ marginTop: 6 }}>{participant.fullLabel}</div>
+        )}
+      </div>
+
+      <div className="inspector-card">
+        <div className="field-label">Sequence Stats</div>
+        <div className="shc-preview-chip-row">
+          <span className="shc-preview-chip">In {participant.incomingCount}</span>
+          <span className="shc-preview-chip">Out {participant.outgoingCount}</span>
+          <span className="shc-preview-chip">First #{participant.firstMessageIndex ?? "-"}</span>
+          <span className="shc-preview-chip">Created #{participant.createdAtMessageIndex ?? "-"}</span>
+        </div>
+        <div className="shc-preview-chip-row" style={{ marginTop: 8 }}>
+          <span className="shc-preview-chip">sync {participant.breakdown.sync}</span>
+          <span className="shc-preview-chip">async {participant.breakdown.async}</span>
+          <span className="shc-preview-chip">create {participant.breakdown.create}</span>
+          <span className="shc-preview-chip">self {participant.breakdown.self}</span>
+        </div>
+      </div>
+
+      <div className="inspector-card">
+        <div className="field-label">Activations</div>
+        <div className="shc-preview-chip-row">
+          <span className="shc-preview-chip">Count {participant.activationCount}</span>
+          {participant.activationMaxDepth != null && (
+            <span className="shc-preview-chip">Max depth {participant.activationMaxDepth}</span>
+          )}
+        </div>
+      </div>
+
+      {previewMessages.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label">Messages</div>
+          <div className="shc-preview-detail-list">
+            {previewMessages.map((message) => (
+              <div key={`${participant.participantId}-${message.id}-${message.direction}`} className="shc-preview-detail-row">
+                <div className="shc-preview-detail-label">#{message.index}</div>
+                <div className="shc-preview-detail-value">
+                  <span className="shc-preview-chip">{formatSequenceDirection(message.direction)}</span>
+                  <SymbolLink symbolId={message.partnerId} label={message.partnerLabel} onClick={() => onSymbolClick(message.partnerId)} className="shc-preview-chip shc-preview-chip--link" />
+                  <span className="shc-preview-chip">{message.label}</span>
+                  <span className="shc-preview-chip">{message.kind}</span>
+                  {message.count > 1 && <span className="shc-preview-chip">x{message.count}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {projection && <SequenceProjectionCard projection={projection} />}
+    </>
+  );
+}
+
+function SequenceMessageInspectorPanel({
+  message,
+  projection,
+  onSymbolClick,
+  onToggleInspector,
+}: {
+  message: SequenceMessagePanelData;
+  projection: SequenceProjectionMeta | null;
+  onSymbolClick: (symbolId: string) => void;
+  onToggleInspector: () => void;
+}) {
+  const messageLabel = message.label ?? message.descriptorPreview[0] ?? message.relationType;
+
+  return (
+    <div className="inspector" data-testid="sequence-message-inspector">
+      <div className="inspector-header-row">
+        <h2>Inspector</h2>
+        <div className="inspector-header-actions">
+          <button
+            className="inspector-header-btn inspector-header-btn--collapse"
+            onClick={onToggleInspector}
+            title="Inspector einklappen"
+          >
+            <i className="bi bi-layout-sidebar-inset-reverse" />
+          </button>
+        </div>
+      </div>
+
+      <div className="inspector-card">
+        <div className="field-label">Sequence Message</div>
+        <h3>#{message.index} {messageLabel}</h3>
+        <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+          Kind: <strong style={{ color: "var(--text)" }}>{formatSequenceMessageKind(message.kind)}</strong>
+          {" · "}
+          Relation: <strong style={{ color: "var(--text)" }}>{message.relationType}</strong>
+          {" · "}
+          Aggregates {message.count}
+        </div>
+      </div>
+
+      <div className="inspector-card">
+        <div className="field-label">Route</div>
+        <div className="shc-preview-chip-row">
+          <SymbolLink symbolId={message.sourceParticipantId} label={message.sourceParticipantLabel} onClick={() => onSymbolClick(message.sourceParticipantId)} className="shc-preview-chip shc-preview-chip--link" />
+          <span className="shc-preview-chip">{message.sourceParticipantRole}</span>
+          <span className="shc-preview-chip">{message.sourceLaneKind}</span>
+        </div>
+        <div className="shc-preview-chip-row" style={{ marginTop: 8 }}>
+          <SymbolLink symbolId={message.targetParticipantId} label={message.targetParticipantLabel} onClick={() => onSymbolClick(message.targetParticipantId)} className="shc-preview-chip shc-preview-chip--link" />
+          <span className="shc-preview-chip">{message.targetParticipantRole}</span>
+          <span className="shc-preview-chip">{message.targetLaneKind}</span>
+        </div>
+      </div>
+
+      {message.descriptorPreview.length > 0 && (
+        <div className="inspector-card">
+          <div className="field-label">Descriptors</div>
+          <div className="shc-preview-chip-row">
+            {message.descriptorPreview.map((descriptor, index) => (
+              <span key={`${message.id}-descriptor-${index}`} className="shc-preview-chip">
+                {descriptor}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <details className="inspector-card" open>
+        <summary className="field-label" style={{ cursor: "pointer" }}>
+          Underlying Relations / relationIds ({message.relationIds.length})
+        </summary>
+        <div className="shc-preview-chip-row" style={{ marginTop: 10 }}>
+          {message.relationIds.map((relationId) => (
+            <span key={relationId} className="shc-preview-chip">{relationId}</span>
+          ))}
+        </div>
+      </details>
+
+      {message.evidenceFile && (
+        <div className="inspector-card">
+          <div className="field-label">Evidence</div>
+          <div className="location">
+            {message.evidenceFile}
+            {message.evidenceLine != null ? `:${message.evidenceLine}` : ""}
+          </div>
+          <button
+            className="source-view-btn"
+            onClick={() => void openInIde("vscode", message.evidenceFile!, message.evidenceLine ?? undefined).catch(() => undefined)}
+          >
+            <i className="bi bi-box-arrow-up-right" /> Open in IDE
+          </button>
+        </div>
+      )}
+
+      {projection && <SequenceProjectionCard projection={projection} />}
     </div>
   );
 }
@@ -382,12 +629,57 @@ function resolveClusterEdgeItems(
 /* ─── Edge Inspector Panel ─── */
 function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void }) {
   const graph = useAppStore((s) => s.graph);
+  const currentViewId = useAppStore((s) => s.currentViewId);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const updateRelation = useAppStore((s) => s.updateRelation);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
   const selectEdge = useAppStore((s) => s.selectEdge);
   const focusSymbolInContext = useAppStore((s) => s.focusSymbolInContext);
+  const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
+
+  const currentView = currentViewId && graph ? graph.views.find((view) => view.id === currentViewId) ?? null : null;
+  const resolvedArtifactView = useMemo(
+    () =>
+      graph && currentView
+        ? resolveArtifactView(graph, currentView, {
+            input: diagramSettings.inputArtifactMode,
+            generated: diagramSettings.generatedArtifactMode,
+          })
+        : null,
+    [currentView, diagramSettings.generatedArtifactMode, diagramSettings.inputArtifactMode, graph],
+  );
+  const sequenceView = isPackageSequenceView(currentView, graph);
+  const sequenceDetails = useMemo(() => {
+    if (!graph || !currentView || !resolvedArtifactView || !sequenceView) return null;
+    const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
+    const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    return buildPackageSequenceDiagramDetails({
+      graph,
+      view: currentView,
+      visibleViewNodeRefs,
+      hiddenSymbolIds,
+      symbolOverrides: resolvedArtifactView.symbolOverrides,
+      relationFilters: diagramSettings.relationFilters,
+      labelsMode: diagramSettings.labels,
+      selectedSymbolId,
+      selectedEdgeId,
+    });
+  }, [
+    currentView,
+    diagramSettings.labels,
+    diagramSettings.relationFilters,
+    graph,
+    resolvedArtifactView,
+    selectedEdgeId,
+    selectedSymbolId,
+    sequenceView,
+  ]);
+  const selectedSequenceMessage = selectedEdgeId && sequenceDetails
+    ? sequenceDetails.messages.get(selectedEdgeId)
+      ?? Array.from(sequenceDetails.messages.values()).find((message) => message.relationIds.includes(selectedEdgeId))
+      ?? null
+    : null;
 
   // Try direct relation lookup first
   const rel = graph?.relations.find((r) => r.id === selectedEdgeId);
@@ -456,6 +748,17 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
     if (!resolvedId) return;
     focusSymbolInContext(resolvedId);
   };
+
+  if (selectedSequenceMessage) {
+    return (
+      <SequenceMessageInspectorPanel
+        message={selectedSequenceMessage}
+        projection={sequenceDetails?.projection ?? null}
+        onSymbolClick={handleSymbolClick}
+        onToggleInspector={onToggleInspector}
+      />
+    );
+  }
 
   return (
     <div className="inspector">
@@ -1229,10 +1532,39 @@ export function Inspector() {
         : null,
     [currentView, diagramSettings.generatedArtifactMode, diagramSettings.inputArtifactMode, graph],
   );
+  const sequenceView = isPackageSequenceView(currentView, graph);
+  const sequenceDetails = useMemo(() => {
+    if (!graph || !currentView || !resolvedArtifactView || !sequenceView) return null;
+    const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
+    const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    return buildPackageSequenceDiagramDetails({
+      graph,
+      view: currentView,
+      visibleViewNodeRefs,
+      hiddenSymbolIds,
+      symbolOverrides: resolvedArtifactView.symbolOverrides,
+      relationFilters: diagramSettings.relationFilters,
+      labelsMode: diagramSettings.labels,
+      selectedSymbolId,
+      selectedEdgeId,
+    });
+  }, [
+    currentView,
+    diagramSettings.labels,
+    diagramSettings.relationFilters,
+    graph,
+    resolvedArtifactView,
+    selectedEdgeId,
+    selectedSymbolId,
+    sequenceView,
+  ]);
   const symbolOverrides = resolvedArtifactView?.symbolOverrides ?? new Map<string, GraphSymbol>();
   const sym = selectedSymbolId
     ? symbolOverrides.get(selectedSymbolId) ?? graph?.symbols.find((s) => s.id === selectedSymbolId)
     : undefined;
+  const selectedSequenceParticipant = selectedSymbolId && sequenceDetails
+    ? sequenceDetails.participants.get(selectedSymbolId) ?? null
+    : null;
   const inspectorAnimClass = useAiInspectorAnimation(sym);
 
   // Reset edit form when symbol changes
@@ -1496,9 +1828,18 @@ export function Inspector() {
             </button>
           </div>
         </div>
-        <div className="empty-state">
-          Click a node or edge to inspect it
-        </div>
+        {sequenceView && sequenceDetails?.projection ? (
+          <>
+            <SequenceProjectionCard projection={sequenceDetails.projection} empty />
+            <div className="empty-state">
+              Click a node or edge to inspect it
+            </div>
+          </>
+        ) : (
+          <div className="empty-state">
+            Click a node or edge to inspect it
+          </div>
+        )}
         {settingsOverlay}
       </div>
     );
@@ -1759,6 +2100,14 @@ export function Inspector() {
           </div>
         )}
       </div>
+
+      {selectedSequenceParticipant && (
+        <SequenceParticipantSections
+          participant={selectedSequenceParticipant}
+          projection={sequenceDetails?.projection ?? null}
+          onSymbolClick={handleSymbolLinkClick}
+        />
+      )}
 
       {/* ─── Summary (read-only when not editing) ─── */}
       {!isEditing && doc?.summary && (

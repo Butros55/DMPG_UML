@@ -5,6 +5,11 @@ import { scheduleShowHover, scheduleHideHover } from "./hoverCardController";
 import type { Symbol as Sym, SymbolUmlType } from "@dmpg/shared";
 import type { DiagramLabelMode } from "../diagramSettings";
 import type { PortInfo } from "../layout";
+import type {
+  SequenceParticipantLaneKind,
+  SequenceParticipantRole,
+  SequenceProjectionMeta,
+} from "../sequenceDiagram";
 
 export interface UmlNodeData {
   label: string;
@@ -24,14 +29,15 @@ export interface UmlNodeData {
   artifactPreviewKind?: "cluster" | "single" | "plain";
   artifactPreviewItemCount?: number | null;
   artifactPreviewGroupCount?: number | null;
-  sequenceLaneKind?: "internal" | "external" | "artifact";
-  sequenceParticipantRole?: "actor" | "package" | "object" | "artifact" | "database" | "component";
+  sequenceLaneKind?: SequenceParticipantLaneKind;
+  sequenceParticipantRole?: SequenceParticipantRole;
   sequenceSubtitle?: string;
   sequenceFullLabel?: string;
   sequenceParticipantWidth?: number;
   sequenceLifelineHeight?: number;
   sequenceLifelineOffset?: number;
   sequenceActivationBars?: SequenceActivationBar[];
+  sequenceProjectionMeta?: SequenceProjectionMeta;
   /** Dynamic port handles computed by ELK layout */
   dynamicPorts?: PortInfo[];
   [key: string]: unknown;
@@ -340,6 +346,7 @@ export const SequenceParticipantNode = memo(function SequenceParticipantNode({ d
   return (
     <div
       className={`uml-node sequence-node kind-${d.kind} ${d.umlType ? `uml-type-${d.umlType}` : ""} ${d.sequenceLaneKind ? `sequence-node--${d.sequenceLaneKind}` : ""} ${d.sequenceParticipantRole ? `sequence-node--${d.sequenceParticipantRole}` : ""} ${selected ? "selected" : ""} ${animClass}`}
+      data-testid="sequence-participant-node"
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}

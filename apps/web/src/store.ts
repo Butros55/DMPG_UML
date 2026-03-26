@@ -156,6 +156,12 @@ export interface NavigateToViewOptions {
   restoreViewState?: boolean;
 }
 
+export type HoverSource = "canvas" | "inspector";
+
+export type HoverTarget =
+  | { kind: "symbol"; id: string; source?: HoverSource }
+  | { kind: "sequenceMessage"; id: string; source?: HoverSource };
+
 export interface AppState {
   graph: ProjectGraph | null;
   currentViewId: string | null;
@@ -210,11 +216,11 @@ export interface AppState {
   clearManualLayoutFlags: () => void;
 
   // Hover card
-  hoverSymbolId: string | null;
-  hoverPosition: { x: number; y: number; source?: "canvas" | "inspector" } | null;
-  setHoverSymbol: (
-    id: string | null,
-    pos?: { x: number; y: number; source?: "canvas" | "inspector" } | null,
+  hoverTarget: HoverTarget | null;
+  hoverPosition: { x: number; y: number; source?: HoverSource } | null;
+  setHoverTarget: (
+    target: HoverTarget | null,
+    pos?: { x: number; y: number; source?: HoverSource } | null,
   ) => void;
 
   // Focus-navigate: zoom to a specific node after view change
@@ -645,9 +651,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     void get().syncGraphToServer();
   },
 
-  hoverSymbolId: null,
+  hoverTarget: null,
   hoverPosition: null,
-  setHoverSymbol: (id, pos) => set({ hoverSymbolId: id, hoverPosition: pos ?? null }),
+  setHoverTarget: (target, pos) => set({ hoverTarget: target, hoverPosition: pos ?? null }),
 
   focusNodeId: null,
   focusSeq: 0,
