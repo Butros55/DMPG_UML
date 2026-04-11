@@ -68,6 +68,7 @@ interface ProcessStageViewConfig {
   title: string;
   parentViewId?: string | null;
   scope: DiagramView["scope"];
+  diagramType?: DiagramView["diagramType"];
   hiddenInSidebar?: boolean;
   manualLayout?: boolean;
   nodeRefs: string[];
@@ -223,6 +224,7 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
     title: config.title,
     parentViewId: null,
     scope: "root",
+    diagramType: "overview",
     nodeRefs: processNodeIds,
     edgeRefs: processRelations
       .filter((relation) => processNodeIds.includes(relation.source) && processNodeIds.includes(relation.target))
@@ -240,6 +242,7 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
         title: view.title,
         parentViewId: view.parentViewId ?? processView.id,
         scope: view.scope,
+        diagramType: view.diagramType,
         hiddenInSidebar: view.hiddenInSidebar,
         manualLayout: view.manualLayout,
         nodeRefs: [...view.nodeRefs],
@@ -282,7 +285,7 @@ function applyPersistedLayoutState(
 ): void {
   if (!previous) return;
 
-  if (typeof previous.hiddenInSidebar === "boolean") {
+  if (!isManagedProcessLayoutViewId(target.id) && typeof previous.hiddenInSidebar === "boolean") {
     target.hiddenInSidebar = previous.hiddenInSidebar;
   }
 
@@ -470,6 +473,7 @@ function belongsToStageSubtree(
 }
 
 function keepNodeInManagedView(symbol: Symbol): boolean {
+  if (symbol.id.startsWith("proc:stage-sequence-nav:")) return true;
   if (symbol.id.startsWith("proc:artifact:")) return true;
   if (symbol.id.startsWith("stub:") || symbol.id.startsWith("proc:")) return false;
   if (symbol.tags?.includes(STUB_TAG)) return false;
@@ -1039,6 +1043,9 @@ function normalizeRelationType(type: RelationType): RelationType {
     "inherits",
     "uses_config",
     "instantiates",
+    "association",
+    "aggregation",
+    "composition",
   ]);
   return valid.has(type) ? type : "calls";
 }

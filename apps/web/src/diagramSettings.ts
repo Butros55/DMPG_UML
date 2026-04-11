@@ -16,6 +16,9 @@ export const ALL_RELATION_TYPES: RelationType[] = [
   "inherits",
   "uses_config",
   "instantiates",
+  "association",
+  "aggregation",
+  "composition",
 ];
 
 const EDGE_TYPES: DiagramEdgeType[] = ["step", "smoothstep", "straight"];
@@ -34,6 +37,9 @@ export const RELATION_VERBS: Record<RelationType, string> = {
   instantiates: "creates",
   uses_config: "config",
   contains: "contains",
+  association: "associates",
+  aggregation: "has",
+  composition: "owns",
 };
 
 export const EDGE_CLASS_BY_RELATION: Record<RelationType, string> = {
@@ -45,6 +51,9 @@ export const EDGE_CLASS_BY_RELATION: Record<RelationType, string> = {
   instantiates: "edge-instantiates",
   uses_config: "edge-uses-config",
   contains: "edge-contains",
+  association: "edge-association",
+  aggregation: "edge-aggregation",
+  composition: "edge-composition",
 };
 
 export const EDGE_ANIMATED_BY_RELATION: Record<RelationType, boolean> = {
@@ -56,6 +65,9 @@ export const EDGE_ANIMATED_BY_RELATION: Record<RelationType, boolean> = {
   instantiates: true,
   uses_config: true,
   contains: false,
+  association: false,
+  aggregation: false,
+  composition: false,
 };
 
 export interface DiagramLayoutSettings {
@@ -110,6 +122,9 @@ export function createDefaultRelationFilters(): Record<RelationType, boolean> {
     inherits: true,
     uses_config: true,
     instantiates: true,
+    association: true,
+    aggregation: true,
+    composition: true,
   };
 }
 

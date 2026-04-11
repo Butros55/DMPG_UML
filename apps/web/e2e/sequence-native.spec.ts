@@ -12,6 +12,11 @@ test.describe("sequence native hover and inspector", () => {
     const graph = createSequenceGraph();
     await installMockApiRoutes(page, graph);
     await page.goto("/");
+    await expect(page.locator(".canvas-flow--sequence")).not.toBeVisible();
+    await page.locator('[data-id="proc:pkg:transform"] .group-drilldown').click();
+    await expect(page.locator(".uml-class-node").first()).toBeVisible();
+    await expect(page.locator(".canvas-flow--sequence")).not.toBeVisible();
+    await page.locator('[data-id="proc:stage-sequence-nav:transform"] .group-drilldown').click();
     await expect(page.locator(".canvas-flow--sequence")).toBeVisible();
     await expect(page.locator('[data-id="participant:digital-zwilling"]')).toBeVisible();
     await expect(page.locator('.sequence-edge-label[data-edge-id="rel:generate-sim-data"]')).toBeVisible();
@@ -37,7 +42,7 @@ test.describe("sequence native hover and inspector", () => {
     const hoverCard = page.locator('[data-testid="sequence-message-hover-card"], .symbol-hover-card');
     await expect(hoverCard).toBeVisible();
     await expect(hoverCard).toContainText("Message");
-    await expect(hoverCard).toContainText("#1");
+    await expect(hoverCard).toContainText("generate sim data");
     await expect(hoverCard).toContainText("calls");
     await expect(hoverCard).toContainText("Digitaler Zwilling");
     await expect(hoverCard).toContainText("Apache Druid");

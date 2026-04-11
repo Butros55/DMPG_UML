@@ -1,6 +1,6 @@
 import { Router, type Router as RouterType } from "express";
 import { getConfiguredProjectPath, getGraph, setGraph, getCurrentProjectPath } from "../store.js";
-import { ProjectGraphSchema } from "@dmpg/shared";
+import { ProjectGraphSchema, SymbolDocSchema } from "@dmpg/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { augmentGraphWithUmlOverlays } from "../scanner/processOverview.js";
@@ -41,7 +41,12 @@ graphRouter.patch("/symbol/:id/doc", (req, res) => {
     res.status(404).json({ error: "symbol not found" });
     return;
   }
-  sym.doc = { ...sym.doc, ...req.body };
+  const parsed = SymbolDocSchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+  sym.doc = { ...sym.doc, ...parsed.data };
   setGraph(g);
   res.json({ ok: true, doc: sym.doc });
 });

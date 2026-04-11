@@ -216,6 +216,12 @@ const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: stri
   "in:instantiates":  { iconCls: "bi-lightning",          label: "erstellt von",     cls: "instantiates-in" },
   "out:uses_config":  { iconCls: "bi-gear",               label: "konfiguriert",     cls: "uses_config" },
   "in:uses_config":   { iconCls: "bi-gear",               label: "konfiguriert von", cls: "uses_config-in" },
+  "out:association":  { iconCls: "bi-diagram-2",          label: "assoziiert",       cls: "association" },
+  "in:association":   { iconCls: "bi-diagram-2",          label: "assoziiert mit",   cls: "association-in" },
+  "out:aggregation":  { iconCls: "bi-diagram-2",          label: "hat",              cls: "aggregation" },
+  "in:aggregation":   { iconCls: "bi-diagram-2",          label: "Teil von",         cls: "aggregation-in" },
+  "out:composition":  { iconCls: "bi-diagram-2-fill",     label: "enthält",          cls: "composition" },
+  "in:composition":   { iconCls: "bi-diagram-2-fill",     label: "gehört zu",        cls: "composition-in" },
 };
 
 function getNodeRect(nodeId: string): RectBox | null {

@@ -67,6 +67,12 @@ const REL_BADGE_META: Record<string, { iconCls: string; label: string; cls: stri
   "in:instantiates": { iconCls: "bi-lightning",          label: "erstellt von",     cls: "instantiates-in" },
   "out:uses_config": { iconCls: "bi-gear",               label: "konfiguriert",     cls: "uses_config" },
   "in:uses_config":  { iconCls: "bi-gear",               label: "konfiguriert von", cls: "uses_config-in" },
+  "out:association": { iconCls: "bi-diagram-2",          label: "assoziiert",       cls: "association" },
+  "in:association":  { iconCls: "bi-diagram-2",          label: "assoziiert mit",   cls: "association-in" },
+  "out:aggregation": { iconCls: "bi-diagram-2",          label: "hat",              cls: "aggregation" },
+  "in:aggregation":  { iconCls: "bi-diagram-2",          label: "Teil von",         cls: "aggregation-in" },
+  "out:composition": { iconCls: "bi-diagram-2-fill",     label: "enthält",          cls: "composition" },
+  "in:composition":  { iconCls: "bi-diagram-2-fill",     label: "gehört zu",        cls: "composition-in" },
 };
 
 function RelationBadges({
@@ -202,6 +208,38 @@ function renderKindBadge(kind: string, umlType?: SymbolUmlType) {
   if (umlType === "package") return "package";
   if (umlType) return umlType;
   return kind;
+}
+
+function memberVisibility(name: string, defaultVisibility: "+" | "-"): "+" | "-" {
+  if (name.startsWith("_") && !name.startsWith("__")) return "-";
+  return defaultVisibility;
+}
+
+function classMemberName(symbol: Sym): string {
+  return symbol.label.split(".").pop() ?? symbol.label;
+}
+
+function formatAttributeSignature(symbol: Sym) {
+  const name = classMemberName(symbol);
+  return {
+    visibility: memberVisibility(name, "-"),
+    name,
+    type: symbol.doc?.inputs?.[0]?.type,
+  };
+}
+
+function formatMethodSignature(symbol: Sym) {
+  const name = classMemberName(symbol);
+  const params = (symbol.doc?.inputs ?? [])
+    .map((param) => `${param.name}${param.type ? `: ${param.type}` : ""}`)
+    .join(", ");
+  const returnItem = symbol.doc?.outputs?.[0];
+  const returnType = returnItem?.type ?? returnItem?.name;
+
+  return {
+    visibility: memberVisibility(name, "+"),
+    text: `${name}(${params})${returnType ? ` : ${returnType}` : ""}`,
+  };
 }
 
 function resolveArtifactMeta(umlType: SymbolUmlType | undefined, label: string) {
@@ -494,14 +532,17 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
       {/* Attributes compartment */}
       <div className="compartment">
         {shownAttributes.length > 0 ? (
-          shownAttributes.map((a) => (
-            <div key={a.id} className="compartment-item">
-              <span className="attr-icon">−</span> {a.label}
-              {!compactMode && a.doc?.inputs?.[0]?.type && (
-                <span className="type-hint"> : {a.doc.inputs[0].type}</span>
-              )}
-            </div>
-          ))
+          shownAttributes.map((a) => {
+            const signature = formatAttributeSignature(a);
+            return (
+              <div key={a.id} className="compartment-item">
+                <span className="attr-icon">{signature.visibility}</span> {signature.name}
+                {!compactMode && signature.type && (
+                  <span className="type-hint"> : {signature.type}</span>
+                )}
+              </div>
+            );
+          })
         ) : (
           <div className="compartment-empty">—</div>
         )}
@@ -510,16 +551,14 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
       {/* Methods compartment */}
       <div className="compartment">
         {shownMethods.length > 0 ? (
-          shownMethods.map((m) => (
-            <div key={m.id} className="compartment-item method-item">
-              <span className="method-icon">+</span> {m.label.split(".").pop()}()
-              {!compactMode && m.doc?.inputs && m.doc.inputs.length > 0 && (
-                <span className="type-hint">
-                  ({m.doc.inputs.map((p) => p.name).join(", ")})
-                </span>
-              )}
-            </div>
-          ))
+          shownMethods.map((m) => {
+            const signature = formatMethodSignature(m);
+            return (
+              <div key={m.id} className="compartment-item method-item">
+                <span className="method-icon">{signature.visibility}</span> {signature.text}
+              </div>
+            );
+          })
         ) : (
           <div className="compartment-empty">—</div>
         )}
@@ -606,7 +645,7 @@ export const UmlFunctionNode = memo(function UmlFunctionNode({ data, selected }:
 
 export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }: NodeProps) {
   const d = data as unknown as UmlNodeData;
-  const { handleClick, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
+  const { handleClick, handleDrilldown, handleMouseEnter, handleMouseLeave } = useNodeActions(d);
   const compactMode = !!d.compactMode;
   const labelsMode = d.labelsMode ?? "detailed";
   const artifactMeta = resolveArtifactMeta(d.umlType, d.label);
@@ -648,6 +687,11 @@ export const UmlArtifactNode = memo(function UmlArtifactNode({ data, selected }:
       )}
 
       <RelationBadges badges={d.relationBadges} compactMode={compactMode} labelsMode={labelsMode} />
+      {d.childViewId && (
+        <div className="group-drilldown" onClick={handleDrilldown}>
+          <i className="bi bi-caret-right-fill" /> Detail
+        </div>
+      )}
       <Handle type="source" position={Position.Bottom} id="out-bottom" />
       <Handle type="source" position={Position.Right} id="out-right" className="handle-alt" />
       <DynamicPorts ports={d.dynamicPorts} />

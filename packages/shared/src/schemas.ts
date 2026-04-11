@@ -134,6 +134,9 @@ export const RelationTypeEnum = z.enum([
   "inherits",
   "uses_config",
   "instantiates",
+  "association",
+  "aggregation",
+  "composition",
 ]);
 export type RelationType = z.infer<typeof RelationTypeEnum>;
 
@@ -306,11 +309,15 @@ export type NodePosition = z.infer<typeof NodePositionSchema>;
 export const ViewScopeEnum = z.enum(["root", "group", "module", "class"]);
 export type ViewScope = z.infer<typeof ViewScopeEnum>;
 
+export const DiagramTypeEnum = z.enum(["overview", "class", "sequence"]);
+export type DiagramType = z.infer<typeof DiagramTypeEnum>;
+
 export const DiagramViewSchema = z.object({
   id: z.string(),
   title: z.string(),
   parentViewId: z.string().nullable().optional(),
   scope: ViewScopeEnum.optional(),
+  diagramType: DiagramTypeEnum.optional(),
   hiddenInSidebar: z.boolean().optional(),
   manualLayout: z.boolean().optional(),
   nodeRefs: z.array(z.string()),

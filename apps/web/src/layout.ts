@@ -86,6 +86,20 @@ function estimateNodeSize(node: Node, compactMode: boolean): { width: number; he
     const methods = children.filter((c: any) => c.kind === "method" || c.kind === "function");
     const visibleAttrs = compactMode ? attrs.slice(0, 4) : attrs;
     const visibleMethods = compactMode ? methods.slice(0, 5) : methods;
+    const attributeLines = visibleAttrs.map((member: any) => {
+      const name = member.label?.split(".").pop() ?? "";
+      const type = member.doc?.inputs?.[0]?.type as string | undefined;
+      return `${name}${type ? ` : ${type}` : ""}`;
+    });
+    const methodLines = visibleMethods.map((member: any) => {
+      const name = member.label?.split(".").pop() ?? "";
+      const params = ((member.doc?.inputs as Array<{ name?: string; type?: string }> | undefined) ?? [])
+        .map((param) => `${param.name ?? ""}${param.type ? `: ${param.type}` : ""}`)
+        .join(", ");
+      const output = ((member.doc?.outputs as Array<{ type?: string; name?: string }> | undefined) ?? [])[0];
+      const returnType = output?.type ?? output?.name;
+      return `${name}(${params})${returnType ? ` : ${returnType}` : ""}`;
+    });
 
     const h =
       HEADER_HEIGHT +
@@ -96,7 +110,8 @@ function estimateNodeSize(node: Node, compactMode: boolean): { width: number; he
 
     const maxLabelLen = Math.max(
       label.length,
-      ...[...visibleAttrs, ...visibleMethods].map((c: any) => (c.label?.length ?? 0) + 6),
+      ...attributeLines.map((line) => line.length + 2),
+      ...methodLines.map((line) => line.length + 2),
     );
 
     return {
@@ -238,6 +253,12 @@ function buildEdgeRoute(edge: ElkExtendedEdge): EdgeRoute | null {
 }
 
 function relationPortSides(relationType: string): { sourceSide: PortInfo["side"]; targetSide: PortInfo["side"] } {
+  if (relationType === "inherits") {
+    return { sourceSide: "NORTH", targetSide: "SOUTH" };
+  }
+  if (relationType === "association" || relationType === "aggregation" || relationType === "composition") {
+    return { sourceSide: "EAST", targetSide: "WEST" };
+  }
   if (relationType === "imports") {
     return { sourceSide: "NORTH", targetSide: "WEST" };
   }

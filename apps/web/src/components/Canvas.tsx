@@ -12,6 +12,7 @@ import {
   type Node,
   type Edge,
   BackgroundVariant,
+  MarkerType,
   Position,
   useReactFlow,
   useUpdateNodeInternals,
@@ -225,6 +226,19 @@ function edgeLabelForMode(
     .join(", ");
 }
 
+function edgeMarkerEndForRelation(type: RelationType) {
+  switch (type) {
+    case "inherits":
+      return { type: MarkerType.ArrowClosed, width: 20, height: 20, color: "#d6b14d" };
+    case "instantiates":
+    case "imports":
+    case "uses_config":
+      return { type: MarkerType.Arrow, width: 18, height: 18, color: "#6c8cff" };
+    default:
+      return undefined;
+  }
+}
+
 function toPreparedEdges(
   projected: ProjectedEdge[],
   relationMap: Map<string, Relation>,
@@ -273,7 +287,7 @@ function toPreparedEdges(
     );
 
     prepared.push({
-      key: `${pe.source}|${pe.target}`,
+      key: pe.key,
       source: pe.source,
       target: pe.target,
       type: dominant,
@@ -573,7 +587,19 @@ export function Canvas() {
   // Connect type dialog state
   const [connectDialog, setConnectDialog] = useState<{ source: string; target: string } | null>(null);
   const [connectType, setConnectType] = useState<string>("calls");
-  const CONNECT_TYPES = ["imports", "contains", "calls", "reads", "writes", "inherits", "uses_config", "instantiates"] as const;
+  const CONNECT_TYPES = [
+    "imports",
+    "contains",
+    "calls",
+    "reads",
+    "writes",
+    "inherits",
+    "uses_config",
+    "instantiates",
+    "association",
+    "aggregation",
+    "composition",
+  ] as const;
   const cycleInputArtifactMode = useCallback(() => {
     updateDiagramSettings({
       inputArtifactMode: nextArtifactMode(diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_ORDER),
@@ -611,9 +637,20 @@ export function Canvas() {
     const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
     const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
     const visibleViewNodeRefSet = new Set(visibleViewNodeRefs);
+    const relationWhitelist = view.diagramType === "class"
+      ? new Set<RelationType>([
+        "inherits",
+        "instantiates",
+        "association",
+        "aggregation",
+        "composition",
+        "imports",
+        "uses_config",
+      ])
+      : null;
     const visibleRelations = resolvedArtifactView.relations.filter(
       (rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target),
-    );
+    ).filter((rel) => !relationWhitelist || relationWhitelist.has(rel.type));
     const relationMap = new Map(visibleRelations.map((rel) => [rel.id, rel]));
 
     if (isPackageSequenceView(view, graph)) {
@@ -750,6 +787,7 @@ export function Canvas() {
       { ...view, nodeRefs: visibleViewNodeRefs },
       graph.symbols,
       visibleRelations,
+      { bundleByType: view.diagramType === "class" },
     );
     const preparedEdges = toPreparedEdges(
       projected,
@@ -837,6 +875,7 @@ export function Canvas() {
             : undefined
           : pe.label,
         animated: pe.animated,
+        markerEnd: edgeMarkerEndForRelation(pe.type),
         className: `${pe.className}${edgeVisibilityClass}${edgeReviewClass}`,
         style: { strokeWidth: diagramSettings.edgeStrokeWidth },
         data: { relationIds: pe.relationIds, relationType: pe.type },
@@ -1798,11 +1837,27 @@ export function Canvas() {
           if (directRel) {
             removeRelation(selectedEdgeId);
           } else {
-            // Projected edge: parse "source|target|type"
+            // Projected edge: parse "source|target", "source|target|type"
+            // or unaggregated "source|target|type|relationId"
             const parts = selectedEdgeId.split("|");
             if (parts.length === 3) {
               const rels = graph?.relations.filter(
                 (r) => r.type === parts[2] && r.source === parts[0] && r.target === parts[1],
+              ) ?? [];
+              rels.forEach((r) => removeRelation(r.id));
+            } else if (parts.length === 4) {
+              const rel = graph?.relations.find((r) => r.id === parts[3]);
+              if (rel) {
+                removeRelation(rel.id);
+              } else {
+                const rels = graph?.relations.filter(
+                  (r) => r.type === parts[2] && r.source === parts[0] && r.target === parts[1],
+                ) ?? [];
+                rels.forEach((r) => removeRelation(r.id));
+              }
+            } else if (parts.length === 2) {
+              const rels = graph?.relations.filter(
+                (r) => r.source === parts[0] && r.target === parts[1],
               ) ?? [];
               rels.forEach((r) => removeRelation(r.id));
             }
@@ -1867,7 +1922,6 @@ export function Canvas() {
 
   const commitEdgeLabel = useCallback(() => {
     if (editingEdgeId && editingEdgeLabel.trim()) {
-      console.log("[Canvas] Commit edge label:", editingEdgeId, "relationIds:", editingRelationIds, "label:", editingEdgeLabel.trim());
       if (editingRelationIds.length > 0) {
         // Update ALL underlying relations of this projected edge
         updateRelations(editingRelationIds, { label: editingEdgeLabel.trim() });
@@ -1954,7 +2008,7 @@ export function Canvas() {
     (_: React.MouseEvent, _node: Node, draggedNodes: Node[]) => {
       if (isAutoLayoutActive) {
         setIsNodeDragActive(false);
-        setHoverInteractionBlocked(false, 560);
+        setHoverInteractionBlocked(false, 240);
         return;
       }
       if (currentViewId) {
@@ -1971,7 +2025,7 @@ export function Canvas() {
       saveNodePositions(positions);
       setIsNodeDragActive(false);
       // Prevent immediate hover re-open right after drag release.
-      setHoverInteractionBlocked(false, 560);
+      setHoverInteractionBlocked(false, 240);
     },
     [currentViewId, isAutoLayoutActive, saveNodePositions],
   );
@@ -1984,7 +2038,7 @@ export function Canvas() {
   const onMoveEnd = useCallback(() => {
     persistCurrentViewport();
     setIsNodeDragActive(false);
-    setHoverInteractionBlocked(false, 560);
+    setHoverInteractionBlocked(false, 240);
   }, [persistCurrentViewport]);
 
   useEffect(() => {
@@ -2154,7 +2208,7 @@ export function Canvas() {
               if (e.key === "Escape") { setEditingEdgeId(null); setEditingEdgePos(null); }
             }}
             onBlur={commitEdgeLabel}
-            placeholder="Label (e.g. calls, imports…)"
+            placeholder="Beziehungslabel (z. B. calls, imports…)"
           />
         </div>
       )}
@@ -2197,7 +2251,3 @@ export function Canvas() {
     </div>
   );
 }
-
-
-
-

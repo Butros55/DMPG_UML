@@ -343,6 +343,9 @@ html,body{height:100%;overflow:hidden}
 .rb-calls{background:rgba(108,140,255,.18);color:var(--accent)}
 .rb-inherits,.rb-instantiates{background:rgba(255,216,102,.18);color:var(--yellow)}
 .rb-uses_config{background:rgba(139,143,167,.18);color:var(--text-dim)}
+.rb-association{background:rgba(108,140,255,.14);color:var(--accent)}
+.rb-aggregation{background:rgba(128,224,160,.14);color:var(--green)}
+.rb-composition{background:rgba(255,216,102,.16);color:var(--yellow)}
 .rb-imports{background:rgba(128,224,160,.12);color:var(--green)}
 
 /* Drilldown */
@@ -363,6 +366,9 @@ html,body{height:100%;overflow:hidden}
 .et-writes{stroke:var(--orange);stroke-dasharray:8 4;stroke-width:1.5}
 .et-instantiates{stroke:var(--yellow);stroke-dasharray:4 2}
 .et-uses_config,.et-uses-config{stroke:var(--text-dim);stroke-dasharray:3 6}
+.et-association{stroke:var(--accent);stroke-width:1.8}
+.et-aggregation{stroke:var(--green);stroke-width:1.8}
+.et-composition{stroke:var(--yellow);stroke-width:1.8}
 .et-multi{stroke-width:2.5;stroke-dasharray:10 4}
 .et-low-confidence{opacity:.65;stroke-dasharray:4 4}
 .edge-label{font-size:10px;fill:var(--text-dim);pointer-events:none}
@@ -723,7 +729,18 @@ function projectEdgesForViewLocal(view) {
     return null;
   }
 
-  const TYPE_VERBS = {calls:"calls",imports:"imports",reads:"reads",writes:"writes to",inherits:"inherits",instantiates:"creates",uses_config:"config"};
+  const TYPE_VERBS = {
+    calls: "calls",
+    imports: "imports",
+    reads: "reads",
+    writes: "writes to",
+    inherits: "inherits",
+    instantiates: "creates",
+    uses_config: "config",
+    association: "associates",
+    aggregation: "has",
+    composition: "owns",
+  };
   const edgeMap = new Map();
   const isVisibleType = (type) => REL_FILTERS[type] !== false;
 
@@ -846,7 +863,19 @@ function renderView(viewId) {
   });
   svg.appendChild(defs);
 
-  const typeToArrow = {calls:"acc",imports:"grn",reads:"grn",writes:"org",inherits:"yel",instantiates:"yel",uses_config:"dim",contains:"dim"};
+  const typeToArrow = {
+    calls: "acc",
+    imports: "grn",
+    reads: "grn",
+    writes: "org",
+    inherits: "yel",
+    instantiates: "yel",
+    uses_config: "dim",
+    association: "acc",
+    aggregation: "grn",
+    composition: "yel",
+    contains: "dim",
+  };
   const layoutDirection = (SETTINGS.layout && SETTINGS.layout.direction === "RIGHT") ? "RIGHT" : "DOWN";
 
   edges.forEach(e => {
@@ -1040,7 +1069,18 @@ function renderRelBadges(sym) {
   );
   const types = new Set(rels.map(r => r.type));
   if (types.size === 0) return "";
-  const META = {reads:{icon:'<i class="bi bi-book"></i>',label:"reads"},writes:{icon:'<i class="bi bi-pencil-square"></i>',label:"writes"},calls:{icon:'<i class="bi bi-telephone-outbound"></i>',label:"calls"},imports:{icon:'<i class="bi bi-box-arrow-in-down"></i>',label:"imports"},inherits:{icon:'<i class="bi bi-diagram-3"></i>',label:"inherits"},instantiates:{icon:'<i class="bi bi-lightning"></i>',label:"creates"},uses_config:{icon:'<i class="bi bi-gear"></i>',label:"config"}};
+  const META = {
+    reads: { icon: '<i class="bi bi-book"></i>', label: "reads" },
+    writes: { icon: '<i class="bi bi-pencil-square"></i>', label: "writes" },
+    calls: { icon: '<i class="bi bi-telephone-outbound"></i>', label: "calls" },
+    imports: { icon: '<i class="bi bi-box-arrow-in-down"></i>', label: "imports" },
+    inherits: { icon: '<i class="bi bi-diagram-3"></i>', label: "inherits" },
+    instantiates: { icon: '<i class="bi bi-lightning"></i>', label: "creates" },
+    uses_config: { icon: '<i class="bi bi-gear"></i>', label: "config" },
+    association: { icon: '<i class="bi bi-diagram-2"></i>', label: "associates" },
+    aggregation: { icon: '<i class="bi bi-diagram-2"></i>', label: "has" },
+    composition: { icon: '<i class="bi bi-diagram-2-fill"></i>', label: "owns" },
+  };
   const showText = EDGE_LABEL_MODE === "detailed" && !NODE_COMPACT_MODE;
   let html = '<div class="rbadges">';
   types.forEach(t => {
@@ -1566,7 +1606,18 @@ function showHoverCard(symId, rect) {
   }
 
   // Relations
-  const TYPE_LABELS = {calls:['<i class="bi bi-arrow-right"></i> Ruft auf','<i class="bi bi-arrow-left"></i> Aufgerufen von'],reads:['<i class="bi bi-book"></i> Liest',null],writes:['<i class="bi bi-pencil-square"></i> Schreibt',null],imports:['<i class="bi bi-box-arrow-in-down"></i> Importiert','<i class="bi bi-box-arrow-up"></i> Importiert von'],inherits:['<i class="bi bi-diagram-3"></i> Erbt von',null],instantiates:['<i class="bi bi-lightning"></i> Instanziiert',null],uses_config:['<i class="bi bi-gear"></i> Konfiguration',null]};
+  const TYPE_LABELS = {
+    calls: ['<i class="bi bi-arrow-right"></i> Ruft auf', '<i class="bi bi-arrow-left"></i> Aufgerufen von'],
+    reads: ['<i class="bi bi-book"></i> Liest', null],
+    writes: ['<i class="bi bi-pencil-square"></i> Schreibt', null],
+    imports: ['<i class="bi bi-box-arrow-in-down"></i> Importiert', '<i class="bi bi-box-arrow-up"></i> Importiert von'],
+    inherits: ['<i class="bi bi-diagram-3"></i> Erbt von', null],
+    instantiates: ['<i class="bi bi-lightning"></i> Instanziiert', null],
+    uses_config: ['<i class="bi bi-gear"></i> Konfiguration', null],
+    association: ['<i class="bi bi-diagram-2"></i> Assoziiert mit', '<i class="bi bi-diagram-2"></i> Assoziiert mit'],
+    aggregation: ['<i class="bi bi-diagram-2"></i> Hat', '<i class="bi bi-diagram-2"></i> Teil von'],
+    composition: ['<i class="bi bi-diagram-2-fill"></i> Enthält', '<i class="bi bi-diagram-2-fill"></i> Teil von'],
+  };
   const outgoing = {}, incoming = {};
   rels.forEach(r => {
     if (r.source === sym.id) { if (!outgoing[r.type]) outgoing[r.type]=[]; outgoing[r.type].push(symMap.get(r.target)); }

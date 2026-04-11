@@ -1176,6 +1176,7 @@ body,
   font-size: 12px;
   padding: 2px 0;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .uml-class-node .compartment-item .attr-icon {
@@ -2489,6 +2490,22 @@ body,
 .edge-instantiates .react-flow__edge-path {
   stroke: var(--yellow) !important;
   stroke-dasharray: 4 2 !important;
+}
+
+.edge-association .react-flow__edge-path {
+  stroke: #6c8cff !important;
+  stroke-width: 1.8 !important;
+}
+
+.edge-aggregation .react-flow__edge-path {
+  stroke: #53c8b9 !important;
+  stroke-dasharray: 7 3 !important;
+  stroke-width: 1.8 !important;
+}
+
+.edge-composition .react-flow__edge-path {
+  stroke: #ff9f68 !important;
+  stroke-width: 2 !important;
 }
 
 .edge-uses_config .react-flow__edge-path,

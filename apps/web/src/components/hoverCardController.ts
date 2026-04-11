@@ -8,11 +8,35 @@ let hoverBlocked = false;
 let hoverSuppressedUntil = 0;
 let inspectorHighlightedNodeId: string | null = null;
 
-const HOVER_SHOW_DELAY_MS = 560;
-const HOVER_HIDE_DELAY_MS = 300;
+const HOVER_SHOW_DELAY_MS = 320;
+const HOVER_HIDE_DELAY_MS = 220;
 
 function hoverIsSuppressed(): boolean {
   return hoverBlocked || Date.now() < hoverSuppressedUntil;
+}
+
+function remainingHoverSuppressionMs(): number {
+  return Math.max(0, hoverSuppressedUntil - Date.now());
+}
+
+function commitHoverTarget(target: HoverTarget, rect: DOMRect, source: HoverSource) {
+  const inspectorEl = source === "inspector" ? document.querySelector(".inspector") : null;
+  const inspectorRect = inspectorEl instanceof HTMLElement ? inspectorEl.getBoundingClientRect() : null;
+  const x = source === "inspector" && inspectorRect
+    ? Math.max(
+        HOVER_CARD_VIEWPORT_MARGIN,
+        inspectorRect.left - (HOVER_CARD_WIDTH + 18),
+      )
+    : rect.right + 12 + HOVER_CARD_WIDTH > window.innerWidth
+      ? rect.left - (HOVER_CARD_WIDTH + 12)
+      : rect.right + 12;
+  const y = source === "inspector" && inspectorRect
+    ? Math.max(
+        inspectorRect.top + 8,
+        Math.min(rect.top - 6, inspectorRect.bottom - 520),
+      )
+    : Math.max(HOVER_CARD_VIEWPORT_MARGIN, Math.min(rect.top, window.innerHeight - 500));
+  useAppStore.getState().setHoverTarget({ ...target, source }, { x, y, source });
 }
 
 function clearInspectorNodeHighlight() {
@@ -70,7 +94,7 @@ function scheduleShowHoverTarget(
   options?: { source?: HoverSource },
 ) {
   const source = options?.source ?? target.source ?? "canvas";
-  if (hoverIsSuppressed()) return;
+  if (hoverBlocked) return;
   cancelHideHover();
   if (showTimer) clearTimeout(showTimer);
   if (source === "inspector" && target.kind === "symbol") {
@@ -78,30 +102,25 @@ function scheduleShowHoverTarget(
   } else {
     clearInspectorNodeHighlight();
   }
+  const delayMs = Math.max(HOVER_SHOW_DELAY_MS, remainingHoverSuppressionMs());
   showTimer = setTimeout(() => {
-    if (hoverIsSuppressed()) {
+    if (hoverBlocked) {
       showTimer = null;
       return;
     }
-    const inspectorEl = source === "inspector" ? document.querySelector(".inspector") : null;
-    const inspectorRect = inspectorEl instanceof HTMLElement ? inspectorEl.getBoundingClientRect() : null;
-    const x = source === "inspector" && inspectorRect
-      ? Math.max(
-          HOVER_CARD_VIEWPORT_MARGIN,
-          inspectorRect.left - (HOVER_CARD_WIDTH + 18),
-        )
-      : rect.right + 12 + HOVER_CARD_WIDTH > window.innerWidth
-        ? rect.left - (HOVER_CARD_WIDTH + 12)
-        : rect.right + 12;
-    const y = source === "inspector" && inspectorRect
-        ? Math.max(
-            inspectorRect.top + 8,
-            Math.min(rect.top - 6, inspectorRect.bottom - 520),
-          )
-      : Math.max(HOVER_CARD_VIEWPORT_MARGIN, Math.min(rect.top, window.innerHeight - 500));
-    useAppStore.getState().setHoverTarget({ ...target, source }, { x, y, source });
+    const remainingSuppression = remainingHoverSuppressionMs();
+    if (remainingSuppression > 0) {
+      showTimer = setTimeout(() => {
+        showTimer = null;
+        if (!hoverBlocked && remainingHoverSuppressionMs() <= 0) {
+          commitHoverTarget(target, rect, source);
+        }
+      }, remainingSuppression);
+      return;
+    }
+    commitHoverTarget(target, rect, source);
     showTimer = null;
-  }, HOVER_SHOW_DELAY_MS);
+  }, delayMs);
 }
 
 export function scheduleShowHover(

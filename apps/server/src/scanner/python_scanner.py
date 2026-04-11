@@ -10,6 +10,7 @@ Outputs JSON to stdout.
 import ast
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -33,6 +34,16 @@ WRITE_CALL_PATTERNS = {
     "to_csv", "to_excel", "to_json", "to_parquet", "to_pickle",
     "dump", "dumps", "safe_dump",
     "save", "save_to_file", "savetxt", "savez", "write_text", "write_bytes",
+}
+
+BUILTIN_TYPE_NAMES = {
+    "Any", "Annotated", "AsyncIterator", "Awaitable", "Callable", "ClassVar",
+    "Collection", "Coroutine", "Dict", "Final", "FrozenSet", "Generic", "Generator",
+    "Iterable", "Iterator", "List", "Literal", "Mapping", "MutableMapping",
+    "MutableSequence", "MutableSet", "None", "Optional", "Protocol", "Self",
+    "Sequence", "Set", "Tuple", "Type", "TypedDict", "Union",
+    "any", "bool", "bytes", "complex", "dict", "float", "frozenset", "int",
+    "list", "object", "set", "str", "tuple", "type",
 }
 
 
@@ -112,6 +123,7 @@ def scan_directory(root: str) -> dict[str, Any]:
             if isinstance(node, ast.ClassDef):
                 cls_id = f"{mod_id}:{node.name}"
                 cls_doc = ast.get_docstring(node)
+                class_attr_ids: set[str] = set()
                 sym_entry: dict = {
                     "id": cls_id,
                     "label": node.name,
@@ -147,16 +159,45 @@ def scan_directory(root: str) -> dict[str, Any]:
                             "parentId": cls_id,
                         }
                         params = _extract_params(item)
-                        if params or meth_doc:
+                        returns = _extract_returns(item)
+                        if params or returns or meth_doc:
                             meth_entry["doc"] = {}
                             if meth_doc:
                                 meth_entry["doc"]["summary"] = meth_doc[:500]
                             if params:
                                 meth_entry["doc"]["inputs"] = params
+                            if returns:
+                                meth_entry["doc"]["outputs"] = returns
                         symbols.append(meth_entry)
                         edges.append({"source": cls_id, "target": meth_id, "type": "contains"})
                         symbol_table[f"{node.name}.{item.name}"] = meth_id
                         symbol_table[f"{mod_name}.{node.name}.{item.name}"] = meth_id
+
+                        for attr in _extract_instance_attributes(item):
+                            attr_name = attr["name"]
+                            if attr_name.startswith("_") and not attr_name.startswith("__"):
+                                continue
+                            attr_id = f"{cls_id}.{attr_name}"
+                            if attr_id in class_attr_ids:
+                                continue
+
+                            attr_entry: dict = {
+                                "id": attr_id,
+                                "label": f"{node.name}.{attr_name}",
+                                "kind": "variable",
+                                "file": str(rel),
+                                "startLine": attr["line"],
+                                "endLine": attr["line"],
+                                "parentId": cls_id,
+                            }
+                            if attr.get("type"):
+                                attr_entry["doc"] = {"inputs": [{"name": attr_name, "type": attr["type"]}]}
+                            if attr.get("relationType"):
+                                attr_entry["relationType"] = attr["relationType"]
+
+                            symbols.append(attr_entry)
+                            edges.append({"source": cls_id, "target": attr_id, "type": "contains"})
+                            class_attr_ids.add(attr_id)
                     elif isinstance(item, ast.AnnAssign) and item.target and isinstance(item.target, ast.Name):
                         # Annotated class attribute: x: int = 5
                         attr_name = item.target.id
@@ -175,6 +216,7 @@ def scan_directory(root: str) -> dict[str, Any]:
                             attr_entry["doc"] = {"inputs": [{"name": attr_name, "type": attr_type}]}
                         symbols.append(attr_entry)
                         edges.append({"source": cls_id, "target": attr_id, "type": "contains"})
+                        class_attr_ids.add(attr_id)
                     elif isinstance(item, ast.Assign):
                         # Class-level assignments: x = 5
                         for target in item.targets:
@@ -194,6 +236,7 @@ def scan_directory(root: str) -> dict[str, Any]:
                                 }
                                 symbols.append(attr_entry)
                                 edges.append({"source": cls_id, "target": attr_id, "type": "contains"})
+                                class_attr_ids.add(attr_id)
 
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 func_id = f"{mod_id}:{node.name}"
@@ -208,12 +251,15 @@ def scan_directory(root: str) -> dict[str, Any]:
                     "parentId": mod_id,
                 }
                 params = _extract_params(node)
-                if params or func_doc:
+                returns = _extract_returns(node)
+                if params or returns or func_doc:
                     func_entry["doc"] = {}
                     if func_doc:
                         func_entry["doc"]["summary"] = func_doc[:500]
                     if params:
                         func_entry["doc"]["inputs"] = params
+                    if returns:
+                        func_entry["doc"]["outputs"] = returns
                 symbols.append(func_entry)
                 edges.append({"source": mod_id, "target": func_id, "type": "contains"})
                 symbol_table[node.name] = func_id
@@ -261,6 +307,9 @@ def scan_directory(root: str) -> dict[str, Any]:
                     "source": sym["id"], "target": ext_id,
                     "type": "inherits", "confidence": 0.5,
                 })
+
+    known_sym_ids = {s["id"] for s in symbols}
+    edges.extend(_build_structural_class_relations(symbols, symbol_table, known_sym_ids))
 
     # ── Phase 4: Collect external symbols from unresolved edges ──
     all_sym_ids = {s["id"] for s in symbols}
@@ -492,6 +541,120 @@ def _extract_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict]:
     return params
 
 
+def _extract_returns(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict]:
+    if not node.returns:
+        return []
+    annotation = _node_to_str(node.returns)
+    if not annotation or annotation == "None":
+        return []
+    return [{"name": "return", "type": annotation}]
+
+
+def _extract_param_type_map(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
+    param_types: dict[str, str] = {}
+    for arg in node.args.args:
+        if arg.arg in ("self", "cls"):
+            continue
+        if not arg.annotation:
+            continue
+        annotation = _node_to_str(arg.annotation)
+        if annotation:
+            param_types[arg.arg] = annotation
+    return param_types
+
+
+def _extract_instance_attributes(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict[str, str | int]]:
+    param_types = _extract_param_type_map(node)
+    attrs: dict[str, dict[str, str | int]] = {}
+
+    class _InstanceAttributeVisitor(ast.NodeVisitor):
+        def visit_Assign(self, assign_node: ast.Assign) -> None:
+            for target in assign_node.targets:
+                self._capture(target, getattr(assign_node, "lineno", None), assign_node.value)
+            self.generic_visit(assign_node.value)
+
+        def visit_AnnAssign(self, assign_node: ast.AnnAssign) -> None:
+            self._capture(
+                assign_node.target,
+                getattr(assign_node, "lineno", None),
+                assign_node.value,
+                annotation=assign_node.annotation,
+            )
+            if assign_node.value is not None:
+                self.generic_visit(assign_node.value)
+
+        def _capture(
+            self,
+            target: ast.AST,
+            line: Optional[int],
+            value: Optional[ast.AST],
+            annotation: Optional[ast.AST] = None,
+        ) -> None:
+            if not isinstance(target, ast.Attribute):
+                return
+            if target.attr in attrs:
+                return
+            if not isinstance(target.value, ast.Name) or target.value.id != "self":
+                return
+
+            attr: dict[str, str | int] = {
+                "name": target.attr,
+                "line": line or getattr(target, "lineno", 1),
+            }
+            inferred_type = _infer_attribute_type(value, param_types, annotation)
+            if inferred_type:
+                attr["type"] = inferred_type
+            if isinstance(value, ast.Call):
+                attr["relationType"] = "composition"
+            elif inferred_type:
+                attr["relationType"] = "association"
+            attrs[target.attr] = attr
+
+    _InstanceAttributeVisitor().visit(node)
+    return list(attrs.values())
+
+
+def _infer_attribute_type(
+    value: Optional[ast.AST],
+    param_types: dict[str, str],
+    annotation: Optional[ast.AST] = None,
+) -> Optional[str]:
+    if annotation is not None:
+        return _node_to_str(annotation)
+    if value is None:
+        return None
+    if isinstance(value, ast.Name):
+        return param_types.get(value.id)
+    if isinstance(value, ast.Constant):
+        if value.value is None:
+            return "None"
+        if isinstance(value.value, bool):
+            return "bool"
+        if isinstance(value.value, int):
+            return "int"
+        if isinstance(value.value, float):
+            return "float"
+        if isinstance(value.value, str):
+            return "str"
+    if isinstance(value, ast.List):
+        return "list"
+    if isinstance(value, ast.Tuple):
+        return "tuple"
+    if isinstance(value, ast.Dict):
+        return "dict"
+    if isinstance(value, ast.Set):
+        return "set"
+    if isinstance(value, ast.Call):
+        callee = _resolve_call_name(value)
+        if callee:
+            return callee.split(".")[-1]
+    if isinstance(value, ast.Attribute):
+        rendered = _node_to_str(value)
+        if rendered:
+            return rendered.split(".")[-1]
+    return None
+
+
 def _node_to_str(node: ast.expr) -> Optional[str]:
     if isinstance(node, ast.Name):
         return node.id
@@ -569,6 +732,186 @@ def _detect_read_write(
             return "writes"
         return "reads"
     return None
+
+
+def _module_name_from_symbol_id(symbol_id: str) -> Optional[str]:
+    if not symbol_id.startswith("mod:"):
+        return None
+    module_name, _, _ = symbol_id[4:].partition(":")
+    return module_name or None
+
+
+def _extract_type_names(type_text: Optional[str]) -> list[str]:
+    if not type_text:
+        return []
+
+    seen: set[str] = set()
+    names: list[str] = []
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", type_text.replace("|", " ")):
+        short = token.split(".")[-1]
+        if token in BUILTIN_TYPE_NAMES or short in BUILTIN_TYPE_NAMES:
+            continue
+        for candidate in (token, short):
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            names.append(candidate)
+    return names
+
+
+def _resolve_internal_class_name(
+    type_name: str,
+    owner_class_id: str,
+    symbol_table: dict[str, str],
+    symbol_index: dict[str, dict[str, Any]],
+    known_sym_ids: set[str],
+) -> Optional[str]:
+    owner_module_name = _module_name_from_symbol_id(owner_class_id)
+    short_name = type_name.split(".")[-1]
+
+    candidates: list[str] = []
+    if owner_module_name and "." not in type_name:
+        candidates.append(f"{owner_module_name}.{type_name}")
+    candidates.append(type_name)
+    if short_name != type_name:
+        candidates.append(short_name)
+    if owner_module_name and short_name != type_name:
+        candidates.append(f"{owner_module_name}.{short_name}")
+
+    for candidate in candidates:
+        target_id = _resolve_name(candidate, symbol_table, {})
+        if not target_id or target_id not in known_sym_ids:
+            continue
+        target_symbol = symbol_index.get(target_id)
+        if target_symbol and target_symbol.get("kind") == "class":
+            return target_id
+    return None
+
+
+def _build_structural_class_relations(
+    symbols: list[dict[str, Any]],
+    symbol_table: dict[str, str],
+    known_sym_ids: set[str],
+) -> list[dict[str, Any]]:
+    symbol_index = {symbol["id"]: symbol for symbol in symbols}
+    relations: list[dict[str, Any]] = []
+
+    def add_relation(
+        source_id: str,
+        target_id: str,
+        relation_type: str,
+        *,
+        label: Optional[str],
+        file: Optional[str],
+        start_line: Optional[int],
+        end_line: Optional[int],
+        confidence: float,
+    ) -> None:
+        if source_id == target_id:
+            return
+
+        relation: dict[str, Any] = {
+            "source": source_id,
+            "target": target_id,
+            "type": relation_type,
+            "confidence": confidence,
+        }
+        if label:
+            relation["label"] = label
+        if file:
+            evidence = {"file": file}
+            if start_line is not None:
+                evidence["startLine"] = start_line
+            if end_line is not None:
+                evidence["endLine"] = end_line
+            relation["evidence"] = evidence
+        relations.append(relation)
+
+    for symbol in symbols:
+        parent_id = symbol.get("parentId")
+        if not parent_id:
+            continue
+        owner = symbol_index.get(parent_id)
+        if not owner or owner.get("kind") != "class":
+            continue
+
+        if symbol.get("kind") in {"variable", "constant"}:
+            items = ((symbol.get("doc") or {}).get("inputs") or [])
+            relation_type = symbol.get("relationType") or "association"
+            label = str(symbol.get("label") or symbol.get("id") or "").split(".")[-1]
+            for item in items:
+                for type_name in _extract_type_names(item.get("type")):
+                    target_id = _resolve_internal_class_name(
+                        type_name,
+                        parent_id,
+                        symbol_table,
+                        symbol_index,
+                        known_sym_ids,
+                    )
+                    if not target_id:
+                        continue
+                    add_relation(
+                        parent_id,
+                        target_id,
+                        str(relation_type),
+                        label=label,
+                        file=symbol.get("file"),
+                        start_line=symbol.get("startLine"),
+                        end_line=symbol.get("endLine"),
+                        confidence=0.84 if relation_type == "association" else 0.88,
+                    )
+            continue
+
+        if symbol.get("kind") != "method":
+            continue
+
+        symbol_doc = symbol.get("doc") or {}
+        method_name = str(symbol.get("label") or symbol.get("id") or "").split(".")[-1]
+        for item in symbol_doc.get("inputs") or []:
+            for type_name in _extract_type_names(item.get("type")):
+                target_id = _resolve_internal_class_name(
+                    type_name,
+                    parent_id,
+                    symbol_table,
+                    symbol_index,
+                    known_sym_ids,
+                )
+                if not target_id:
+                    continue
+                add_relation(
+                    parent_id,
+                    target_id,
+                    "association",
+                    label=method_name,
+                    file=symbol.get("file"),
+                    start_line=symbol.get("startLine"),
+                    end_line=symbol.get("endLine"),
+                    confidence=0.7,
+                )
+
+        for item in symbol_doc.get("outputs") or []:
+            for type_name in _extract_type_names(item.get("type")):
+                target_id = _resolve_internal_class_name(
+                    type_name,
+                    parent_id,
+                    symbol_table,
+                    symbol_index,
+                    known_sym_ids,
+                )
+                if not target_id:
+                    continue
+                add_relation(
+                    parent_id,
+                    target_id,
+                    "association",
+                    label=method_name,
+                    file=symbol.get("file"),
+                    start_line=symbol.get("startLine"),
+                    end_line=symbol.get("endLine"),
+                    confidence=0.66,
+                )
+
+    return relations
 
 
 def _extract_artifact_names(

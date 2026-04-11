@@ -73,7 +73,7 @@ function parseAiJsonContent(content: string, resolvedModel: ResolvedAiTaskModel)
   let normalized = content.trim();
   if (normalized.startsWith("```")) {
     normalized = normalized.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
-    console.log(`[Ollama] Stripped fences: ${normalized.slice(0, 120)}...`);
+    console.log(`[Ollama] Stripped markdown fences (contentChars=${normalized.length})`);
   }
 
   try {
@@ -85,7 +85,7 @@ function parseAiJsonContent(content: string, resolvedModel: ResolvedAiTaskModel)
     const jsonMatch = normalized.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
-        console.log("[Ollama] Extracted JSON from response");
+        console.log(`[Ollama] Extracted JSON object from response (contentChars=${normalized.length})`);
         return {
           data: JSON.parse(jsonMatch[0]),
           model: resolvedModel,
@@ -95,7 +95,7 @@ function parseAiJsonContent(content: string, resolvedModel: ResolvedAiTaskModel)
       }
     }
 
-    throw new Error(`Ollama returned invalid JSON: ${normalized.slice(0, 200)}`);
+    throw new Error(`Ollama returned invalid JSON (contentChars=${normalized.length})`);
   }
 }
 

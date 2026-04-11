@@ -126,29 +126,28 @@ def export_results(df):
     assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_generated_simulation_data:to-simulation-output"));
 
     const extractStageView = graph.views.find((view) => view.id === "view:process-stage:extract");
-    assert.deepEqual(extractStageView?.nodeRefs, [
-      "mod:data_extraction",
-      "proc:artifact:df_data_with_order_cluster_csv",
-      "proc:artifact:df_data_with_order_csv",
-      "proc:artifact:df_data_csv",
-    ]);
+    assert.ok(extractStageView?.nodeRefs.includes("proc:stage-sequence-nav:extract"));
+    assert.ok(extractStageView?.nodeRefs.includes("mod:data_extraction:DataExtraction"));
+    assert.ok(!extractStageView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
+    assert.ok(!extractStageView?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
+    assert.ok(!extractStageView?.nodeRefs.includes("proc:artifact:df_data_csv"));
+    assert.equal(graph.views.find((view) => view.id === "view:process-stage:extract:sequence")?.parentViewId, "view:process-stage:extract");
 
     const distributionStageView = graph.views.find((view) => view.id === "view:process-stage:distribution");
-    assert.deepEqual(distributionStageView?.nodeRefs, [
-      "mod:distribution.fit_distribution",
-      "proc:artifact:distribution_json",
-      "proc:artifact:fallback_json",
-      "proc:artifact:kde_min_max_values_json",
-      "proc:artifact:model_pickle",
-    ]);
+    assert.ok(distributionStageView?.nodeRefs.includes("proc:stage-sequence-nav:distribution"));
+    assert.ok(distributionStageView?.nodeRefs.includes("mod:distribution.fit_distribution"));
+    assert.ok(!distributionStageView?.nodeRefs.includes("proc:artifact:distribution_json"));
+    assert.ok(!distributionStageView?.nodeRefs.includes("proc:artifact:fallback_json"));
+    assert.ok(!distributionStageView?.nodeRefs.includes("proc:artifact:kde_min_max_values_json"));
+    assert.ok(!distributionStageView?.nodeRefs.includes("proc:artifact:model_pickle"));
 
     const simulationStageView = graph.views.find((view) => view.id === "view:process-stage:simulation");
     assert.ok(simulationStageView?.nodeRefs.includes("mod:simulation_data_generator"));
     assert.ok(simulationStageView?.nodeRefs.includes("mod:arrival_table.generate_arrival_table"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:arrival_gro_csv"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:arrival_klein_csv"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:outliners_xlsx"));
+    assert.ok(!simulationStageView?.nodeRefs.includes("proc:artifact:arrival_gro_csv"));
+    assert.ok(!simulationStageView?.nodeRefs.includes("proc:artifact:arrival_klein_csv"));
+    assert.ok(!simulationStageView?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
+    assert.ok(!simulationStageView?.nodeRefs.includes("proc:artifact:outliners_xlsx"));
     assert.equal(graph.views.find((view) => view.id === "view:process-stage:outputs"), undefined);
 
     const distributionModuleView = graph.views.find((view) => view.id === "view:mod:distribution.fit_distribution");
@@ -175,6 +174,75 @@ def export_results(df):
     assert.ok(stageWriteTargets.has("proc:artifact:arrival_gro_csv"));
     assert.ok(stageWriteTargets.has("proc:artifact:arrival_klein_csv"));
     assert.ok(stageWriteTargets.has("proc:artifact:filter_stats_xlsx"));
+  } finally {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("scanProject extracts instance attributes for class-diagram views", async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "dmpg-class-attrs-"));
+  try {
+    writeProjectFile(projectDir, "pipeline.py", `
+class ScheduleBuilder:
+    pass
+
+class JobResult:
+    pass
+
+class Repository:
+    pass
+
+class PipelineController:
+    def __init__(self, repository: Repository, retries: int = 3):
+        self.repository = repository
+        self.builder = ScheduleBuilder()
+        self.retries = retries
+        self.enabled = True
+        self.mode = "batch"
+
+    def run(self, payload: JobResult) -> JobResult:
+        return JobResult()
+`);
+
+    const graph = await scanProject(projectDir);
+    const controllerClassId = "mod:pipeline:PipelineController";
+    const attributes = graph.symbols
+      .filter((symbol) => symbol.parentId === controllerClassId)
+      .filter((symbol) => symbol.kind === "variable" || symbol.kind === "constant");
+    const attributeLabels = new Set(attributes.map((symbol) => symbol.label));
+
+    assert.ok(attributeLabels.has("PipelineController.repository"));
+    assert.ok(attributeLabels.has("PipelineController.builder"));
+    assert.ok(attributeLabels.has("PipelineController.retries"));
+    assert.ok(attributeLabels.has("PipelineController.enabled"));
+    assert.ok(attributeLabels.has("PipelineController.mode"));
+
+    const repositoryAttr = attributes.find((symbol) => symbol.label === "PipelineController.repository");
+    assert.equal(repositoryAttr?.doc?.inputs?.[0]?.type, "Repository");
+    const builderAttr = attributes.find((symbol) => symbol.label === "PipelineController.builder");
+    assert.equal(builderAttr?.doc?.inputs?.[0]?.type, "ScheduleBuilder");
+    const retriesAttr = attributes.find((symbol) => symbol.label === "PipelineController.retries");
+    assert.equal(retriesAttr?.doc?.inputs?.[0]?.type, "int");
+    const enabledAttr = attributes.find((symbol) => symbol.label === "PipelineController.enabled");
+    assert.equal(enabledAttr?.doc?.inputs?.[0]?.type, "bool");
+    const modeAttr = attributes.find((symbol) => symbol.label === "PipelineController.mode");
+    assert.equal(modeAttr?.doc?.inputs?.[0]?.type, "str");
+
+    assert.ok(graph.relations.some((relation) =>
+      relation.type === "association" &&
+      relation.source === "mod:pipeline:PipelineController" &&
+      relation.target === "mod:pipeline:Repository",
+    ));
+    assert.ok(graph.relations.some((relation) =>
+      relation.type === "composition" &&
+      relation.source === "mod:pipeline:PipelineController" &&
+      relation.target === "mod:pipeline:ScheduleBuilder",
+    ));
+    assert.ok(graph.relations.some((relation) =>
+      relation.type === "association" &&
+      relation.source === "mod:pipeline:PipelineController" &&
+      relation.target === "mod:pipeline:JobResult",
+    ));
   } finally {
     fs.rmSync(projectDir, { recursive: true, force: true });
   }

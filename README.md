@@ -83,7 +83,7 @@ Der technische Ablauf beim Scan:
 
 - Python-Projekt-Scan ueber AST
 - Symbol-Klassen: `package`, `module`, `class`, `function`, `method`, `script`, `constant`, `external`, `group`, `interface`, `variable`
-- Relations-Typen: `imports`, `contains`, `calls`, `reads`, `writes`, `inherits`, `uses_config`, `instantiates`
+- Relations-Typen: `imports`, `contains`, `calls`, `reads`, `writes`, `inherits`, `uses_config`, `instantiates`, `association`, `aggregation`, `composition`
 - Optionale Scanner-Konfiguration ueber `dmpg-uml.config.json`
 - Automatische Domain-Layer und mehrstufige Views
 - Coding-Guideline-Metadaten direkt am Symbol
@@ -193,10 +193,13 @@ Copy-Item apps/server/.env.example apps/server/.env
 | `AI_PROVIDER` | `cloud` | `cloud` oder `local` |
 | `OLLAMA_BASE_URL` | `https://ollama.com` | Cloud-Endpunkt |
 | `OLLAMA_LOCAL_URL` | `http://127.0.0.1:11434` | Lokaler Ollama-Endpunkt |
+| `OLLAMA_LOCAL_MODEL` | leer | Optionales Legacy-Override fuer lokales Modell |
 | `OLLAMA_API_KEY` | leer | API-Key fuer Cloud-Provider |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Cloud-/Fallback-Modell fuer `AI_PROVIDER=cloud` |
 | `OLLAMA_CLOUD_MODEL` | leer | Cloud-spezifisches Modell |
 | `AI_HTTP_JSON_LIMIT` | `50mb` | JSON-Body-Limit, relevant fuer Screenshots/Base64 |
+| `DMPG_PROCESS_OVERVIEW_MODE` | leer | `manual`: bevorzugt `process-diagram.json`, sonst Auto-Overlay |
+| `DMPG_PROCESS_OVERVIEW_DEBUG_JSON` | leer | `1`: Fallback auf `process-diagram.json`, wenn Auto-Overlay fehlschlaegt |
 
 ### AI Model Routing
 
@@ -222,6 +225,12 @@ Fallback-Reihenfolge:
    - local: im AI Workspace ausgewaehltes Modell
    - cloud: `OLLAMA_CLOUD_MODEL` oder `OLLAMA_MODEL`
 5. interner Default `llama3.1:8b` fuer Cloud
+
+### Process Overview Overlay (optional)
+
+- Standardverhalten: Auto-Overlay wird aus dem gescannten Graph erzeugt.
+- `DMPG_PROCESS_OVERVIEW_MODE=manual`: `process-diagram.json` wird bevorzugt.
+- `DMPG_PROCESS_OVERVIEW_DEBUG_JSON=1`: bei Auto-Fehler wird auf `process-diagram.json` zurueckgefallen.
 
 ### Minimalbeispiele
 

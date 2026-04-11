@@ -32,6 +32,7 @@ interface RawEdge {
   source: string;
   target: string;
   type: string;
+  label?: string;
   confidence?: number;
   evidence?: Record<string, unknown>;
 }
@@ -188,6 +189,7 @@ function buildGraphFromScan(
     if (e.confidence != null) rel.confidence = e.confidence;
     else if (e.type === "calls") rel.confidence = 0.8;
     else rel.confidence = 1;
+    if (e.label) rel.label = e.label;
     if (e.evidence) rel.evidence = [e.evidence as any];
     return rel;
   });
@@ -440,6 +442,7 @@ function buildGraphFromScan(
           title: sym.label,
           parentViewId: null, // will be set when we know the group view
           scope: "module",
+          diagramType: "class",
           nodeRefs: children.map((c) => c.id),
           edgeRefs: viewEdgeRefs,
         });
@@ -469,6 +472,7 @@ function buildGraphFromScan(
           title: sym.label,
           parentViewId: parentViewId,
           scope: "class",
+          diagramType: "sequence",
           nodeRefs: methods.map((m) => m.id),
           edgeRefs: viewEdgeRefs,
         });
@@ -492,11 +496,19 @@ function buildGraphFromScan(
     // Determine parentViewId: if this group has a parent group, point to that group's view; else root
     const parentViewId = g.parentId ? `view:${g.parentId}` : "view:root";
 
+    // Groups that directly contain modules/classes get "class" diagram type (UML class diagram),
+    // groups that contain only sub-groups get "overview".
+    const hasDirectModulesOrClasses = groupModules.some(
+      (m) => m.kind === "module" || m.kind === "class",
+    );
+    const groupDiagramType = hasDirectModulesOrClasses ? "class" as const : "overview" as const;
+
     return {
       id: `view:${g.id}`,
       title: g.label,
       parentViewId,
       scope: "group" as const,
+      diagramType: groupDiagramType,
       nodeRefs: childIds,
       edgeRefs: viewEdgeRefs,
     };
@@ -523,6 +535,7 @@ function buildGraphFromScan(
     title: `${toTitleCase(path.basename(projectPath))} — Overview`,
     parentViewId: null,
     scope: "root",
+    diagramType: "overview",
     nodeRefs: rootNodeRefs,
     edgeRefs: rootEdgeRefs,
   };

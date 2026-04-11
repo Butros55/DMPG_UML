@@ -7,11 +7,26 @@ type MockGraph = {
     parentId?: string;
     childViewId?: string;
     location?: { file: string; startLine?: number; endLine?: number };
-    doc?: { summary?: string };
+    doc?: {
+      summary?: string;
+      inputs?: Array<{ name: string; type?: string }>;
+      outputs?: Array<{ name: string; type?: string }>;
+    };
   }>;
   relations: Array<{
     id: string;
-    type: "imports" | "contains" | "calls" | "reads" | "writes" | "inherits" | "uses_config" | "instantiates";
+    type:
+      | "imports"
+      | "contains"
+      | "calls"
+      | "reads"
+      | "writes"
+      | "inherits"
+      | "uses_config"
+      | "instantiates"
+      | "association"
+      | "aggregation"
+      | "composition";
     source: string;
     target: string;
     label?: string;
@@ -23,6 +38,7 @@ type MockGraph = {
     title: string;
     parentViewId?: string | null;
     scope?: "root" | "group" | "module" | "class";
+    diagramType?: "overview" | "class" | "sequence";
     nodeRefs: string[];
     edgeRefs: string[];
   }>;
@@ -34,7 +50,7 @@ type MockGraph = {
 
 export function createSequenceGraph(): MockGraph {
   const projectPath = "C:\\fixtures\\sequence-project";
-  const rootViewId = "view:sequence";
+  const rootViewId = "view:process-overview";
 
   return {
     projectName: "Sequence Fixture",
@@ -43,17 +59,119 @@ export function createSequenceGraph(): MockGraph {
     rootViewId,
     symbols: [
       {
+        id: "proc:pkg:transform",
+        label: "Transformation",
+        kind: "group",
+        umlType: "package",
+        childViewId: "view:process-stage:transform",
+        doc: { summary: "Fachlicher Prozessschritt." },
+      },
+      {
+        id: "class:pipeline-controller",
+        label: "PipelineController",
+        kind: "class",
+        location: { file: "src/pipeline_controller.py", startLine: 4, endLine: 98 },
+        doc: { summary: "Koordiniert die Teilnehmer im Sequenzfluss." },
+      },
+      {
+        id: "class:pipeline-controller.repository",
+        label: "PipelineController.repository",
+        kind: "variable",
+        parentId: "class:pipeline-controller",
+        location: { file: "src/pipeline_controller.py", startLine: 8, endLine: 8 },
+        doc: { summary: "Repository-Referenz.", inputs: [{ name: "repository", type: "Repository" }] },
+      },
+      {
+        id: "class:pipeline-controller.builder",
+        label: "PipelineController.builder",
+        kind: "variable",
+        parentId: "class:pipeline-controller",
+        location: { file: "src/pipeline_controller.py", startLine: 9, endLine: 9 },
+        doc: { summary: "Erzeugt Ablaufpläne.", inputs: [{ name: "builder", type: "ScheduleBuilder" }] },
+      },
+      {
+        id: "class:pipeline-controller.run",
+        label: "PipelineController.run",
+        kind: "method",
+        parentId: "class:pipeline-controller",
+        location: { file: "src/pipeline_controller.py", startLine: 21, endLine: 34 },
+        doc: {
+          summary: "Startet den Verarbeitungslauf.",
+          inputs: [{ name: "payload", type: "Payload" }],
+          outputs: [{ name: "return", type: "JobResult" }],
+        },
+      },
+      {
+        id: "class:base-controller",
+        label: "BaseController",
+        kind: "class",
+        location: { file: "src/base_controller.py", startLine: 2, endLine: 16 },
+        doc: { summary: "Gemeinsame Basis für Controller." },
+      },
+      {
+        id: "class:base-controller.execute",
+        label: "BaseController.execute",
+        kind: "method",
+        parentId: "class:base-controller",
+        location: { file: "src/base_controller.py", startLine: 7, endLine: 12 },
+        doc: { summary: "Basisschnittstelle.", outputs: [{ name: "return", type: "JobResult" }] },
+      },
+      {
+        id: "class:repository",
+        label: "Repository",
+        kind: "class",
+        location: { file: "src/repository.py", startLine: 3, endLine: 27 },
+        doc: { summary: "Lädt und speichert Prozesszustand." },
+      },
+      {
+        id: "class:repository.fetch",
+        label: "Repository.fetch",
+        kind: "method",
+        parentId: "class:repository",
+        location: { file: "src/repository.py", startLine: 10, endLine: 16 },
+        doc: { summary: "Lädt ein Ergebnis.", outputs: [{ name: "return", type: "JobResult" }] },
+      },
+      {
+        id: "class:schedule-builder",
+        label: "ScheduleBuilder",
+        kind: "class",
+        location: { file: "src/schedule_builder.py", startLine: 5, endLine: 30 },
+        doc: { summary: "Erstellt Ablaufpläne für die Verarbeitung." },
+      },
+      {
+        id: "class:schedule-builder.build",
+        label: "ScheduleBuilder.build",
+        kind: "method",
+        parentId: "class:schedule-builder",
+        location: { file: "src/schedule_builder.py", startLine: 12, endLine: 19 },
+        doc: { summary: "Baut einen Plan.", outputs: [{ name: "return", type: "JobResult" }] },
+      },
+      {
+        id: "class:job-result",
+        label: "JobResult",
+        kind: "class",
+        location: { file: "src/job_result.py", startLine: 4, endLine: 18 },
+        doc: { summary: "Domänenobjekt für ein Verarbeitungsergebnis." },
+      },
+      {
+        id: "proc:stage-sequence-nav:transform",
+        label: "Sequence Diagram",
+        kind: "external",
+        umlType: "note",
+        childViewId: "view:sequence",
+        doc: { summary: "Static interaction projection" },
+      },
+      {
         id: "participant:digital-zwilling",
         label: "Digitaler Zwilling",
-        kind: "external",
-        umlType: "component",
+        kind: "module",
         location: { file: "src/digital_zwilling.py", startLine: 12, endLine: 84 },
         doc: { summary: "Koordiniert den Start des Sequenzflusses." },
       },
       {
         id: "participant:apache-druid",
         label: "Apache Druid",
-        kind: "external",
+        kind: "module",
         umlType: "database",
         location: { file: "src/adapters/druid.py", startLine: 8, endLine: 77 },
         doc: { summary: "Speichert und liefert die geladenen Daten." },
@@ -61,7 +179,7 @@ export function createSequenceGraph(): MockGraph {
       {
         id: "participant:apache-kafka",
         label: "Apache Kafka",
-        kind: "external",
+        kind: "module",
         umlType: "component",
         location: { file: "src/adapters/kafka.py", startLine: 9, endLine: 71 },
         doc: { summary: "Verteilt Meldungen an die nachgelagerten Teilnehmer." },
@@ -76,6 +194,38 @@ export function createSequenceGraph(): MockGraph {
       },
     ],
     relations: [
+      {
+        id: "rel:controller-inherits",
+        type: "inherits",
+        source: "class:pipeline-controller",
+        target: "class:base-controller",
+        label: "extends",
+        confidence: 1,
+      },
+      {
+        id: "rel:controller-repository",
+        type: "association",
+        source: "class:pipeline-controller",
+        target: "class:repository",
+        label: "repository",
+        confidence: 1,
+      },
+      {
+        id: "rel:controller-builder",
+        type: "composition",
+        source: "class:pipeline-controller",
+        target: "class:schedule-builder",
+        label: "builder",
+        confidence: 1,
+      },
+      {
+        id: "rel:controller-result",
+        type: "association",
+        source: "class:pipeline-controller",
+        target: "class:job-result",
+        label: "run",
+        confidence: 1,
+      },
       {
         id: "rel:generate-sim-data",
         type: "calls",
@@ -134,9 +284,40 @@ export function createSequenceGraph(): MockGraph {
     views: [
       {
         id: rootViewId,
+        title: "Process Overview",
+        parentViewId: null,
+        scope: "root",
+        diagramType: "overview",
+        nodeRefs: ["proc:pkg:transform"],
+        edgeRefs: [],
+      },
+      {
+        id: "view:process-stage:transform",
         title: "Transformation",
-        parentViewId: "view:root",
+        parentViewId: rootViewId,
         scope: "group",
+        diagramType: "class",
+        nodeRefs: [
+          "proc:stage-sequence-nav:transform",
+          "class:pipeline-controller",
+          "class:base-controller",
+          "class:repository",
+          "class:schedule-builder",
+          "class:job-result",
+        ],
+        edgeRefs: [
+          "rel:controller-inherits",
+          "rel:controller-repository",
+          "rel:controller-builder",
+          "rel:controller-result",
+        ],
+      },
+      {
+        id: "view:sequence",
+        title: "PipelineController",
+        parentViewId: "view:process-stage:transform",
+        scope: "group",
+        diagramType: "sequence",
         nodeRefs: [
           "participant:digital-zwilling",
           "participant:apache-druid",

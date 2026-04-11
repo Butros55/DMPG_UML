@@ -29,6 +29,10 @@ export interface ProjectedEdge {
   typeCounts?: Record<string, number>;
 }
 
+export interface ProjectionOptions {
+  bundleByType?: boolean;
+}
+
 /**
  * Build the parent-id chain index for fast ancestor lookups.
  */
@@ -90,6 +94,9 @@ const EDGE_STYLE: Record<string, { animated: boolean; cssClass: string }> = {
   writes: { animated: true, cssClass: "edge-writes" },
   instantiates: { animated: true, cssClass: "edge-instantiates" },
   uses_config: { animated: true, cssClass: "edge-uses-config" },
+  association: { animated: false, cssClass: "edge-association" },
+  aggregation: { animated: false, cssClass: "edge-aggregation" },
+  composition: { animated: false, cssClass: "edge-composition" },
   contains: { animated: false, cssClass: "edge-contains" },
 };
 
@@ -107,6 +114,7 @@ export function projectEdgesForView(
   view: DiagramView,
   allSymbols: Symbol[],
   allRelations: Relation[],
+  options: ProjectionOptions = {},
 ): ProjectedEdge[] {
   const visibleIds = new Set(view.nodeRefs);
   const ancestorIndex = buildAncestorIndex(allSymbols);
@@ -121,6 +129,9 @@ export function projectEdgesForView(
     inherits: "inherits",
     instantiates: "creates",
     uses_config: "config",
+    association: "associates",
+    aggregation: "has",
+    composition: "owns",
   };
 
   // Aggregation map: "source|target" → aggregated edge data
@@ -144,7 +155,9 @@ export function projectEdgesForView(
     // Both endpoints must resolve to visible nodes, and not be the same node
     if (!srcRep || !tgtRep || srcRep === tgtRep) continue;
 
-    const key = `${srcRep}|${tgtRep}`;
+    const key = options.bundleByType
+      ? `${srcRep}|${tgtRep}|${rel.type}`
+      : `${srcRep}|${tgtRep}`;
     const confidence = rel.confidence ?? 1;
 
     if (edgeMap.has(key)) {

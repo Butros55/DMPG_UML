@@ -240,7 +240,12 @@ export function isPackageSequenceView(
   view: DiagramView | null | undefined,
   graph?: Pick<ProjectGraph, "views"> | null,
 ): boolean {
-  if (!view || view.scope !== "group" || !view.parentViewId) return false;
+  if (!view) return false;
+  if (view.diagramType === "sequence") return true;
+  if (view.diagramType === "class" || view.diagramType === "overview") return false;
+
+  // Backward compatibility for persisted/imported graphs that predate diagramType.
+  if (view.scope !== "group" || !view.parentViewId) return false;
   if (view.parentViewId === "view:root") return true;
 
   const parentView = graph?.views.find((entry) => entry.id === view.parentViewId);
@@ -972,8 +977,11 @@ function buildStageSequenceProjectionSeed(params: {
     labelsMode,
   } = params;
 
+  const stageOwnerViewId = view.diagramType === "sequence"
+    ? (view.parentViewId ?? view.id)
+    : view.id;
   const stageSymbol = graph.symbols.find((symbol) =>
-    symbol.id.startsWith("proc:pkg:") && symbol.childViewId === view.id,
+    symbol.id.startsWith("proc:pkg:") && symbol.childViewId === stageOwnerViewId,
   );
   if (!stageSymbol) return null;
   symbolById.set(stageSymbol.id, stageSymbol);

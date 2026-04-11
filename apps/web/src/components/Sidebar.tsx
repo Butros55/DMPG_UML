@@ -356,7 +356,7 @@ function FolderBrowser({ onSelect, onClose }: { onSelect: (path: string) => void
     <div className="folder-browser-overlay" onClick={onClose}>
       <div className="folder-browser" onClick={(e) => e.stopPropagation()}>
         <div className="folder-browser-header">
-          <h3>Select Project Folder</h3>
+          <h3>Projektordner waehlen</h3>
           <button className="btn-icon" onClick={onClose} style={{ fontSize: 16, color: "var(--text-dim)" }}><i className="bi bi-x-lg" /></button>
         </div>
 
@@ -371,7 +371,7 @@ function FolderBrowser({ onSelect, onClose }: { onSelect: (path: string) => void
         </div>
 
         <div className="folder-browser-list">
-          {loading && <div style={{ padding: 12, color: "var(--text-dim)" }}>Loading…</div>}
+          {loading && <div style={{ padding: 12, color: "var(--text-dim)" }}>Laedt…</div>}
           {error && <div style={{ padding: 12, color: "var(--red)", fontSize: 11 }}>{error}</div>}
 
           {parentDir && (
@@ -387,14 +387,18 @@ function FolderBrowser({ onSelect, onClose }: { onSelect: (path: string) => void
           ))}
 
           {!loading && folders.length === 0 && !error && (
-            <div style={{ padding: 12, color: "var(--text-dim)", fontSize: 11 }}>No subfolders</div>
+            <div style={{ padding: 12, color: "var(--text-dim)", fontSize: 11 }}>Keine Unterordner</div>
           )}
         </div>
 
         <div className="folder-browser-actions">
-          <button className="btn btn-sm" onClick={onClose}>Cancel</button>
-          <button className="btn btn-sm btn-primary" onClick={() => { onSelect(currentDir); onClose(); }}>
-            Select "{currentDir.split(/[\\/]/).pop()}"
+          <button className="btn btn-sm" onClick={onClose}>Abbrechen</button>
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={() => { onSelect(currentDir); onClose(); }}
+            disabled={!currentDir.trim()}
+          >
+            Auswaehlen "{currentDir.split(/[\\/]/).pop()}"
           </button>
         </div>
       </div>
@@ -626,7 +630,7 @@ export function Sidebar() {
       setScanPath(normalizedGraph.sourceProjectPath ?? normalizedGraph.projectPath ?? "");
       await refreshProjects();
     } catch (err: any) {
-      setScanError(err.message ?? "Import failed");
+      setScanError(err.message ?? "Import fehlgeschlagen");
     } finally {
       setScanning(false);
       if (importInputRef.current) {
@@ -916,7 +920,7 @@ export function Sidebar() {
         <button
           className={`sidebar-activity-btn${activeTab === "views" ? " sidebar-activity-btn--active" : ""}`}
           onClick={() => handleActivityTabClick("views")}
-          title="Views"
+          title="Ansichten"
           role="tab"
           aria-selected={activeTab === "views"}
         >
@@ -925,7 +929,7 @@ export function Sidebar() {
         <button
           className={`sidebar-activity-btn${activeTab === "nodes" ? " sidebar-activity-btn--active" : ""}`}
           onClick={() => handleActivityTabClick("nodes")}
-          title="UML Nodes"
+          title="UML-Knoten"
           role="tab"
           aria-selected={activeTab === "nodes"}
         >
@@ -934,7 +938,7 @@ export function Sidebar() {
         <button
           className={`sidebar-activity-btn${activeTab === "ai" ? " sidebar-activity-btn--active" : ""}`}
           onClick={() => handleActivityTabClick("ai")}
-          title="AI Workspace"
+          title="KI-Workspace"
           role="tab"
           aria-selected={activeTab === "ai"}
         >
@@ -943,7 +947,7 @@ export function Sidebar() {
         <button
           className={`sidebar-activity-btn${activeTab === "project" ? " sidebar-activity-btn--active" : ""}`}
           onClick={() => handleActivityTabClick("project")}
-          title="Projects / Scan"
+          title="Projekte / Scan"
           role="tab"
           aria-selected={activeTab === "project"}
         >
@@ -967,7 +971,7 @@ export function Sidebar() {
       <div className="sidebar-section">
         <h2 className="sidebar-section__header" onClick={() => toggleSection("umlNodes")}>
           <span className={`sidebar-section__chevron ${sectionCollapsed.umlNodes ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
-          UML Nodes
+          UML-Knoten
         </h2>
         {!sectionCollapsed.umlNodes && NODE_KINDS.map((nk) => (
           <div
@@ -990,11 +994,11 @@ export function Sidebar() {
       <div className="sidebar-section">
         <h2 className="sidebar-section__header" onClick={() => toggleSection("views")}>
           <span className={`sidebar-section__chevron ${sectionCollapsed.views ? "" : "sidebar-section__chevron--open"}`}><i className="bi bi-chevron-right" /></span>
-          Views
+          Ansichten
           <button
             className="sidebar-section__action"
             onClick={(e) => { e.stopPropagation(); collapseAllViews(); }}
-            title="Alle Views einklappen"
+            title="Alle Ansichten einklappen"
           >
             <i className="bi bi-dash-square" />
           </button>
@@ -1002,7 +1006,7 @@ export function Sidebar() {
         {!sectionCollapsed.views && (
           <div className="view-tree">
             {filteredRootViews.length === 0 ? (
-              <div className="view-tree-empty">Keine passenden Views</div>
+              <div className="view-tree-empty">Keine passenden Ansichten</div>
             ) : (
               filteredRootViews.map((v) => (
                 <ViewTreeItem

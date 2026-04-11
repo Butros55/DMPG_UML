@@ -62,7 +62,9 @@ interface ProcessEdgeConfig {
 interface ProcessStageViewConfig {
   id: string;
   title: string;
+  parentViewId?: string | null;
   scope: DiagramView["scope"];
+  diagramType?: DiagramView["diagramType"];
   hiddenInSidebar?: boolean;
   nodeRefs: string[];
   edgeRefs: string[];
@@ -218,7 +220,7 @@ interface ArtifactPreviewItemPayload {
 const MIN_STAGE_CLUSTER_BUCKET_SIZE = 3;
 
 interface BuiltStageView {
-  view: ProcessStageViewConfig;
+  views: ProcessStageViewConfig[];
   edges: ProcessEdgeConfig[];
   nodes: ProcessNodeConfig[];
 }
@@ -231,6 +233,7 @@ export interface ProcessArtifactDescriptor {
 
 const VIEW_ID = "view:process-overview";
 const STAGE_VIEW_PREFIX = "view:process-stage:";
+const STAGE_SEQUENCE_VIEW_SUFFIX = ":sequence";
 const VIEW_TITLE = "Architecture & Dataflow Overview";
 
 const STAGES: readonly StageDef[] = [
@@ -415,7 +418,7 @@ export function buildProcessDiagramConfigFromGraph(graph: ProjectGraph): Process
   const flowGroups = collectArtifactFlowGroups(graph, ctx);
   const prominentFlowGroups = selectArtifactFlowGroupsForStageOverlay(flowGroups);
   const builtStageViews = STAGES.map((stage) => buildStageViewConfig(graph, ctx, stage, prominentFlowGroups));
-  const stageViews = builtStageViews.map((entry) => entry.view);
+  const stageViews = builtStageViews.flatMap((entry) => entry.views);
   const stageEdges = builtStageViews.flatMap((entry) => entry.edges);
   const supportNodes = builtStageViews.flatMap((entry) => entry.nodes);
   const layerOne = buildLayerOneContent(ctx, stageViews, flowGroups);
@@ -1976,23 +1979,37 @@ function buildStageViewConfig(
   stage: StageDef,
   flowGroups: ArtifactFlowGroup[],
 ): BuiltStageView {
-  const coreNodeRefs = selectStageNodeRefs(graph, ctx, stage.id);
-  const artifactOverlay = buildStageArtifactOverlay(stage.id, coreNodeRefs, flowGroups, ctx);
-  const nodeRefs = [...coreNodeRefs, ...artifactOverlay.nodeRefs];
+  const classNodeRefs = selectStageClassNodeRefs(graph, ctx, stage.id);
+  const sequenceNodeRefs = selectStageSequenceNodeRefs(graph, ctx, stage.id);
+  const artifactOverlay = buildStageArtifactOverlay(stage.id, classNodeRefs, flowGroups, ctx);
+  const sequenceViewId = stageSequenceViewId(stage);
+  const sequenceParticipants = sequenceNodeRefs.length > 0 ? sequenceNodeRefs : classNodeRefs;
+  const sequenceNavNode = buildStageSequenceNavNode(stage, sequenceViewId, sequenceParticipants);
+  const nodeRefs = [sequenceNavNode.id, ...classNodeRefs];
   return {
-    view: {
-      id: stage.viewId,
-      title: stage.label,
-      scope: "group",
-      hiddenInSidebar: false,
-      nodeRefs,
-      edgeRefs: [
-        ...collectStageEdgeRefs(graph, ctx, coreNodeRefs),
-        ...artifactOverlay.edges.map((edge) => `process-edge:${edge.id}`),
-      ],
-    },
+    views: [
+      {
+        id: stage.viewId,
+        title: stage.label,
+        scope: "group",
+        diagramType: "class",
+        hiddenInSidebar: false,
+        nodeRefs,
+        edgeRefs: collectStageClassEdgeRefs(graph, ctx, classNodeRefs),
+      },
+      {
+        id: sequenceViewId,
+        title: `${stage.label} Sequence`,
+        parentViewId: stage.viewId,
+        scope: "group",
+        diagramType: "sequence",
+        hiddenInSidebar: false,
+        nodeRefs: sequenceParticipants,
+        edgeRefs: collectStageSequenceEdgeRefs(graph, ctx, sequenceParticipants),
+      },
+    ],
     edges: artifactOverlay.edges,
-    nodes: artifactOverlay.nodes,
+    nodes: [sequenceNavNode, ...artifactOverlay.nodes],
   };
 }
 
@@ -2072,7 +2089,7 @@ function buildViewAdjustments(graph: ProjectGraph, ctx: Context): ProcessViewAdj
       stageByViewId.set(view.id, stage);
     }
 
-    if (shouldShowViewInSidebar(view, owner, viewText)) {
+    if (shouldShowViewInSidebar(view, owner, viewText, ctx)) {
       visibleViewIds.add(view.id);
     }
   }
@@ -2102,11 +2119,11 @@ function buildViewAdjustments(graph: ProjectGraph, ctx: Context): ProcessViewAdj
     });
 }
 
-function selectStageNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId): string[] {
+function selectStageClassNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId): string[] {
   const candidates: RankedStageNode[] = [];
 
   for (const symbol of graph.symbols) {
-    if (!isStageViewNodeCandidate(symbol)) continue;
+    if (!isStageClassNodeCandidate(symbol)) continue;
     if (looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "")) continue;
 
     const assignedStage = mapSymbolToStage(symbol, ctx);
@@ -2122,8 +2139,7 @@ function selectStageNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId):
 
     let rank = stageScore;
     if (classification?.primaryStage === stage) rank += 10;
-    if (symbol.kind === "module") rank += 10;
-    if (symbol.kind === "class") rank += 7;
+    if (symbol.kind === "class") rank += 16;
     if (symbol.childViewId) rank += 4;
 
     candidates.push({ symbol, stageScore, rank });
@@ -2143,7 +2159,7 @@ function selectStageNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId):
   for (const candidate of candidates) {
     if (selected.length >= maxStageNodeCount(stage)) break;
 
-    if (shouldSkipClassInStageView(candidate.symbol, candidateIds, selectedSet)) {
+    if (shouldSkipSymbolInStageClassView(candidate.symbol, candidateIds, selectedSet, ctx)) {
       continue;
     }
 
@@ -2152,10 +2168,107 @@ function selectStageNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId):
   }
 
   if (selected.length > 0) {
-    return selected;
+    return expandStageClassNodeRefsForDiagram(graph, ctx, stage, selected);
   }
 
-  return fallbackStageNodesByTerms(graph, ctx, stage);
+  return expandStageClassNodeRefsForDiagram(
+    graph,
+    ctx,
+    stage,
+    fallbackStageClassNodesByTerms(graph, ctx, stage),
+  );
+}
+
+function selectStageSequenceNodeRefs(graph: ProjectGraph, ctx: Context, stage: StageId): string[] {
+  const candidates: RankedStageNode[] = [];
+
+  for (const symbol of graph.symbols) {
+    if (!isStageViewNodeCandidate(symbol)) continue;
+    if (looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "")) continue;
+
+    const assignedStage = mapSymbolToStage(symbol, ctx);
+    if (assignedStage !== stage) continue;
+
+    const classification = ctx.classifications.get(symbol.id);
+    const stageScore = classification?.scores[stage] ?? scoreByTerms(
+      `${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`,
+      viewTerms(stage),
+    );
+    const threshold = minimumStageScore(stage, symbol.kind);
+    if (stageScore < threshold) continue;
+
+    let rank = stageScore;
+    if (classification?.primaryStage === stage) rank += 10;
+    if (symbol.kind === "class") rank += 16;
+    if (symbol.kind === "module") rank += 6;
+    if (symbol.childViewId) rank += 4;
+
+    candidates.push({ symbol, stageScore, rank });
+  }
+
+  candidates.sort((a, b) =>
+    b.rank - a.rank ||
+    b.stageScore - a.stageScore ||
+    a.symbol.label.localeCompare(b.symbol.label),
+  );
+
+  const candidateIds = new Set(candidates.map((candidate) => candidate.symbol.id));
+
+  const selected: string[] = [];
+  const selectedSet = new Set<string>();
+
+  for (const candidate of candidates) {
+    if (selected.length >= maxStageNodeCount(stage)) break;
+
+    if (shouldSkipSymbolInStageClassView(candidate.symbol, candidateIds, selectedSet, ctx)) {
+      continue;
+    }
+
+    selected.push(candidate.symbol.id);
+    selectedSet.add(candidate.symbol.id);
+  }
+
+  if (selected.length > 0) {
+    return expandStageSequenceNodeRefsForDiagram(graph, ctx, stage, selected);
+  }
+
+  return expandStageSequenceNodeRefsForDiagram(
+    graph,
+    ctx,
+    stage,
+    fallbackStageNodesByTerms(graph, ctx, stage),
+  );
+}
+
+function fallbackStageClassNodesByTerms(graph: ProjectGraph, ctx: Context, stage: StageId): string[] {
+  const terms = viewTerms(stage);
+  const entries = graph.symbols
+    .filter((symbol) =>
+      isStageClassNodeCandidate(symbol) &&
+      !looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "") &&
+      mapSymbolToStage(symbol, ctx) === stage,
+    )
+    .map((symbol) => ({
+      symbol,
+      score: scoreByTerms(`${symbol.id} ${symbol.label} ${symbol.location?.file ?? ""}`, terms),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.symbol.label.localeCompare(b.symbol.label))
+    .slice(0, maxStageNodeCount(stage));
+
+  const candidateIds = new Set(entries.map((entry) => entry.symbol.id));
+  const selectedSet = new Set<string>();
+  const selected: string[] = [];
+
+  for (const entry of entries) {
+    if (shouldSkipSymbolInStageClassView(entry.symbol, candidateIds, selectedSet, ctx)) {
+      continue;
+    }
+    selected.push(entry.symbol.id);
+    selectedSet.add(entry.symbol.id);
+  }
+
+  return selected;
 }
 
 function fallbackStageNodesByTerms(graph: ProjectGraph, ctx: Context, stage: StageId): string[] {
@@ -2179,7 +2292,7 @@ function fallbackStageNodesByTerms(graph: ProjectGraph, ctx: Context, stage: Sta
   const selected: string[] = [];
 
   for (const entry of entries) {
-    if (shouldSkipClassInStageView(entry.symbol, candidateIds, selectedSet)) {
+    if (shouldSkipSymbolInStageClassView(entry.symbol, candidateIds, selectedSet, ctx)) {
       continue;
     }
     selected.push(entry.symbol.id);
@@ -2189,21 +2302,78 @@ function fallbackStageNodesByTerms(graph: ProjectGraph, ctx: Context, stage: Sta
   return selected;
 }
 
-function shouldSkipClassInStageView(
+function shouldSkipSymbolInStageClassView(
   symbol: Symbol,
   candidateIds: Set<string>,
   selectedSet: Set<string>,
+  ctx: Context,
 ): boolean {
-  if (symbol.kind !== "class") return false;
-  const parentId = symbol.parentId;
-  if (!parentId) return false;
-  return selectedSet.has(parentId) || candidateIds.has(parentId);
+  if (symbol.kind === "module") {
+    return hasCandidateClassChild(symbol.id, candidateIds, ctx);
+  }
+
+  if (symbol.kind === "class") {
+    const parentId = symbol.parentId;
+    if (!parentId) return false;
+    const parent = ctx.symbolById.get(parentId);
+    return parent?.kind === "class" && selectedSet.has(parentId);
+  }
+
+  return false;
 }
 
-function collectStageEdgeRefs(
+function hasCandidateClassChild(
+  symbolId: string,
+  candidateIds: Set<string>,
+  ctx: Context,
+): boolean {
+  return (ctx.childrenById.get(symbolId) ?? []).some((child) =>
+    child.kind === "class" && candidateIds.has(child.id),
+  );
+}
+
+function collectStageClassEdgeRefs(
   graph: ProjectGraph,
   ctx: Context,
   nodeRefs: string[],
+): string[] {
+  const structuralEdgeRefs = collectStageEdgeRefsByTypes(
+    graph,
+    ctx,
+    nodeRefs,
+    new Set<RelationType>(["inherits", "instantiates", "association", "aggregation", "composition"]),
+  );
+
+  if (structuralEdgeRefs.length > 0) {
+    return structuralEdgeRefs;
+  }
+
+  return collectStageEdgeRefsByTypes(
+    graph,
+    ctx,
+    nodeRefs,
+    new Set<RelationType>(["instantiates", "imports", "uses_config"]),
+  );
+}
+
+function collectStageSequenceEdgeRefs(
+  graph: ProjectGraph,
+  ctx: Context,
+  nodeRefs: string[],
+): string[] {
+  return collectStageEdgeRefsByTypes(
+    graph,
+    ctx,
+    nodeRefs,
+    new Set<RelationType>(["calls", "instantiates", "reads", "writes", "uses_config"]),
+  );
+}
+
+function collectStageEdgeRefsByTypes(
+  graph: ProjectGraph,
+  ctx: Context,
+  nodeRefs: string[],
+  allowedTypes: ReadonlySet<RelationType>,
 ): string[] {
   if (nodeRefs.length === 0) return [];
 
@@ -2213,6 +2383,7 @@ function collectStageEdgeRefs(
   for (const relation of graph.relations) {
     if (relation.type === "contains") continue;
     if (relation.id.startsWith("process-edge:") || relation.id.startsWith("stub-edge:")) continue;
+    if (!allowedTypes.has(relation.type)) continue;
 
     const source = findNearestVisible(relation.source, visible, ctx.ancestorsById);
     const target = findNearestVisible(relation.target, visible, ctx.ancestorsById);
@@ -2294,11 +2465,13 @@ function shouldShowViewInSidebar(
   view: DiagramView,
   owner: Symbol | undefined,
   viewText: string,
+  ctx: Context,
 ): boolean {
   if (view.id === "view:root") return false;
   if (view.id.startsWith("view:artifacts:") || view.id.startsWith("view:art-cat:")) return false;
   if (!owner) return false;
   if (owner.kind !== "group" && owner.kind !== "module" && owner.kind !== "class") return false;
+  if (owner.kind === "module" && hasDirectClassChildren(owner.id, ctx)) return false;
   if (owner.id.startsWith("grp:domain:")) return false;
   if (owner.id === "grp:dir:__root__") return false;
   if (owner.id.startsWith("grp:art")) return false;
@@ -2306,6 +2479,247 @@ function shouldShowViewInSidebar(
   if (looksLikeArtifactCategory(viewText)) return false;
   if (/\bdata pipeline\b.*\boverview\b/.test(viewText)) return false;
   return true;
+}
+
+function expandStageSequenceNodeRefsForDiagram(
+  graph: ProjectGraph,
+  ctx: Context,
+  stage: StageId,
+  selectedNodeRefs: string[],
+): string[] {
+  if (selectedNodeRefs.length === 0) return selectedNodeRefs;
+  const maxNodes = maxStageNodeCount(stage);
+
+  const selectedSet = new Set(selectedNodeRefs);
+  const expanded: string[] = [];
+  const expandedSet = new Set<string>();
+
+  for (const nodeRef of selectedNodeRefs) {
+    const symbol = ctx.symbolById.get(nodeRef);
+    if (!symbol) continue;
+
+    if (symbol.kind === "module") {
+      const childClasses = graph.symbols
+        .filter((candidate) =>
+          candidate.parentId === symbol.id &&
+          candidate.kind === "class" &&
+          mapSymbolToStage(candidate, ctx) === stage &&
+          !looksLikeUtilityOnly(ctx.ownTextById.get(candidate.id) ?? ""),
+        )
+        .sort((left, right) => left.label.localeCompare(right.label));
+
+      if (childClasses.length > 0) {
+        for (const childClass of childClasses) {
+          if (expandedSet.has(childClass.id)) continue;
+          expanded.push(childClass.id);
+          expandedSet.add(childClass.id);
+        }
+        continue;
+      }
+    }
+
+    if (symbol.kind === "class" && symbol.parentId && selectedSet.has(symbol.parentId)) {
+      continue;
+    }
+
+    if (expandedSet.has(symbol.id)) continue;
+    expanded.push(symbol.id);
+    expandedSet.add(symbol.id);
+  }
+
+  if (expanded.length >= maxNodes) {
+    return expanded.slice(0, maxNodes);
+  }
+
+  const relatedRelationTypes = new Set<RelationType>([
+    "inherits",
+    "instantiates",
+    "association",
+    "aggregation",
+    "composition",
+  ]);
+
+  const maybeAddRelatedClass = (nodeId: string) => {
+    if (expanded.length >= maxNodes || expandedSet.has(nodeId)) return;
+    const symbol = ctx.symbolById.get(nodeId);
+    if (!symbol || symbol.kind !== "class") return;
+    if (mapSymbolToStage(symbol, ctx) !== stage) return;
+    if (looksLikeUtilityOnly(ctx.ownTextById.get(symbol.id) ?? "")) return;
+    expanded.push(symbol.id);
+    expandedSet.add(symbol.id);
+  };
+
+  for (const relation of graph.relations) {
+    if (!relatedRelationTypes.has(relation.type)) continue;
+
+    const sourceRef = resolveStageStructuralNodeRef(relation.source, ctx);
+    const targetRef = resolveStageStructuralNodeRef(relation.target, ctx);
+    if (!sourceRef || !targetRef || sourceRef === targetRef) continue;
+
+    if (expandedSet.has(sourceRef)) maybeAddRelatedClass(targetRef);
+    if (expandedSet.has(targetRef)) maybeAddRelatedClass(sourceRef);
+    if (expanded.length >= maxNodes) break;
+  }
+
+  return expanded.slice(0, maxNodes);
+}
+
+function resolveStageStructuralNodeRef(symbolId: string, ctx: Context): string | null {
+  const chain = ctx.ancestorsById.get(symbolId);
+  if (!chain) return null;
+
+  for (const candidateId of chain) {
+    const candidate = ctx.symbolById.get(candidateId);
+    if (!candidate) continue;
+    if (!isStageViewNodeCandidate(candidate)) continue;
+    if (candidate.kind === "class" || candidate.kind === "module") {
+      return candidateId;
+    }
+  }
+
+  return null;
+}
+
+function expandStageClassNodeRefsForDiagram(
+  graph: ProjectGraph,
+  ctx: Context,
+  stage: StageId,
+  selectedNodeRefs: string[],
+): string[] {
+  if (selectedNodeRefs.length === 0) return selectedNodeRefs;
+
+  const maxNodes = maxStageNodeCount(stage);
+  const expanded: string[] = [];
+  const expandedSet = new Set<string>();
+
+  for (const nodeRef of selectedNodeRefs) {
+    const symbol = ctx.symbolById.get(nodeRef);
+    if (!symbol || symbol.kind !== "class") continue;
+    if (expandedSet.has(symbol.id)) continue;
+    expanded.push(symbol.id);
+    expandedSet.add(symbol.id);
+  }
+
+  if (expanded.length >= maxNodes) {
+    return expanded.slice(0, maxNodes);
+  }
+
+  const relatedRelationTypes = new Set<RelationType>([
+    "inherits",
+    "instantiates",
+    "association",
+    "aggregation",
+    "composition",
+  ]);
+
+  const relationWeight = (type: RelationType): number => {
+    switch (type) {
+      case "composition":
+        return 28;
+      case "aggregation":
+        return 24;
+      case "association":
+        return 20;
+      case "inherits":
+        return 18;
+      case "instantiates":
+        return 14;
+      default:
+        return 0;
+    }
+  };
+
+  const candidateScores = new Map<string, number>();
+
+  for (const relation of graph.relations) {
+    if (!relatedRelationTypes.has(relation.type)) continue;
+
+    const sourceRef = resolveStageStructuralClassNodeRef(relation.source, ctx);
+    const targetRef = resolveStageStructuralClassNodeRef(relation.target, ctx);
+    if (!sourceRef || !targetRef || sourceRef === targetRef) continue;
+
+    const sourceSelected = expandedSet.has(sourceRef);
+    const targetSelected = expandedSet.has(targetRef);
+    if (!sourceSelected && !targetSelected) continue;
+
+    const neighborId = sourceSelected ? targetRef : sourceRef;
+    if (expandedSet.has(neighborId)) continue;
+
+    const neighbor = ctx.symbolById.get(neighborId);
+    if (!neighbor || neighbor.kind !== "class") continue;
+    if (looksLikeUtilityOnly(ctx.ownTextById.get(neighbor.id) ?? "")) continue;
+
+    let score = relationWeight(relation.type);
+    if (mapSymbolToStage(neighbor, ctx) === stage) score += 24;
+    const classification = ctx.classifications.get(neighbor.id);
+    const stageScore = classification?.scores[stage] ?? 0;
+    if (stageScore > 0) score += Math.min(stageScore, 18);
+    if (classification?.primaryStage === stage) score += 10;
+    if (relation.label) score += 2;
+
+    candidateScores.set(neighbor.id, Math.max(candidateScores.get(neighbor.id) ?? 0, score));
+  }
+
+  const rankedCandidates = [...candidateScores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([nodeId]) => nodeId);
+
+  for (const nodeId of rankedCandidates) {
+    if (expanded.length >= maxNodes) break;
+    expanded.push(nodeId);
+    expandedSet.add(nodeId);
+  }
+
+  return expanded.slice(0, maxNodes);
+}
+
+function resolveStageStructuralClassNodeRef(symbolId: string, ctx: Context): string | null {
+  const chain = ctx.ancestorsById.get(symbolId);
+  if (!chain) return null;
+
+  for (const candidateId of chain) {
+    const candidate = ctx.symbolById.get(candidateId);
+    if (!candidate) continue;
+    if (!isStageClassNodeCandidate(candidate)) continue;
+    if (candidate.kind === "class") {
+      return candidateId;
+    }
+  }
+
+  return null;
+}
+
+function stageSequenceViewId(stage: StageDef): string {
+  return `${stage.viewId}${STAGE_SEQUENCE_VIEW_SUFFIX}`;
+}
+
+function buildStageSequenceNavNode(
+  stage: StageDef,
+  sequenceViewId: string,
+  coreNodeRefs: string[],
+): ProcessNodeConfig {
+  const preview = [
+    "Static interaction projection",
+    coreNodeRefs.length > 0 ? `Participants: ${summarizeList(coreNodeRefs.map((nodeRef) => nodeRef.split(":").pop() ?? nodeRef), 3)}` : "Participants from stage symbols",
+  ];
+
+  return {
+    id: `proc:stage-sequence-nav:${stage.id}`,
+    label: "Sequence Diagram",
+    umlType: "note",
+    childViewId: sequenceViewId,
+    preview,
+    position: { x: 0, y: 0, width: FLOW_NODE_WIDTH, height: FLOW_NODE_HEIGHT },
+  };
+}
+
+function hasDirectClassChildren(symbolId: string, ctx: Context): boolean {
+  return (ctx.childrenById.get(symbolId) ?? []).some((child) => child.kind === "class");
+}
+
+function isStageClassNodeCandidate(symbol: Symbol): boolean {
+  if (shouldIgnoreSymbolForArchitectureView(symbol)) return false;
+  return symbol.kind === "class";
 }
 
 function isStageViewNodeCandidate(symbol: Symbol): boolean {
@@ -2349,7 +2763,7 @@ function minimumStageScore(stage: StageId, kind: Symbol["kind"]): number {
 }
 
 function maxStageNodeCount(stage: StageId): number {
-  return stage === "simulation" ? 7 : 6;
+  return stage === "simulation" ? 9 : 8;
 }
 
 function resolvePreferredStage(symbol: Symbol, ctx: Context, fallbackText: string): StageId | undefined {
