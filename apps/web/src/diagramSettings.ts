@@ -240,9 +240,7 @@ function asArtifactMode(value: unknown): DiagramArtifactMode | null {
 }
 
 function asInputArtifactMode(value: unknown): DiagramArtifactMode | null {
-  const mode = asArtifactMode(value);
-  if (mode === "individual") return "grouped";
-  return mode;
+  return asArtifactMode(value);
 }
 
 export function cloneDiagramSettings(settings: DiagramSettings = DEFAULT_DIAGRAM_SETTINGS): DiagramSettings {

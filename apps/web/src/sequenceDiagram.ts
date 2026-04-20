@@ -9,6 +9,7 @@ const SEQUENCE_RELATION_TYPES: RelationType[] = [
   "reads",
   "writes",
   "uses_config",
+  "imports",
 ];
 
 const FRAME_LEFT = 28;
@@ -36,6 +37,7 @@ const ACTIVATION_HALF_HEIGHT = 12;
 const ACTIVATION_GAP = 8;
 const SEQUENCE_ACTIVATION_WIDTH = 10;
 const SELF_CALL_VERTICAL_GAP = 12;
+const RESPONSE_EDGE_OFFSET = 14;
 const MAX_SEQUENCE_MESSAGES = 20;
 const MAX_SEQUENCE_PARTICIPANTS = 8;
 
@@ -49,7 +51,7 @@ export type SequenceParticipantRole =
   | "database"
   | "component";
 
-export type SequenceEdgeKind = "sync" | "async" | "create" | "self";
+export type SequenceEdgeKind = "sync" | "async" | "create" | "self" | "response";
 
 export type SequenceParticipantMessagePreview = {
   id: string;
@@ -121,6 +123,7 @@ export type SequenceMessageEdgeData = {
   relationIds: string[];
   relationType: RelationType;
   sequenceKind: SequenceEdgeKind;
+  sequenceMessageId?: string;
   sequenceLabelWidth: number;
   sequenceLabelLineCount: number;
   sequenceMessageIndex: number;
@@ -448,6 +451,66 @@ export function buildPackageSequenceDiagram(params: {
   return { nodes: details.nodes, edges: details.edges };
 }
 
+export function buildEdgeContextSequenceDiagramDetails(params: {
+  graph: ProjectGraph;
+  view: DiagramView;
+  sourceSymbolId: string;
+  targetSymbolId: string;
+  relationFilters: Record<RelationType, boolean>;
+  labelsMode: DiagramLabelMode;
+  selectedSymbolId: string | null;
+  selectedEdgeId: string | null;
+}): SequenceProjectionDetails {
+  const {
+    graph,
+    view,
+    sourceSymbolId,
+    targetSymbolId,
+    relationFilters,
+    labelsMode,
+    selectedSymbolId,
+    selectedEdgeId,
+  } = params;
+
+  const visibleViewNodeRefs = collectEdgeContextViewNodeRefs(graph, sourceSymbolId, targetSymbolId);
+  const contextTitle = buildEdgeContextTitle(graph, sourceSymbolId, targetSymbolId, view.title);
+  const contextView: DiagramView = {
+    ...view,
+    id: `sequence-context:${view.id}:${sourceSymbolId}:${targetSymbolId}`,
+    title: contextTitle,
+    scope: "group",
+    diagramType: "class",
+    nodeRefs: visibleViewNodeRefs,
+    edgeRefs: [],
+  };
+
+  return buildPackageSequenceDiagramDetails({
+    graph,
+    view: contextView,
+    visibleViewNodeRefs,
+    hiddenSymbolIds: new Set<string>(),
+    symbolOverrides: new Map<string, Symbol>(),
+    relationFilters,
+    labelsMode,
+    selectedSymbolId,
+    selectedEdgeId,
+  });
+}
+
+export function buildEdgeContextSequenceDiagram(params: {
+  graph: ProjectGraph;
+  view: DiagramView;
+  sourceSymbolId: string;
+  targetSymbolId: string;
+  relationFilters: Record<RelationType, boolean>;
+  labelsMode: DiagramLabelMode;
+  selectedSymbolId: string | null;
+  selectedEdgeId: string | null;
+}): { nodes: Node[]; edges: Edge[] } {
+  const details = buildEdgeContextSequenceDiagramDetails(params);
+  return { nodes: details.nodes, edges: details.edges };
+}
+
 function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
   view: DiagramView;
   selectedSymbolId: string | null;
@@ -603,6 +666,25 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
     portsByParticipant.set(message.sourceParticipantId, sourcePorts);
     portsByParticipant.set(message.targetParticipantId, targetPorts);
 
+    if (resolveSequenceEdgeKind(message) === "sync") {
+      sourcePorts.push({
+        id: `seq-res-tgt:${message.id}`,
+        x: resolveSequenceLifelineAnchorX(sourceLayout.width, sourceSide),
+        y: y + RESPONSE_EDGE_OFFSET,
+        side: sourceSide,
+        type: "target",
+      });
+      targetPorts.push({
+        id: `seq-res-src:${message.id}`,
+        x: resolveSequenceLifelineAnchorX(targetLayout.width, targetSide),
+        y: y + RESPONSE_EDGE_OFFSET,
+        side: targetSide,
+        type: "source",
+      });
+      portsByParticipant.set(message.sourceParticipantId, sourcePorts);
+      portsByParticipant.set(message.targetParticipantId, targetPorts);
+    }
+
     pushActivationBar(
       activationsByParticipant,
       message.sourceParticipantId,
@@ -721,7 +803,7 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
           : { type: MarkerType.ArrowClosed, color: "#1f2937", width: 18, height: 18 };
     const label = layout.labelText;
 
-    return [{
+    const primaryEdge = {
       id: message.id,
       source: message.sourceParticipantId,
       target: message.targetParticipantId,
@@ -739,6 +821,7 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
       data: {
         relationIds: message.relationIds,
         relationType: message.relationType,
+        sequenceMessageId: message.id,
         fallbackEdgeType: "straight",
         hideFallback: false,
         sequenceKind: edgeKind,
@@ -758,7 +841,52 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
         sequenceTargetParticipantRole: sequenceParticipantMeta.get(message.targetParticipantId)?.role ?? "object",
         sequenceTargetLaneKind: sequenceParticipantMeta.get(message.targetParticipantId)?.laneKind ?? "external",
       },
-    }];
+    };
+
+    if (edgeKind !== "sync") {
+      return [primaryEdge];
+    }
+
+    const responseEdge = {
+      id: `${message.id}:response`,
+      source: message.targetParticipantId,
+      target: message.sourceParticipantId,
+      selected: primaryEdge.selected,
+      sourceHandle: `seq-res-src:${message.id}`,
+      targetHandle: `seq-res-tgt:${message.id}`,
+      sourcePosition: targetPosition,
+      targetPosition: sourcePosition,
+      type: "elk",
+      animated: false,
+      markerEnd: { type: MarkerType.Arrow, color: "#64748b", width: 14, height: 14 },
+      className: `sequence-message-edge sequence-message-edge--response${edgeVisibilityClass}`,
+      style: { strokeWidth: 1.2, strokeDasharray: "7 5", opacity: 0.95 },
+      data: {
+        relationIds: message.relationIds,
+        relationType: message.relationType,
+        sequenceMessageId: message.id,
+        fallbackEdgeType: "straight",
+        hideFallback: false,
+        sequenceKind: "response",
+        sequenceLabelWidth: layout.labelWidth,
+        sequenceLabelLineCount: 0,
+        sequenceMessageIndex: index + 1,
+        sequenceMessageCount: message.count,
+        sequenceEvidenceFile: sanitizeSequenceEvidenceFile(message.file),
+        sequenceEvidenceLine: sanitizeSequenceEvidenceLine(message.line),
+        sequenceDescriptorsPreview: buildSequenceDescriptorPreview(message),
+        sequenceSourceParticipantId: message.targetParticipantId,
+        sequenceSourceParticipantLabel: sequenceParticipantMeta.get(message.targetParticipantId)?.displayLabel ?? message.targetParticipantId,
+        sequenceSourceParticipantRole: sequenceParticipantMeta.get(message.targetParticipantId)?.role ?? "object",
+        sequenceSourceLaneKind: sequenceParticipantMeta.get(message.targetParticipantId)?.laneKind ?? "external",
+        sequenceTargetParticipantId: message.sourceParticipantId,
+        sequenceTargetParticipantLabel: sequenceParticipantMeta.get(message.sourceParticipantId)?.displayLabel ?? message.sourceParticipantId,
+        sequenceTargetParticipantRole: sequenceParticipantMeta.get(message.sourceParticipantId)?.role ?? "object",
+        sequenceTargetLaneKind: sequenceParticipantMeta.get(message.sourceParticipantId)?.laneKind ?? "external",
+      },
+    };
+
+    return [primaryEdge, responseEdge];
   });
 
   const projection: SequenceProjectionMeta = {
@@ -804,6 +932,89 @@ function activeRelationFilterList(relationFilters: Record<RelationType, boolean>
     .map(([relationType]) => relationType);
 }
 
+function buildEdgeContextTitle(
+  graph: ProjectGraph,
+  sourceSymbolId: string,
+  targetSymbolId: string,
+  fallbackTitle: string,
+): string {
+  const sourceLabel = graph.symbols.find((symbol) => symbol.id === sourceSymbolId)?.label;
+  const targetLabel = graph.symbols.find((symbol) => symbol.id === targetSymbolId)?.label;
+  if (!sourceLabel || !targetLabel) return `${fallbackTitle} Sequence`;
+  return `${sourceLabel} -> ${targetLabel}`;
+}
+
+function collectEdgeContextViewNodeRefs(
+  graph: ProjectGraph,
+  sourceSymbolId: string,
+  targetSymbolId: string,
+): string[] {
+  const collected = new Set<string>();
+  const ordered = [
+    ...resolveSequenceContextViewNodeRefs(graph, sourceSymbolId),
+    ...resolveSequenceContextViewNodeRefs(graph, targetSymbolId),
+  ];
+
+  for (const nodeRef of ordered) {
+    collected.add(nodeRef);
+  }
+
+  if (collected.size > 0) {
+    return [...collected];
+  }
+
+  const fallbackSymbols = [sourceSymbolId, targetSymbolId]
+    .map((symbolId) => graph.symbols.find((symbol) => symbol.id === symbolId))
+    .filter((symbol): symbol is Symbol => Boolean(symbol))
+    .filter(isStructuralSequenceContextSymbol)
+    .map((symbol) => symbol.id);
+
+  return [...new Set(fallbackSymbols)];
+}
+
+function resolveSequenceContextViewNodeRefs(
+  graph: ProjectGraph,
+  symbolId: string,
+): string[] {
+  const viewId = resolveSequenceContextViewId(graph, symbolId);
+  const view = viewId
+    ? graph.views.find((candidate) => candidate.id === viewId)
+    : null;
+  if (!view) return [];
+
+  return view.nodeRefs.filter((nodeRef) => {
+    const symbol = graph.symbols.find((candidate) => candidate.id === nodeRef);
+    return !!symbol && isStructuralSequenceContextSymbol(symbol);
+  });
+}
+
+function resolveSequenceContextViewId(
+  graph: ProjectGraph,
+  symbolId: string,
+): string | null {
+  const symbolById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
+  let cursor = symbolById.get(symbolId) ?? null;
+  let depth = 0;
+
+  while (cursor && depth < 12) {
+    const childViewId = cursor.childViewId;
+    if (childViewId) {
+      const view = graph.views.find((candidate) => candidate.id === childViewId);
+      if (view && view.diagramType === "class") {
+        return view.id;
+      }
+    }
+    cursor = cursor.parentId ? symbolById.get(cursor.parentId) ?? null : null;
+    depth += 1;
+  }
+
+  return null;
+}
+
+function isStructuralSequenceContextSymbol(symbol: Symbol): boolean {
+  return symbol.kind === "module" || symbol.kind === "class";
+}
+
 function sanitizeSequenceEvidenceFile(file: string): string | undefined {
   const trimmed = file.trim();
   return trimmed ? trimmed : undefined;
@@ -826,6 +1037,7 @@ function createSequenceBreakdown(): Record<SequenceEdgeKind, number> {
     async: 0,
     create: 0,
     self: 0,
+    response: 0,
   };
 }
 
@@ -1795,6 +2007,11 @@ function classifyLaneKind(symbol: Symbol, isInternal: boolean): "internal" | "ex
   return "external";
 }
 
+function looksLikeUserActorSymbol(symbol: Symbol): boolean {
+  const haystack = `${symbol.id} ${symbol.label}`.toLowerCase();
+  return /\b(user|anwender|actor|kunde|customer|operator|analyst|admin|client)\b/.test(haystack);
+}
+
 function resolveInitiatingActorParticipantId(
   messages: SequenceMessage[],
   symbolById: Map<string, Symbol>,
@@ -1810,6 +2027,7 @@ function resolveInitiatingActorParticipantId(
     if (isInternalParticipant) continue;
     if (isArtifactLikeSymbol(symbol)) continue;
     if (symbol.umlType === "database" || symbol.umlType === "component") continue;
+    if (!looksLikeUserActorSymbol(symbol)) continue;
     return message.sourceParticipantId;
   }
   return null;
@@ -1826,12 +2044,14 @@ function classifyParticipantRole(
   isInternal: boolean,
   shouldRenderAsActor = false,
 ): SequenceParticipantRole {
-  if (shouldRenderAsActor) return "actor";
+  if (shouldRenderAsActor && looksLikeUserActorSymbol(symbol)) return "actor";
   if (symbol.umlType === "package" || symbol.kind === "group" || symbol.kind === "package") return "package";
   if (symbol.umlType === "database") return "database";
   if (symbol.umlType === "component") return "component";
   if (isArtifactLikeSymbol(symbol)) return "artifact";
-  if (!isInternal && symbol.kind === "external") return "actor";
+  if (!isInternal && symbol.kind === "external") {
+    return looksLikeUserActorSymbol(symbol) ? "actor" : "component";
+  }
   return "object";
 }
 

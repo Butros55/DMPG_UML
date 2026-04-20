@@ -16,6 +16,7 @@ import { resolveNavigableSymbolId } from "../viewNavigation";
 import { buildArtifactPreview, buildArtifactPreviewMetaChips, translateArtifactPreviewLabel } from "../artifactPreview";
 import { openInIde } from "../api";
 import {
+  buildEdgeContextSequenceDiagramDetails,
   buildPackageSequenceDiagramDetails,
   isPackageSequenceView,
   type SequenceMessagePanelData,
@@ -517,6 +518,8 @@ export function SymbolHoverCard() {
   const hoverPosition = useAppStore((s) => s.hoverPosition);
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
+  const projectionMode = useAppStore((s) => s.projectionMode);
+  const sequenceContext = useAppStore((s) => s.sequenceContext);
   const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
@@ -528,7 +531,9 @@ export function SymbolHoverCard() {
   const hoverTargetKey = hoverTarget ? `${hoverTarget.kind}:${hoverTarget.id}` : null;
   const hoverSymbolId = hoverTarget?.kind === "symbol" ? hoverTarget.id : null;
   const currentView = currentViewId && graph ? graph.views.find((entry) => entry.id === currentViewId) ?? null : null;
-  const sequenceView = isPackageSequenceView(currentView, graph);
+  const sequenceView =
+    (projectionMode === "sequence" && !!sequenceContext && sequenceContext.originViewId === currentViewId) ||
+    isPackageSequenceView(currentView, graph);
   const resolvedArtifactView = useMemo(
     () =>
       graph && currentView
@@ -549,7 +554,20 @@ export function SymbolHoverCard() {
     };
   }, [graph, resolvedArtifactView]);
   const sequenceDetails = useMemo(() => {
-    if (!graph || !currentView || !resolvedArtifactView || !sequenceView) return null;
+    if (!graph || !currentView || !sequenceView) return null;
+    if (projectionMode === "sequence" && sequenceContext && sequenceContext.originViewId === currentView.id) {
+      return buildEdgeContextSequenceDiagramDetails({
+        graph,
+        view: currentView,
+        sourceSymbolId: sequenceContext.sourceSymbolId,
+        targetSymbolId: sequenceContext.targetSymbolId,
+        relationFilters: diagramSettings.relationFilters,
+        labelsMode: diagramSettings.labels,
+        selectedSymbolId,
+        selectedEdgeId,
+      });
+    }
+    if (!resolvedArtifactView) return null;
     const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
     const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
     return buildPackageSequenceDiagramDetails({
@@ -568,9 +586,11 @@ export function SymbolHoverCard() {
     diagramSettings.labels,
     diagramSettings.relationFilters,
     graph,
+    projectionMode,
     resolvedArtifactView,
     selectedEdgeId,
     selectedSymbolId,
+    sequenceContext,
     sequenceView,
   ]);
   const hoveredSequenceParticipant = hoverSymbolId && sequenceDetails

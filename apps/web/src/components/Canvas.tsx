@@ -50,7 +50,7 @@ import {
 import { resolveArtifactView } from "../artifactVisibility";
 import { buildArtifactPreview } from "../artifactPreview";
 import { isManagedProcessLayoutViewId } from "../viewNavigation";
-import { buildPackageSequenceDiagram, isPackageSequenceView } from "../sequenceDiagram";
+import { buildEdgeContextSequenceDiagram, buildPackageSequenceDiagram } from "../sequenceDiagram";
 
 const nodeTypes = {
   uml: UmlNode,
@@ -68,7 +68,7 @@ const edgeTypes = {
 
 const proOptions = { hideAttribution: true };
 
-const INPUT_ARTIFACT_MODE_ORDER: DiagramArtifactMode[] = ["hidden", "grouped"];
+const INPUT_ARTIFACT_MODE_ORDER: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
 const ARTIFACT_MODE_ORDER: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
 const OUTPUT_ARTIFACT_MODE_TEXT: Record<DiagramArtifactMode, string> = {
   hidden: "Aus",
@@ -77,8 +77,8 @@ const OUTPUT_ARTIFACT_MODE_TEXT: Record<DiagramArtifactMode, string> = {
 };
 const INPUT_ARTIFACT_MODE_TEXT: Record<DiagramArtifactMode, string> = {
   hidden: "Aus",
-  grouped: "An",
-  individual: "An",
+  grouped: "Gruppiert",
+  individual: "Einzeln",
 };
 
 function nextArtifactMode(
@@ -386,6 +386,8 @@ function summarizeRouteReason(params: {
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
+  const projectionMode = useAppStore((s) => s.projectionMode);
+  const sequenceContext = useAppStore((s) => s.sequenceContext);
   const reviewHighlight = useAppStore((s) => s.reviewHighlight);
   const clearReviewHighlight = useAppStore((s) => s.clearReviewHighlight);
   const selectSymbol = useAppStore((s) => s.selectSymbol);
@@ -393,6 +395,7 @@ export function Canvas() {
   const selectEdge = useAppStore((s) => s.selectEdge);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const navigateToView = useAppStore((s) => s.navigateToView);
+  const openSequenceContext = useAppStore((s) => s.openSequenceContext);
   const viewUiSnapshots = useAppStore((s) => s.viewUiSnapshots);
   const viewRestoreViewId = useAppStore((s) => s.viewRestoreViewId);
   const viewRestoreSeq = useAppStore((s) => s.viewRestoreSeq ?? 0);
@@ -558,10 +561,7 @@ export function Canvas() {
     () => (graph && currentViewId ? graph.views.find((view) => view.id === currentViewId) ?? null : null),
     [graph, currentViewId],
   );
-  const isSequenceView = useMemo(
-    () => isPackageSequenceView(currentView, graph),
-    [currentView, graph],
-  );
+  const isSequenceView = useMemo(() => projectionMode === "sequence", [projectionMode]);
   const currentViewPersistedViewport = isSequenceView ? null : currentViewSnapshot?.viewport ?? null;
   const currentViewIgnoresManualLayout = useMemo(
     () => !!currentViewId && (isManagedProcessLayoutViewId(currentViewId) || isSequenceView),
@@ -637,7 +637,10 @@ export function Canvas() {
     const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
     const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
     const visibleViewNodeRefSet = new Set(visibleViewNodeRefs);
-    const relationWhitelist = view.diagramType === "class"
+    // Projection mode is explicitly controlled by the UI switch.
+    const isExplicitSequenceProjection = projectionMode === "sequence";
+    const isClassProjection = projectionMode === "class";
+    const relationWhitelist = isClassProjection
       ? new Set<RelationType>([
         "inherits",
         "instantiates",
@@ -653,18 +656,30 @@ export function Canvas() {
     ).filter((rel) => !relationWhitelist || relationWhitelist.has(rel.type));
     const relationMap = new Map(visibleRelations.map((rel) => [rel.id, rel]));
 
-    if (isPackageSequenceView(view, graph)) {
-      const sequenceDiagram = buildPackageSequenceDiagram({
-        graph,
-        view,
-        visibleViewNodeRefs,
-        hiddenSymbolIds,
-        symbolOverrides,
-        relationFilters: diagramSettings.relationFilters,
-        labelsMode: diagramSettings.labels,
-        selectedSymbolId,
-        selectedEdgeId,
-      });
+    if (isExplicitSequenceProjection) {
+      const sequenceDiagram =
+        sequenceContext && sequenceContext.originViewId === view.id
+          ? buildEdgeContextSequenceDiagram({
+              graph,
+              view,
+              sourceSymbolId: sequenceContext.sourceSymbolId,
+              targetSymbolId: sequenceContext.targetSymbolId,
+              relationFilters: diagramSettings.relationFilters,
+              labelsMode: diagramSettings.labels,
+              selectedSymbolId,
+              selectedEdgeId,
+            })
+          : buildPackageSequenceDiagram({
+              graph,
+              view,
+              visibleViewNodeRefs,
+              hiddenSymbolIds,
+              symbolOverrides,
+              relationFilters: diagramSettings.relationFilters,
+              labelsMode: diagramSettings.labels,
+              selectedSymbolId,
+              selectedEdgeId,
+            });
       return {
         viewNodes: sequenceDiagram.nodes,
         viewEdges: sequenceDiagram.edges,
@@ -787,7 +802,7 @@ export function Canvas() {
       { ...view, nodeRefs: visibleViewNodeRefs },
       graph.symbols,
       visibleRelations,
-      { bundleByType: view.diagramType === "class" },
+      { bundleByType: isClassProjection },
     );
     const preparedEdges = toPreparedEdges(
       projected,
@@ -886,6 +901,8 @@ export function Canvas() {
   }, [
     graph,
     currentViewId,
+    projectionMode,
+    sequenceContext,
     diagramSettings,
     nodesDraggable,
     selectedEdgeId,
@@ -1549,12 +1566,10 @@ export function Canvas() {
     if (!exists || !layoutDone || layoutPass < 2 || !nodesInitialized) {
       // Layout not ready — store as pending and retry
       pendingFocusRef.current = focusNodeId;
-      console.debug(`[Canvas-Focus] pending id=${focusNodeId} seq=${focusSeq} exists=${exists} layoutPass=${layoutPass} nodesInit=${nodesInitialized}`);
       return;
     }
 
     // Layout is ready — apply focus
-    console.debug(`[Canvas-Focus] applying id=${focusNodeId} seq=${focusSeq} layoutPass=${layoutPass} nodesInit=${nodesInitialized}`);
     focusAppliedRef.current = focusNodeId;
     lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
@@ -1574,7 +1589,6 @@ export function Canvas() {
     const exists = nodes.some((n) => n.id === pending);
     if (!exists) return;
 
-    console.debug(`[Canvas-Focus] retry-apply id=${pending} seq=${focusSeq}`);
     focusAppliedRef.current = pending;
     lastFocusSeqRef.current = focusSeq;
     pendingFocusRef.current = null;
@@ -1897,16 +1911,35 @@ export function Canvas() {
   // Edge click → select in inspector
   const onEdgeClick = useCallback(
     (_: React.MouseEvent, edge: Edge) => {
-      selectEdge(edge.id);
+      const baseEdgeId = ((edge.data as { sequenceMessageId?: string } | undefined)?.sequenceMessageId) ?? edge.id;
+      selectEdge(baseEdgeId);
     },
     [selectEdge],
   );
 
-  // Edge double-click → open label editor inline
+  // Root overview edge double-click → open sequence context. Other views keep inline label editing.
   const onEdgeDoubleClick: EdgeMouseHandler = useCallback(
     (event: React.MouseEvent, edge: Edge) => {
       event.stopPropagation();
       event.preventDefault();
+      if (currentView?.scope === "root" && renderMode !== "sequence" && graph) {
+        const relationIds = ((edge.data as { relationIds?: string[] } | undefined)?.relationIds ?? [])
+          .filter((id) => graph.relations.some((relation) => relation.id === id));
+        const sourceLabel = graph.symbols.find((symbol) => symbol.id === edge.source)?.label ?? edge.source;
+        const targetLabel = graph.symbols.find((symbol) => symbol.id === edge.target)?.label ?? edge.target;
+        openSequenceContext({
+          originViewId: currentView.id,
+          sourceSymbolId: edge.source,
+          targetSymbolId: edge.target,
+          edgeId: edge.id,
+          relationIds,
+          title: `${sourceLabel} -> ${targetLabel}`,
+        });
+        return;
+      }
+      if (renderMode === "sequence") {
+        return;
+      }
       // Get real relation IDs from projected edge data
       const relIds = (edge.data as any)?.relationIds as string[] | undefined;
       const validRelIds = (relIds ?? []).filter((id) => graph?.relations.some((r) => r.id === id));
@@ -1917,7 +1950,7 @@ export function Canvas() {
       setEditingEdgeLabel(firstRel?.label ?? firstRel?.type ?? edge.label?.toString() ?? "");
       setEditingEdgePos({ x: event.clientX, y: event.clientY });
     },
-    [graph],
+    [currentView, graph, openSequenceContext, renderMode],
   );
 
   const commitEdgeLabel = useCallback(() => {
@@ -2114,20 +2147,20 @@ export function Canvas() {
           <ControlButton
             className={`canvas-control-button canvas-control-button--artifact-mode canvas-control-button--artifact-input canvas-control-button--mode-${diagramSettings.inputArtifactMode}`}
             onClick={cycleInputArtifactMode}
-            title={artifactControlLabel("Inputs", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}
-            aria-label={artifactControlLabel("Inputs", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}
+            title={artifactControlLabel("Eingaben", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}
+            aria-label={artifactControlLabel("Eingaben", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}
           >
             <i className="bi bi-download" />
-            <span>{artifactControlLabel("Inputs", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}</span>
+            <span>{artifactControlLabel("Eingaben", diagramSettings.inputArtifactMode, INPUT_ARTIFACT_MODE_TEXT)}</span>
           </ControlButton>
           <ControlButton
             className={`canvas-control-button canvas-control-button--artifact-mode canvas-control-button--artifact-generated canvas-control-button--mode-${diagramSettings.generatedArtifactMode}`}
             onClick={cycleGeneratedArtifactMode}
-            title={artifactControlLabel("Outputs", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}
-            aria-label={artifactControlLabel("Outputs", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}
+            title={artifactControlLabel("Ausgaben", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}
+            aria-label={artifactControlLabel("Ausgaben", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}
           >
             <i className="bi bi-upload" />
-            <span>{artifactControlLabel("Outputs", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}</span>
+            <span>{artifactControlLabel("Ausgaben", diagramSettings.generatedArtifactMode, OUTPUT_ARTIFACT_MODE_TEXT)}</span>
           </ControlButton>
         </Controls>
         <MiniMap

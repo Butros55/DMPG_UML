@@ -94,6 +94,7 @@ Der technische Ablauf beim Scan:
 - linke Sidebar mit View-Tree, Symbolsuche, Node-Palette, Projektverwaltung und AI Workspace
 - rechte Inspector-Ansicht fuer Symbol-Details, Relationen, Seiteneffekte und Source-Zugriff
 - Breadcrumb-Navigation und Drilldown in Child-Views
+- Projektionstoggle in Nicht-Root-Views: `Overview`, `Klassendiagramm`, `Sequenzdiagramm`
 - Demo-Graph beim Erststart, falls noch kein Projekt geladen ist
 - Einheitliche Command Palette: `Ctrl+P` fuer Symbolsuche, `Ctrl+Shift+P` fuer Aktionen
 - Undo/Redo fuer Graph-Aenderungen
@@ -310,6 +311,7 @@ Moeglichkeiten:
 
 - Root-View zeigt die obersten Gruppen / Domain-Layer
 - Doppelklick oder Drilldown oeffnet Child-Views
+- In Group/Module/Class-Views kann die Darstellung ueber den Projektionstoggle zwischen `Overview`, `Klassendiagramm` und `Sequenzdiagramm` gewechselt werden
 - Breadcrumb bringt dich wieder nach oben
 - `Ctrl+P` oeffnet die Symbolsuche
 - `Ctrl+Shift+P` oeffnet den Aktionsmodus der Command Palette

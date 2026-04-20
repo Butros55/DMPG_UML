@@ -25,31 +25,7 @@ function buildGraph(): ProjectGraph {
         title: "Input Sources",
         parentViewId: "view:process-overview",
         scope: "group",
-        nodeRefs: ["sym:class"],
-        edgeRefs: [],
-      },
-      {
-        id: "view:grp:dir:connector",
-        title: "Connector",
-        parentViewId: "view:process-stage:inputs",
-        scope: "group",
-        nodeRefs: ["sym:class"],
-        edgeRefs: [],
-      },
-      {
-        id: "view:mod:connector.druid_connector",
-        title: "connector.druid_connector",
-        parentViewId: "view:grp:dir:connector",
-        scope: "module",
         nodeRefs: ["sym:class", "sym:method"],
-        edgeRefs: [],
-      },
-      {
-        id: "view:mod:connector.druid_connector:DruidConnector",
-        title: "DruidConnector",
-        parentViewId: "view:mod:connector.druid_connector",
-        scope: "class",
-        nodeRefs: ["sym:method"],
         edgeRefs: [],
       },
       {
@@ -120,6 +96,15 @@ function buildLegacyBreadcrumbGraph(): ProjectGraph {
         nodeRefs: [],
         edgeRefs: [],
       },
+      {
+        id: "view:process-stage:transform",
+        title: "Transformation",
+        parentViewId: "view:process-overview",
+        scope: "group",
+        diagramType: "class",
+        nodeRefs: [],
+        edgeRefs: [],
+      },
     ],
     rootViewId: "view:process-overview",
   };
@@ -130,7 +115,7 @@ function buildManualLayoutGraph(): ProjectGraph {
   return {
     ...graph,
     views: graph.views.map((view) =>
-      view.id === "view:grp:dir:connector"
+      view.id === "view:process-stage:inputs"
         ? {
             ...view,
             manualLayout: true,
@@ -148,19 +133,19 @@ function disableGraphSync() {
 test("bestNavigableViewForSymbol prefers the current visible context when it already contains the symbol", () => {
   const graph = buildGraph();
   const targetViewId = bestNavigableViewForSymbol(graph, "sym:method", {
-    currentViewId: "view:mod:connector.druid_connector",
+    currentViewId: "view:process-stage:inputs",
   });
 
-  assert.equal(targetViewId, "view:mod:connector.druid_connector");
+  assert.equal(targetViewId, "view:process-stage:inputs");
 });
 
 test("bestNavigableViewForSymbol falls back to the deepest visible non-technical view", () => {
   const graph = buildGraph();
   const targetViewId = bestNavigableViewForSymbol(graph, "sym:method", {
-    currentViewId: "view:process-stage:inputs",
+    currentViewId: "view:process-overview",
   });
 
-  assert.equal(targetViewId, "view:mod:connector.druid_connector:DruidConnector");
+  assert.equal(targetViewId, "view:process-stage:inputs");
 });
 
 test("bestNavigableViewForSymbol rejects artifact-only legacy views even when they are visible", () => {
@@ -193,13 +178,10 @@ test("focusSymbolInContext still navigates normal project symbols into their bes
   useAppStore.getState().focusSymbolInContext("sym:method");
 
   const state = useAppStore.getState();
-  assert.equal(state.currentViewId, "view:mod:connector.druid_connector:DruidConnector");
+  assert.equal(state.currentViewId, "view:process-stage:inputs");
   assert.deepEqual(state.breadcrumb, [
     "view:process-overview",
     "view:process-stage:inputs",
-    "view:grp:dir:connector",
-    "view:mod:connector.druid_connector",
-    "view:mod:connector.druid_connector:DruidConnector",
   ]);
 });
 
@@ -217,29 +199,16 @@ test("buildBreadcrumbPath removes hidden legacy overview views from the breadcru
 });
 
 test("navigateToView uses the filtered breadcrumb path for normal visible descendants", () => {
-  const graph = {
-    ...buildLegacyBreadcrumbGraph(),
-    views: [
-      ...buildLegacyBreadcrumbGraph().views,
-      {
-        id: "view:mod:data_analyzer",
-        title: "data_analyzer",
-        parentViewId: "view:grp:dir:__root__",
-        scope: "module" as const,
-        nodeRefs: [],
-        edgeRefs: [],
-      },
-    ],
-  };
+  const graph = buildLegacyBreadcrumbGraph();
   useAppStore.getState().setGraph(graph);
 
-  useAppStore.getState().navigateToView("view:mod:data_analyzer");
+  useAppStore.getState().navigateToView("view:process-stage:transform");
 
   const state = useAppStore.getState();
-  assert.equal(state.currentViewId, "view:mod:data_analyzer");
+  assert.equal(state.currentViewId, "view:process-stage:transform");
   assert.deepEqual(state.breadcrumb, [
     "view:process-overview",
-    "view:mod:data_analyzer",
+    "view:process-stage:transform",
   ]);
 });
 
@@ -281,7 +250,7 @@ test("navigateToView restores the previously saved view snapshot when requested"
 test("saveNodePositions does not persist manual layout while auto-layout is active", () => {
   disableGraphSync();
   useAppStore.getState().setGraph(buildGraph());
-  useAppStore.getState().navigateToView("view:grp:dir:connector");
+  useAppStore.getState().navigateToView("view:process-stage:inputs");
   useAppStore.setState({
     diagramSettings: {
       ...useAppStore.getState().diagramSettings,
@@ -291,15 +260,15 @@ test("saveNodePositions does not persist manual layout while auto-layout is acti
 
   useAppStore.getState().saveNodePositions([{ symbolId: "sym:class", x: 64, y: 96 }]);
 
-  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:grp:dir:connector");
+  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:process-stage:inputs");
   assert.equal(view?.manualLayout, undefined);
   assert.equal(view?.nodePositions, undefined);
 });
 
-test("saveNodePositions still persists manual layout when auto-layout is disabled", () => {
+test("saveNodePositions still persists node positions in managed views when auto-layout is disabled", () => {
   disableGraphSync();
   useAppStore.getState().setGraph(buildGraph());
-  useAppStore.getState().navigateToView("view:grp:dir:connector");
+  useAppStore.getState().navigateToView("view:process-stage:inputs");
   useAppStore.setState({
     diagramSettings: {
       ...useAppStore.getState().diagramSettings,
@@ -309,8 +278,8 @@ test("saveNodePositions still persists manual layout when auto-layout is disable
 
   useAppStore.getState().saveNodePositions([{ symbolId: "sym:class", x: 64, y: 96 }]);
 
-  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:grp:dir:connector");
-  assert.equal(view?.manualLayout, true);
+  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:process-stage:inputs");
+  assert.equal(view?.manualLayout, undefined);
   assert.deepEqual(view?.nodePositions, [{ symbolId: "sym:class", x: 64, y: 96 }]);
 });
 
@@ -320,7 +289,7 @@ test("clearManualLayoutFlags removes persisted manual layout flags but keeps sav
 
   useAppStore.getState().clearManualLayoutFlags();
 
-  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:grp:dir:connector");
+  const view = useAppStore.getState().graph?.views.find((entry) => entry.id === "view:process-stage:inputs");
   assert.equal(view?.manualLayout, undefined);
   assert.deepEqual(view?.nodePositions, [{ symbolId: "sym:class", x: 320, y: 180 }]);
 });

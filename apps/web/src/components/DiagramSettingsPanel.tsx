@@ -13,12 +13,12 @@ import {
 
 const EDGE_TYPES: DiagramEdgeType[] = ["step", "smoothstep", "straight"];
 const LABEL_MODES: DiagramLabelMode[] = ["off", "compact", "detailed"];
-const INPUT_ARTIFACT_MODES: DiagramArtifactMode[] = ["hidden", "grouped"];
+const INPUT_ARTIFACT_MODES: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
 const GENERATED_ARTIFACT_MODES: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
 const INPUT_ARTIFACT_MODE_LABEL: Record<DiagramArtifactMode, string> = {
   hidden: "off",
-  grouped: "on",
-  individual: "on",
+  grouped: "grouped",
+  individual: "individual",
 };
 const GENERATED_ARTIFACT_MODE_LABEL: Record<DiagramArtifactMode, string> = {
   hidden: "hidden",

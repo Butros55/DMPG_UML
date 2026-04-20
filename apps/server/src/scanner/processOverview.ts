@@ -154,6 +154,12 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
   }
 
   const symbolMap = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
+  const packageViewById = new Map(
+    config.packages.map((pkg) => [
+      pkg.id,
+      pkg.childViewId ?? resolveDrilldownViewId(graph, pkg.drilldown),
+    ]),
+  );
 
   const processSymbols: Symbol[] = [];
   const processPositions: DiagramNodePosition[] = [];
@@ -166,6 +172,7 @@ function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
   ): Symbol => {
     const resolvedView =
       item.childViewId ??
+      (item.parentId ? packageViewById.get(item.parentId) : undefined) ??
       resolveDrilldownViewId(graph, item.drilldown) ??
       (umlType === "package" && !item.parentId ? oldRootViewId : undefined);
     const symbol: Symbol = {
@@ -473,8 +480,8 @@ function belongsToStageSubtree(
 }
 
 function keepNodeInManagedView(symbol: Symbol): boolean {
-  if (symbol.id.startsWith("proc:stage-sequence-nav:")) return true;
   if (symbol.id.startsWith("proc:artifact:")) return true;
+  if (symbol.id.startsWith("proc:import-cluster:")) return true;
   if (symbol.id.startsWith("stub:") || symbol.id.startsWith("proc:")) return false;
   if (symbol.tags?.includes(STUB_TAG)) return false;
   if (symbol.kind === "external") return false;

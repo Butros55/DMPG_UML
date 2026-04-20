@@ -152,6 +152,15 @@ export interface ViewUiSnapshot {
   viewport: ViewportSnapshot | null;
 }
 
+export interface SequenceContextState {
+  originViewId: string;
+  sourceSymbolId: string;
+  targetSymbolId: string;
+  edgeId: string;
+  relationIds: string[];
+  title?: string;
+}
+
 export interface NavigateToViewOptions {
   restoreViewState?: boolean;
 }
@@ -165,6 +174,9 @@ export type HoverTarget =
 export interface AppState {
   graph: ProjectGraph | null;
   currentViewId: string | null;
+  /** Current projection mode for the active view context */
+  projectionMode: "overview" | "class" | "sequence";
+  sequenceContext: SequenceContextState | null;
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
   breadcrumb: string[]; // view IDs path
@@ -266,6 +278,9 @@ export interface AppState {
   undoGraphChange: () => void;
   redoGraphChange: () => void;
   navigateToView: (viewId: string, options?: NavigateToViewOptions) => void;
+  setProjectionMode: (mode: "overview" | "class" | "sequence") => void;
+  openSequenceContext: (payload: Omit<SequenceContextState, "originViewId"> & { originViewId?: string }) => void;
+  closeSequenceContext: () => void;
   goBack: () => void;
   focusSymbolInContext: (symbolId: string, preferredViewId?: string | null) => void;
   selectSymbol: (id: string | null) => void;
@@ -521,9 +536,27 @@ function buildViewPath(graph: { rootViewId: string; views: Array<{ id: string; p
   return buildBreadcrumbPath(graph as Pick<ProjectGraph, "rootViewId" | "views">, viewId);
 }
 
+function projectionModeForView(
+  view: DiagramView | null | undefined,
+  fallback: "overview" | "class" | "sequence" = "overview",
+): "overview" | "class" | "sequence" {
+  if (!view) return fallback;
+  if (view.scope === "root") return "overview";
+  if (
+    view.scope === "module" ||
+    view.scope === "class" ||
+    (view.scope === "group" && view.diagramType === "class")
+  ) {
+    return "class";
+  }
+  return fallback;
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   graph: null,
   currentViewId: null,
+  projectionMode: "overview",
+  sequenceContext: null,
   selectedSymbolId: null,
   selectedEdgeId: null,
   breadcrumb: [],
@@ -1595,6 +1628,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       graph: normalized,
       currentViewId: initialViewId,
+      projectionMode: "overview",
+      sequenceContext: null,
       selectedSymbolId: null,
       selectedEdgeId: null,
       breadcrumb: [initialViewId],
@@ -1634,9 +1669,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const fallbackViewId =
       resolveNavigableViewId(normalized, currentViewId, normalized.rootViewId) ?? normalized.rootViewId;
     const viewStillExists = normalized.views.some((v) => v.id === currentViewId);
+    const nextViewId = viewStillExists ? currentViewId : fallbackViewId;
+    const nextProjectionView = normalized.views.find((view) => view.id === nextViewId) ?? null;
     set({
       graph: normalized,
-      currentViewId: viewStillExists ? currentViewId : fallbackViewId,
+      currentViewId: nextViewId,
+      projectionMode: projectionModeForView(nextProjectionView, "overview"),
+      sequenceContext: null,
       breadcrumb: viewStillExists ? breadcrumb : [fallbackViewId],
       selectedSymbolId: normalized.symbols.some((s) => s.id === selectedSymbolId) ? selectedSymbolId : null,
       selectedEdgeId: normalized.relations.some((r) => r.id === selectedEdgeId) ? selectedEdgeId : null,
@@ -1673,6 +1712,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       graph: cloneProjectGraph(previousSnapshot.graph),
       currentViewId: previousSnapshot.currentViewId,
+      projectionMode: projectionModeForView(
+        previousSnapshot.graph.views.find((view) => view.id === previousSnapshot.currentViewId) ?? null,
+        "overview",
+      ),
+      sequenceContext: null,
       selectedSymbolId: previousSnapshot.selectedSymbolId,
       selectedEdgeId: previousSnapshot.selectedEdgeId,
       breadcrumb: [...previousSnapshot.breadcrumb],
@@ -1698,6 +1742,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       graph: cloneProjectGraph(nextSnapshot.graph),
       currentViewId: nextSnapshot.currentViewId,
+      projectionMode: projectionModeForView(
+        nextSnapshot.graph.views.find((view) => view.id === nextSnapshot.currentViewId) ?? null,
+        "overview",
+      ),
+      sequenceContext: null,
       selectedSymbolId: nextSnapshot.selectedSymbolId,
       selectedEdgeId: nextSnapshot.selectedEdgeId,
       breadcrumb: [...nextSnapshot.breadcrumb],
@@ -1711,16 +1760,23 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   navigateToView: (viewId, options = {}) => {
     const state = get();
-    const { breadcrumb, graph, currentViewId, viewFitSeq, viewRestoreSeq } = state;
+    const { breadcrumb, graph, currentViewId, viewFitSeq, viewRestoreSeq, sequenceContext } = state;
     const shouldRestore = options.restoreViewState === true;
     const targetViewId = graph
       ? resolveNavigableViewId(graph, viewId, currentViewId) ?? viewId
       : viewId;
     const snapshot = shouldRestore ? getRestorableViewSnapshot(state, targetViewId) : null;
     const hasViewportRestore = !!snapshot?.viewport;
+
+    // Auto-select projection mode based on view scope
+    const targetView = graph?.views.find((v) => v.id === targetViewId);
+    const nextProjectionMode = projectionModeForView(targetView, get().projectionMode);
+
     if (currentViewId === targetViewId) {
       set({
         currentViewId: targetViewId,
+        projectionMode: sequenceContext ? nextProjectionMode : state.projectionMode,
+        sequenceContext: null,
         breadcrumb: snapshot?.breadcrumb ?? breadcrumb,
         selectedSymbolId: snapshot?.selectedSymbolId ?? null,
         selectedEdgeId: snapshot?.selectedEdgeId ?? null,
@@ -1738,6 +1794,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (idx >= 0) {
       set({
         currentViewId: targetViewId,
+        projectionMode: nextProjectionMode,
+        sequenceContext: null,
         breadcrumb: snapshot?.breadcrumb ?? breadcrumb.slice(0, idx + 1),
         selectedSymbolId: snapshot?.selectedSymbolId ?? null,
         selectedEdgeId: snapshot?.selectedEdgeId ?? null,
@@ -1752,6 +1810,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const path = buildViewPath(graph, targetViewId);
       set({
         currentViewId: targetViewId,
+        projectionMode: nextProjectionMode,
+        sequenceContext: null,
         breadcrumb: snapshot?.breadcrumb ?? path,
         selectedSymbolId: snapshot?.selectedSymbolId ?? null,
         selectedEdgeId: snapshot?.selectedEdgeId ?? null,
@@ -1765,6 +1825,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     } else {
       set({
         currentViewId: targetViewId,
+        projectionMode: nextProjectionMode,
+        sequenceContext: null,
         breadcrumb: snapshot?.breadcrumb ?? [...breadcrumb, targetViewId],
         selectedSymbolId: snapshot?.selectedSymbolId ?? null,
         selectedEdgeId: snapshot?.selectedEdgeId ?? null,
@@ -1778,7 +1840,55 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  setProjectionMode: (mode) => {
+    set((state) => ({
+      projectionMode: mode,
+      sequenceContext: mode === "sequence" ? state.sequenceContext : null,
+    }));
+  },
+
+  openSequenceContext: (payload) => {
+    const { currentViewId, viewFitSeq } = get();
+    const originViewId = payload.originViewId ?? currentViewId ?? "";
+    if (!originViewId) return;
+
+    set({
+      projectionMode: "sequence",
+      sequenceContext: {
+        originViewId,
+        sourceSymbolId: payload.sourceSymbolId,
+        targetSymbolId: payload.targetSymbolId,
+        edgeId: payload.edgeId,
+        relationIds: [...payload.relationIds],
+        title: payload.title,
+      },
+      selectedSymbolId: null,
+      selectedEdgeId: null,
+      inspectorCollapsed: false,
+      viewFitViewId: originViewId,
+      viewFitSeq: viewFitSeq + 1,
+      viewRestoreViewId: null,
+    });
+  },
+
+  closeSequenceContext: () => {
+    const { currentViewId, graph, sequenceContext, viewFitSeq } = get();
+    const currentView = graph?.views.find((view) => view.id === currentViewId) ?? null;
+    set({
+      projectionMode: projectionModeForView(currentView, "overview"),
+      sequenceContext: null,
+      selectedEdgeId: sequenceContext?.edgeId ?? null,
+      viewFitViewId: currentViewId,
+      viewFitSeq: currentViewId ? viewFitSeq + 1 : viewFitSeq,
+      viewRestoreViewId: null,
+    });
+  },
+
   goBack: () => {
+    if (get().sequenceContext) {
+      get().closeSequenceContext();
+      return;
+    }
     const { breadcrumb } = get();
     if (breadcrumb.length > 1) {
       const newBc = breadcrumb.slice(0, -1);
@@ -1799,9 +1909,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const nextBreadcrumb = targetViewId ? buildViewPath(graph, targetViewId) : breadcrumb;
     const nextFocusSeq = (get().focusSeq ?? 0) + 1;
     const nextViewFitSeq = targetViewId ? (get().viewFitSeq ?? 0) + 1 : get().viewFitSeq;
+    const nextView = graph.views.find((view) => view.id === nextViewId) ?? null;
 
     set({
       currentViewId: nextViewId,
+      projectionMode: projectionModeForView(nextView, get().projectionMode),
+      sequenceContext: null,
       breadcrumb: nextBreadcrumb,
       selectedSymbolId: symbolId,
       selectedEdgeId: null,

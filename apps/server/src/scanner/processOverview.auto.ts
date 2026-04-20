@@ -9,7 +9,7 @@ type StageId =
   | "simulation";
 
 type ScoreMap = Record<StageId, number>;
-type ArtifactCategory = "tabular" | "json" | "binary" | "arrival" | "source" | "artifact";
+type ArtifactCategory = "tabular" | "json" | "binary" | "arrival" | "source" | "artifact" | "libraries-imports";
 type UmlType =
   | "package"
   | "database"
@@ -233,7 +233,6 @@ export interface ProcessArtifactDescriptor {
 
 const VIEW_ID = "view:process-overview";
 const STAGE_VIEW_PREFIX = "view:process-stage:";
-const STAGE_SEQUENCE_VIEW_SUFFIX = ":sequence";
 const VIEW_TITLE = "Architecture & Dataflow Overview";
 
 const STAGES: readonly StageDef[] = [
@@ -1244,6 +1243,48 @@ function buildStructuredArtifactPreview(
   ];
 }
 
+function buildImportClusterPreview(
+  stage: StageId,
+  entries: Array<{
+    symbol: Symbol;
+    importerIds: Set<string>;
+    importerLabels: Set<string>;
+    count: number;
+  }>,
+): string[] {
+  const meta: ArtifactPreviewMetaPayload = {
+    kind: "artifact-preview",
+    mode: "cluster",
+    stageId: stage,
+    stageLabel: stageTitle(stage),
+    category: "libraries-imports",
+    groupKind: "input",
+    groupCount: entries.length,
+    pathCount: entries.length,
+  };
+
+  return [
+    encodeArtifactPreviewLine("preview", meta),
+    ...entries.map((entry) =>
+      encodeArtifactPreviewLine("item", {
+        label: entry.symbol.label,
+        paths: [entry.symbol.label],
+        artifactIds: [entry.symbol.id],
+        writeCount: 0,
+        readCount: entry.count,
+        producerIds: [...entry.importerIds].sort((left, right) => left.localeCompare(right)),
+        consumerIds: [],
+        producers: [...entry.importerLabels].sort((left, right) => left.localeCompare(right)),
+        consumers: [],
+        producerStages: [stage],
+        consumerStages: [],
+        category: "libraries-imports",
+        groupKind: "input",
+      } satisfies ArtifactPreviewItemPayload),
+    ),
+  ];
+}
+
 function buildArtifactPreviewItem(group: ArtifactFlowGroup): ArtifactPreviewItemPayload {
   return {
     label: group.label,
@@ -1461,6 +1502,8 @@ function humanizeArtifactFamily(value: string): string {
 
 function artifactCategoryTitle(category: ArtifactCategory): string {
   switch (category) {
+    case "libraries-imports":
+      return "Libraries / Imports";
     case "json":
       return "JSON Artifacts";
     case "binary":
@@ -1979,13 +2022,14 @@ function buildStageViewConfig(
   stage: StageDef,
   flowGroups: ArtifactFlowGroup[],
 ): BuiltStageView {
-  const classNodeRefs = selectStageClassNodeRefs(graph, ctx, stage.id);
-  const sequenceNodeRefs = selectStageSequenceNodeRefs(graph, ctx, stage.id);
+  const classNodeRefs = selectStageSequenceNodeRefs(graph, ctx, stage.id);
   const artifactOverlay = buildStageArtifactOverlay(stage.id, classNodeRefs, flowGroups, ctx);
-  const sequenceViewId = stageSequenceViewId(stage);
-  const sequenceParticipants = sequenceNodeRefs.length > 0 ? sequenceNodeRefs : classNodeRefs;
-  const sequenceNavNode = buildStageSequenceNavNode(stage, sequenceViewId, sequenceParticipants);
-  const nodeRefs = [sequenceNavNode.id, ...classNodeRefs];
+  const importOverlay = buildStageImportOverlay(graph, ctx, stage.id, classNodeRefs);
+  const nodeRefs = [
+    ...classNodeRefs,
+    ...artifactOverlay.nodeRefs,
+    ...importOverlay.nodeRefs,
+  ];
   return {
     views: [
       {
@@ -1995,21 +2039,15 @@ function buildStageViewConfig(
         diagramType: "class",
         hiddenInSidebar: false,
         nodeRefs,
-        edgeRefs: collectStageClassEdgeRefs(graph, ctx, classNodeRefs),
-      },
-      {
-        id: sequenceViewId,
-        title: `${stage.label} Sequence`,
-        parentViewId: stage.viewId,
-        scope: "group",
-        diagramType: "sequence",
-        hiddenInSidebar: false,
-        nodeRefs: sequenceParticipants,
-        edgeRefs: collectStageSequenceEdgeRefs(graph, ctx, sequenceParticipants),
+        edgeRefs: [
+          ...collectStageClassEdgeRefs(graph, ctx, classNodeRefs),
+          ...artifactOverlay.edges.map((edge) => edge.id),
+          ...importOverlay.edges.map((edge) => edge.id),
+        ],
       },
     ],
-    edges: artifactOverlay.edges,
-    nodes: [sequenceNavNode, ...artifactOverlay.nodes],
+    edges: [...artifactOverlay.edges, ...importOverlay.edges],
+    nodes: [...artifactOverlay.nodes, ...importOverlay.nodes],
   };
 }
 
@@ -2064,6 +2102,89 @@ function buildStageArtifactOverlay(
   }
 
   return { nodeRefs, edges, nodes };
+}
+
+function buildStageImportOverlay(
+  graph: ProjectGraph,
+  ctx: Context,
+  stage: StageId,
+  coreNodeRefs: string[],
+): { nodeRefs: string[]; edges: ProcessEdgeConfig[]; nodes: ProcessNodeConfig[] } {
+  if (coreNodeRefs.length === 0) {
+    return { nodeRefs: [], edges: [], nodes: [] };
+  }
+
+  const visibleCore = new Set(coreNodeRefs);
+  const importsByTarget = new Map<string, {
+    symbol: Symbol;
+    importerIds: Set<string>;
+    importerLabels: Set<string>;
+    count: number;
+  }>();
+
+  for (const relation of graph.relations) {
+    if (relation.type !== "imports") continue;
+
+    const sourceSymbol = ctx.symbolById.get(relation.source);
+    const targetSymbol = ctx.symbolById.get(relation.target);
+    if (!sourceSymbol || !targetSymbol) continue;
+    if (mapSymbolToStage(sourceSymbol, ctx) !== stage) continue;
+    if (mapSymbolToStage(targetSymbol, ctx) === stage && visibleCore.has(targetSymbol.id)) continue;
+
+    const importerId = resolveVisibleImportAnchorId(graph, ctx, relation.source, visibleCore);
+    if (!importerId) continue;
+
+    const importerSymbol = ctx.symbolById.get(importerId);
+    const entry = importsByTarget.get(targetSymbol.id) ?? {
+      symbol: targetSymbol,
+      importerIds: new Set<string>(),
+      importerLabels: new Set<string>(),
+      count: 0,
+    };
+    entry.importerIds.add(importerId);
+    if (importerSymbol) {
+      entry.importerLabels.add(importerSymbol.label);
+    }
+    entry.count += 1;
+    importsByTarget.set(targetSymbol.id, entry);
+  }
+
+  const importEntries = [...importsByTarget.values()]
+    .sort((left, right) => left.symbol.label.localeCompare(right.symbol.label));
+  if (importEntries.length === 0) {
+    return { nodeRefs: [], edges: [], nodes: [] };
+  }
+
+  const clusterNodeId = `proc:import-cluster:${stage}`;
+  const node: ProcessNodeConfig = {
+    id: clusterNodeId,
+    label: `Libraries / Imports (${importEntries.length})`,
+    umlType: "package",
+    stereotype: "<<package>>",
+    preview: buildImportClusterPreview(stage, importEntries),
+    position: { x: 0, y: 0, width: FLOW_NODE_WIDTH, height: FLOW_NODE_HEIGHT },
+  };
+
+  const edgeCountsByImporter = new Map<string, number>();
+  for (const entry of importEntries) {
+    for (const importerId of entry.importerIds) {
+      edgeCountsByImporter.set(importerId, (edgeCountsByImporter.get(importerId) ?? 0) + 1);
+    }
+  }
+
+  const edges = [...edgeCountsByImporter.entries()].map(([importerId, count]) => ({
+    id: `stage-import:${stage}:${slugify(importerId)}`,
+    source: importerId,
+    target: clusterNodeId,
+    type: "imports" as const,
+    label: count > 1 ? `${count} imports` : "imports",
+  }));
+
+  return {
+    nodeRefs: [clusterNodeId],
+    edges,
+    nodes: [node],
+  };
 }
 
 function buildViewAdjustments(graph: ProjectGraph, ctx: Context): ProcessViewAdjustment[] {
@@ -2580,6 +2701,41 @@ function resolveStageStructuralNodeRef(symbolId: string, ctx: Context): string |
   return null;
 }
 
+function resolveVisibleImportAnchorId(
+  graph: ProjectGraph,
+  ctx: Context,
+  symbolId: string,
+  visibleNodeRefs: Set<string>,
+): string | null {
+  if (visibleNodeRefs.has(symbolId)) return symbolId;
+
+  const structuralRef = resolveStageStructuralNodeRef(symbolId, ctx);
+  if (structuralRef && visibleNodeRefs.has(structuralRef)) {
+    return structuralRef;
+  }
+
+  const sourceSymbol = ctx.symbolById.get(structuralRef ?? symbolId);
+  if (sourceSymbol?.kind === "module") {
+    const visibleChildren = graph.symbols
+      .filter((candidate) =>
+        candidate.parentId === sourceSymbol.id &&
+        candidate.kind === "class" &&
+        visibleNodeRefs.has(candidate.id),
+      )
+      .sort((left, right) => left.label.localeCompare(right.label));
+    if (visibleChildren.length > 0) {
+      return visibleChildren[0]?.id ?? null;
+    }
+  }
+
+  const directParent = ctx.symbolById.get(symbolId)?.parentId;
+  if (directParent && visibleNodeRefs.has(directParent)) {
+    return directParent;
+  }
+
+  return null;
+}
+
 function expandStageClassNodeRefsForDiagram(
   graph: ProjectGraph,
   ctx: Context,
@@ -2687,30 +2843,6 @@ function resolveStageStructuralClassNodeRef(symbolId: string, ctx: Context): str
   }
 
   return null;
-}
-
-function stageSequenceViewId(stage: StageDef): string {
-  return `${stage.viewId}${STAGE_SEQUENCE_VIEW_SUFFIX}`;
-}
-
-function buildStageSequenceNavNode(
-  stage: StageDef,
-  sequenceViewId: string,
-  coreNodeRefs: string[],
-): ProcessNodeConfig {
-  const preview = [
-    "Static interaction projection",
-    coreNodeRefs.length > 0 ? `Participants: ${summarizeList(coreNodeRefs.map((nodeRef) => nodeRef.split(":").pop() ?? nodeRef), 3)}` : "Participants from stage symbols",
-  ];
-
-  return {
-    id: `proc:stage-sequence-nav:${stage.id}`,
-    label: "Sequence Diagram",
-    umlType: "note",
-    childViewId: sequenceViewId,
-    preview,
-    position: { x: 0, y: 0, width: FLOW_NODE_WIDTH, height: FLOW_NODE_HEIGHT },
-  };
 }
 
 function hasDirectClassChildren(symbolId: string, ctx: Context): boolean {

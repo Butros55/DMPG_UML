@@ -18,10 +18,10 @@ test("sanitizeDiagramSettings accepts persisted split artifact modes", () => {
   assert.equal(sanitized.generatedArtifactMode, "individual");
 });
 
-test("sanitizeDiagramSettings clamps input artifact mode to on or off", () => {
+test("sanitizeDiagramSettings accepts individual input artifact mode", () => {
   const sanitized = sanitizeDiagramSettings({ inputArtifactMode: "individual" });
 
-  assert.equal(sanitized.inputArtifactMode, "grouped");
+  assert.equal(sanitized.inputArtifactMode, "individual");
 });
 
 test("sanitizeDiagramSettings maps legacy showArtifacts=false to generated only", () => {

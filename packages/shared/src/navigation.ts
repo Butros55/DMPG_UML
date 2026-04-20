@@ -21,12 +21,10 @@ function viewDepth(graph: Pick<ProjectGraph, "views">, viewId: string): number {
 export function isTechnicalNavigationView(graph: ProjectGraph, view: DiagramView): boolean {
   if (view.hiddenInSidebar) return true;
   if (view.id.startsWith("view:artifacts:") || view.id.startsWith("view:art-cat:")) return true;
+  if (view.diagramType === "sequence") return true;
   if (graph.rootViewId !== "view:process-overview") return false;
-  return (
-    view.id === "view:root" ||
-    view.id.startsWith("view:grp:domain:") ||
-    view.id === "view:grp:dir:__root__"
-  );
+  if (view.id === "view:process-overview") return false;
+  return !view.id.startsWith("view:process-stage:");
 }
 
 export function isNavigableView(graph: ProjectGraph, view: DiagramView): boolean {

@@ -16,6 +16,7 @@ interface ArtifactPreviewMeta {
   mode?: "single" | "cluster";
   stageId?: StageId;
   groupKind?: ArtifactGroupKind;
+  category?: string;
 }
 
 interface ArtifactPreviewItem {
@@ -184,6 +185,9 @@ function classifyArtifactScope(
   if (meta?.groupKind === "handoff" || meta?.groupKind === "output") return "generated";
   if (items.some((item) => item.groupKind === "handoff" || item.groupKind === "output")) return "generated";
   if (items.some((item) => item.groupKind === "input")) return "input";
+  if (meta?.category === "libraries-imports" || items.some((item) => item.category === "libraries-imports")) {
+    return "input";
+  }
 
   const previewStages = summarizePreviewStages(meta, items);
   if (previewStages.producerStages.length > 0) return "generated";
@@ -192,6 +196,10 @@ function classifyArtifactScope(
   if (meta?.stageId) return "generated";
 
   const relationStages = summarizeRelationStages(symbol.id, relationsBySymbolId);
+  const hasImportConsumers = (relationsBySymbolId.get(symbol.id) ?? []).some(
+    (relation) => relation.type === "imports" && relation.target === symbol.id,
+  );
+  if (hasImportConsumers) return "input";
   if (relationStages.producerStages.length > 0) return "generated";
   if (relationStages.consumerStages.length > 0) return "input";
 
@@ -289,6 +297,7 @@ function parsePreviewMeta(lines: string[]): ArtifactPreviewMeta | null {
       mode: payload.mode === "single" || payload.mode === "cluster" ? payload.mode : undefined,
       stageId: isStageId(payload.stageId) ? payload.stageId : undefined,
       groupKind: isArtifactGroupKind(payload.groupKind) ? payload.groupKind : undefined,
+      category: typeof payload.category === "string" ? payload.category : undefined,
     };
   } catch {
     return null;
@@ -333,10 +342,7 @@ function resolveArtifactSymbol(graph: ProjectGraph, item: ArtifactPreviewItem): 
     return graph.symbols.find((symbol) => symbol.id === explicitArtifactId) ?? null;
   }
 
-  const exactLabel = graph.symbols.find((symbol) =>
-    symbol.id.startsWith("proc:artifact:") &&
-    symbol.label === item.label,
-  );
+  const exactLabel = graph.symbols.find((symbol) => symbol.label === item.label);
   return exactLabel ?? null;
 }
 
@@ -390,12 +396,60 @@ function buildSyntheticClusterRelations(
   relationKeySet: Set<string>,
 ): Relation[] {
   const relations: Relation[] = [];
+  const explicitProducerIds = unique(item.producerIds.filter(Boolean));
+  const explicitConsumerIds = unique(item.consumerIds.filter(Boolean));
   const producerStages = item.producerStages.length > 0
     ? item.producerStages
     : meta?.stageId && meta.stageId !== "inputs"
       ? [meta.stageId]
       : [];
   const consumerStages = item.consumerStages.filter((stageId) => !producerStages.includes(stageId));
+
+  if (item.category === "libraries-imports") {
+    for (const source of explicitProducerIds) {
+      const key = `${source}|${artifactId}|imports`;
+      if (relationKeySet.has(key)) continue;
+      relations.push({
+        id: `virtual:artifact:${sanitizeId(clusterId)}:${sanitizeId(artifactId)}:import:${sanitizeId(source)}`,
+        type: "imports",
+        source,
+        target: artifactId,
+        label: "imports",
+        confidence: 1,
+      });
+    }
+    return relations;
+  }
+
+  for (const source of explicitProducerIds) {
+    const key = `${source}|${artifactId}|writes`;
+    if (relationKeySet.has(key)) continue;
+    relations.push({
+      id: `virtual:artifact:${sanitizeId(clusterId)}:${sanitizeId(artifactId)}:write:${sanitizeId(source)}`,
+      type: "writes",
+      source,
+      target: artifactId,
+      label: writeLabelForCategory(item.category),
+      confidence: 1,
+    });
+  }
+
+  for (const target of explicitConsumerIds) {
+    const key = `${artifactId}|${target}|reads`;
+    if (relationKeySet.has(key)) continue;
+    relations.push({
+      id: `virtual:artifact:${sanitizeId(clusterId)}:${sanitizeId(artifactId)}:read:${sanitizeId(target)}`,
+      type: "reads",
+      source: artifactId,
+      target,
+      label: readLabelForCategory(item.category, meta?.stageId ?? item.consumerStages[0] ?? "extract"),
+      confidence: 1,
+    });
+  }
+
+  if (explicitProducerIds.length > 0 || explicitConsumerIds.length > 0) {
+    return relations;
+  }
 
   for (const producerStage of unique(producerStages)) {
     const relationType = "writes";

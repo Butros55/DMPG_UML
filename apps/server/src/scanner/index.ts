@@ -472,7 +472,7 @@ function buildGraphFromScan(
           title: sym.label,
           parentViewId: parentViewId,
           scope: "class",
-          diagramType: "sequence",
+          diagramType: "class",
           nodeRefs: methods.map((m) => m.id),
           edgeRefs: viewEdgeRefs,
         });

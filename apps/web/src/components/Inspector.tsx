@@ -17,6 +17,7 @@ import {
 } from "../artifactPreview";
 import { resolveArtifactView } from "../artifactVisibility";
 import {
+  buildEdgeContextSequenceDiagramDetails,
   buildPackageSequenceDiagramDetails,
   isPackageSequenceView,
   type SequenceMessagePanelData,
@@ -165,6 +166,8 @@ function formatSequenceMessageKind(kind: SequenceMessagePanelData["kind"]): stri
       return "create";
     case "async":
       return "async";
+    case "response":
+      return "response";
     case "self":
       return "self";
     default:
@@ -648,6 +651,8 @@ function resolveClusterEdgeItems(
 function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void }) {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
+  const projectionMode = useAppStore((s) => s.projectionMode);
+  const sequenceContext = useAppStore((s) => s.sequenceContext);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const updateRelation = useAppStore((s) => s.updateRelation);
   const removeRelation = useAppStore((s) => s.removeRelation);
@@ -667,9 +672,24 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
         : null,
     [currentView, diagramSettings.generatedArtifactMode, diagramSettings.inputArtifactMode, graph],
   );
-  const sequenceView = isPackageSequenceView(currentView, graph);
+  const sequenceView =
+    (projectionMode === "sequence" && !!sequenceContext && sequenceContext.originViewId === currentViewId) ||
+    isPackageSequenceView(currentView, graph);
   const sequenceDetails = useMemo(() => {
-    if (!graph || !currentView || !resolvedArtifactView || !sequenceView) return null;
+    if (!graph || !currentView || !sequenceView) return null;
+    if (projectionMode === "sequence" && sequenceContext && sequenceContext.originViewId === currentView.id) {
+      return buildEdgeContextSequenceDiagramDetails({
+        graph,
+        view: currentView,
+        sourceSymbolId: sequenceContext.sourceSymbolId,
+        targetSymbolId: sequenceContext.targetSymbolId,
+        relationFilters: diagramSettings.relationFilters,
+        labelsMode: diagramSettings.labels,
+        selectedSymbolId,
+        selectedEdgeId,
+      });
+    }
+    if (!resolvedArtifactView) return null;
     const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
     const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
     return buildPackageSequenceDiagramDetails({
@@ -688,9 +708,11 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
     diagramSettings.labels,
     diagramSettings.relationFilters,
     graph,
+    projectionMode,
     resolvedArtifactView,
     selectedEdgeId,
     selectedSymbolId,
+    sequenceContext,
     sequenceView,
   ]);
   const selectedSequenceMessage = selectedEdgeId && sequenceDetails

@@ -559,6 +559,14 @@ body,
 .canvas-area {
   grid-area: canvas;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.canvas-area .react-flow {
+  flex: 1;
+  min-height: 0;
 }
 
 /* React Flow overrides */
@@ -2627,6 +2635,12 @@ body,
 .sequence-message-edge--self .react-flow__edge-path {
   stroke: rgba(71, 85, 105, 0.98) !important;
   stroke-width: 1.9px !important;
+}
+
+.sequence-message-edge--response .react-flow__edge-path {
+  stroke: rgba(100, 116, 139, 0.92) !important;
+  stroke-width: 1.2px !important;
+  stroke-dasharray: 7 5;
 }
 
 .sequence-message-edge--self .react-flow__edge-text,
@@ -6254,4 +6268,56 @@ body,
   height: 1px;
   background: var(--border, #333);
   margin: 4px 0;
+}
+
+/* ── Projection Switch (Overview / Class / Sequence) ── */
+.projection-switch {
+  display: flex;
+  gap: 2px;
+  padding: 4px 12px;
+  background: rgba(26, 27, 46, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  z-index: 10;
+}
+
+.projection-switch__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.projection-switch__btn:hover {
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.projection-switch__btn--active {
+  color: #60a5fa;
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.3);
+}
+
+.projection-switch__btn--active:hover {
+  color: #93bbfc;
+  background: rgba(96, 165, 250, 0.15);
+}
+
+.projection-switch__btn i {
+  font-size: 13px;
+}
+
+.projection-switch__label {
+  font-family: inherit;
 }

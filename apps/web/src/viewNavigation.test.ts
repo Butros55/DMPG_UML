@@ -66,7 +66,7 @@ test("normalizeGraphForFrontend strips legacy hidden views and invalid child vie
 
   assert.deepEqual(
     normalized.views.map((view) => view.id),
-    ["view:process-overview", "view:process-stage:distribution", "view:grp:visible"],
+    ["view:process-overview", "view:process-stage:distribution"],
   );
   assert.equal(
     normalized.symbols.find((symbol) => symbol.id === "grp:art-cat:io")?.childViewId,
@@ -81,8 +81,8 @@ test("normalizeGraphForFrontend strips legacy hidden views and invalid child vie
     undefined,
   );
   assert.equal(
-    normalized.views.find((view) => view.id === "view:grp:visible")?.manualLayout,
-    true,
+    normalized.views.find((view) => view.id === "view:grp:visible"),
+    undefined,
   );
 });
 

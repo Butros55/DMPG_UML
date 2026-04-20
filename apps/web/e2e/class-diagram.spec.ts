@@ -7,11 +7,13 @@ test("stage layer renders a structural class diagram before sequence drilldown",
 
   await page.goto("/");
   await expect(page.locator(".canvas-flow--sequence")).not.toBeVisible();
+  await expect(page.locator('[data-id="proc:pkg:inputs"]')).toBeVisible();
+  await expect(page.locator('[data-id="proc:pkg:transform"]')).toBeVisible();
   await page.locator('[data-id="proc:pkg:transform"] .group-drilldown').click();
 
   await expect(page.locator(".canvas-flow--sequence")).not.toBeVisible();
   await expect(page.locator('[data-id="class:pipeline-controller"]')).toBeVisible();
-  await expect(page.locator('[data-id="proc:stage-sequence-nav:transform"]')).toBeVisible();
+  await expect(page.locator('[data-id="proc:stage-sequence-nav:transform"]')).toHaveCount(0);
   await expect(page.locator(".edge-inherits").first()).toBeVisible();
   await expect(page.locator(".edge-association").first()).toBeVisible();
   await expect(page.locator(".edge-composition").first()).toBeVisible();
