@@ -25,6 +25,8 @@ export interface UmlNodeData {
   compactMode?: boolean;
   labelsMode?: DiagramLabelMode;
   umlType?: SymbolUmlType;
+  /** UML stereotype to display above the name — e.g. "interface", "abstract". */
+  stereotype?: string;
   location?: { file: string; startLine?: number; endLine?: number };
   artifactPreviewKind?: "cluster" | "single" | "plain";
   artifactPreviewItemCount?: number | null;
@@ -512,9 +514,18 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
   const shownAttributes = compactMode ? attributes.slice(0, 4) : attributes;
   const shownMethods = compactMode ? methods.slice(0, 5) : methods;
 
+  // UML stereotype: explicit symbol stereotype wins, then fall back on kind.
+  const stereotype = d.stereotype
+    ? d.stereotype
+    : d.kind === "interface"
+      ? "interface"
+      : "class";
+  const isInterface = stereotype === "interface";
+  const isAbstract = stereotype === "abstract" || d.tags?.includes("abstract");
+
   return (
     <div
-      className={`uml-node uml-class-node kind-class ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""} ${animClass}`}
+      className={`uml-node uml-class-node kind-class ${compactMode ? "node-compact" : ""} ${selected ? "selected" : ""} ${animClass} ${isInterface ? "uml-class-node--interface" : ""}`}
       onClick={handleClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -524,8 +535,8 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
 
       {/* Stereotype + Name */}
       <div className="node-header class-header">
-        <div className="stereotype">«class»</div>
-        <span className="node-label">{d.label}</span>
+        <div className="stereotype">«{stereotype}»</div>
+        <span className={`node-label ${isAbstract ? "node-label--abstract" : ""}`}>{d.label}</span>
         {!compactMode && fileName && <div className="node-file-location" title={d.location?.file}><i className="bi bi-file-earmark" /> {fileName}</div>}
       </div>
 

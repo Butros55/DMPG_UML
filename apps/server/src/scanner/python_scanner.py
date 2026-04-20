@@ -46,6 +46,22 @@ BUILTIN_TYPE_NAMES = {
     "list", "object", "set", "str", "tuple", "type",
 }
 
+# Collection-like wrappers that imply a multiplicity of 0..* at the target endpoint.
+MANY_CONTAINER_TYPES = {
+    "list", "List", "Sequence", "MutableSequence", "Iterable", "Iterator",
+    "Collection", "set", "Set", "FrozenSet", "frozenset", "MutableSet",
+    "tuple", "Tuple", "dict", "Dict", "Mapping", "MutableMapping",
+    "TypedDict", "deque", "DefaultDict", "OrderedDict", "ChainMap",
+    "Generator", "AsyncIterator",
+}
+
+# Wrappers that imply a multiplicity of 0..1 at the target endpoint.
+OPTIONAL_CONTAINER_TYPES = {"Optional"}
+
+# Names that indicate the base class is an interface / protocol (realization).
+INTERFACE_MARKER_SUFFIXES = ("ABC", "Interface", "Protocol", "Mixin", "Base")
+INTERFACE_EXACT_NAMES = {"ABC", "Protocol", "Interface", "ABCMeta"}
+
 
 # Directories to skip during scanning (common non-project dirs)
 SKIP_DIRS = {
@@ -304,16 +320,27 @@ def scan_directory(root: str) -> dict[str, Any]:
     for sym in symbols:
         bases = sym.pop("bases", [])
         for base_name in bases:
+            inheritance_type = _classify_inheritance(base_name)
             target_id = _resolve_name(base_name, symbol_table, {})
             if target_id and target_id in known_sym_ids:
-                edges.append({"source": sym["id"], "target": target_id, "type": "inherits"})
+                edges.append({
+                    "source": sym["id"], "target": target_id,
+                    "type": inheritance_type,
+                })
             else:
                 ext_id = f"ext:{base_name}"
                 if not any(s["id"] == ext_id for s in symbols):
-                    symbols.append({"id": ext_id, "label": base_name, "kind": "external"})
+                    external_symbol: dict[str, Any] = {
+                        "id": ext_id,
+                        "label": base_name,
+                        "kind": "external",
+                    }
+                    if inheritance_type == "realizes":
+                        external_symbol["stereotype"] = "interface"
+                    symbols.append(external_symbol)
                 edges.append({
                     "source": sym["id"], "target": ext_id,
-                    "type": "inherits", "confidence": 0.5,
+                    "type": inheritance_type, "confidence": 0.5,
                 })
 
     known_sym_ids = {s["id"] for s in symbols}
@@ -882,6 +909,46 @@ def _extract_type_names(type_text: Optional[str]) -> list[str]:
     return names
 
 
+def _infer_target_multiplicity(type_text: Optional[str]) -> str:
+    """Derive UML target multiplicity from a type annotation string.
+
+    Examples:
+        list[User]      -> "0..*"
+        Optional[User]  -> "0..1"
+        User | None     -> "0..1"
+        User            -> "1"
+    """
+    if not type_text:
+        return "1"
+
+    normalized = type_text.strip()
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", normalized)
+    token_set = set(tokens)
+
+    if token_set & MANY_CONTAINER_TYPES:
+        return "0..*"
+
+    if "None" in token_set or token_set & OPTIONAL_CONTAINER_TYPES:
+        return "0..1"
+
+    return "1"
+
+
+def _looks_like_interface_base(base_name: str) -> bool:
+    short = base_name.split(".")[-1]
+    if short in INTERFACE_EXACT_NAMES:
+        return True
+    for suffix in INTERFACE_MARKER_SUFFIXES:
+        if short.endswith(suffix) and short != suffix:
+            return True
+    return False
+
+
+def _classify_inheritance(base_name: str) -> str:
+    """Return 'realizes' for interfaces/protocols, else 'inherits'."""
+    return "realizes" if _looks_like_interface_base(base_name) else "inherits"
+
+
 def _resolve_internal_class_name(
     type_name: str,
     owner_class_id: str,
@@ -929,6 +996,10 @@ def _build_structural_class_relations(
         start_line: Optional[int],
         end_line: Optional[int],
         confidence: float,
+        source_multiplicity: Optional[str] = None,
+        target_multiplicity: Optional[str] = None,
+        source_role: Optional[str] = None,
+        target_role: Optional[str] = None,
     ) -> None:
         if source_id == target_id:
             return
@@ -941,6 +1012,14 @@ def _build_structural_class_relations(
         }
         if label:
             relation["label"] = label
+        if source_multiplicity:
+            relation["sourceMultiplicity"] = source_multiplicity
+        if target_multiplicity:
+            relation["targetMultiplicity"] = target_multiplicity
+        if source_role:
+            relation["sourceRole"] = source_role
+        if target_role:
+            relation["targetRole"] = target_role
         if file:
             evidence = {"file": file}
             if start_line is not None:
@@ -963,6 +1042,7 @@ def _build_structural_class_relations(
             relation_type = symbol.get("relationType") or "association"
             label = str(symbol.get("label") or symbol.get("id") or "").split(".")[-1]
             for item in items:
+                target_multiplicity = _infer_target_multiplicity(item.get("type"))
                 for type_name in _extract_type_names(item.get("type")):
                     target_id = _resolve_internal_class_name(
                         type_name,
@@ -982,6 +1062,9 @@ def _build_structural_class_relations(
                         start_line=symbol.get("startLine"),
                         end_line=symbol.get("endLine"),
                         confidence=0.84 if relation_type == "association" else 0.88,
+                        source_multiplicity="1",
+                        target_multiplicity=target_multiplicity,
+                        target_role=label,
                     )
             continue
 
@@ -991,6 +1074,7 @@ def _build_structural_class_relations(
         symbol_doc = symbol.get("doc") or {}
         method_name = str(symbol.get("label") or symbol.get("id") or "").split(".")[-1]
         for item in symbol_doc.get("inputs") or []:
+            target_multiplicity = _infer_target_multiplicity(item.get("type"))
             for type_name in _extract_type_names(item.get("type")):
                 target_id = _resolve_internal_class_name(
                     type_name,
@@ -1004,15 +1088,17 @@ def _build_structural_class_relations(
                 add_relation(
                     parent_id,
                     target_id,
-                    "association",
+                    "dependency",
                     label=method_name,
                     file=symbol.get("file"),
                     start_line=symbol.get("startLine"),
                     end_line=symbol.get("endLine"),
                     confidence=0.7,
+                    target_multiplicity=target_multiplicity,
                 )
 
         for item in symbol_doc.get("outputs") or []:
+            target_multiplicity = _infer_target_multiplicity(item.get("type"))
             for type_name in _extract_type_names(item.get("type")):
                 target_id = _resolve_internal_class_name(
                     type_name,
@@ -1026,12 +1112,13 @@ def _build_structural_class_relations(
                 add_relation(
                     parent_id,
                     target_id,
-                    "association",
+                    "dependency",
                     label=method_name,
                     file=symbol.get("file"),
                     start_line=symbol.get("startLine"),
                     end_line=symbol.get("endLine"),
                     confidence=0.66,
+                    target_multiplicity=target_multiplicity,
                 )
 
     return relations

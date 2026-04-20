@@ -73,6 +73,7 @@ const STAGE_PACKAGE_BY_ID: Record<StageId, string> = {
 const STAGE_ID_BY_PACKAGE_ID = new Map<string, StageId>(
   Object.entries(STAGE_PACKAGE_BY_ID).map(([stageId, packageId]) => [packageId, stageId as StageId]),
 );
+const INPUT_STAGE_PACKAGE_ID = STAGE_PACKAGE_BY_ID.inputs;
 
 export function isArtifactLikeSymbol(symbol: Pick<Symbol, "kind" | "umlType">): boolean {
   return (
@@ -90,7 +91,11 @@ export function resolveArtifactView(
   view: DiagramView,
   modes: ArtifactViewModes,
 ): ArtifactViewResolution {
-  if (modes.input === "grouped" && modes.generated === "grouped") {
+  if (
+    modes.input === "grouped" &&
+    modes.generated === "grouped" &&
+    !shouldHideInputStagePackage(view, modes)
+  ) {
     return {
       nodeRefs: [...view.nodeRefs],
       relations: [...graph.relations],
@@ -143,19 +148,37 @@ export function resolveArtifactView(
     }
   }
 
+  if (shouldHideInputStagePackage(view, modes)) {
+    hiddenSymbolIds.add(INPUT_STAGE_PACKAGE_ID);
+  }
+
+  const resolvedRelations = [...graph.relations, ...syntheticRelations];
+  const resolvedRelationKeySet = new Set(
+    resolvedRelations.map((relation) => `${relation.source}|${relation.target}|${relation.type}`),
+  );
+  if (hiddenSymbolIds.has(INPUT_STAGE_PACKAGE_ID)) {
+    syntheticRelations.push(
+      ...buildStageBypassRelations(INPUT_STAGE_PACKAGE_ID, resolvedRelations, resolvedRelationKeySet),
+    );
+  }
+
   const relations = [
     ...graph.relations.filter(
       (relation) => !hiddenSymbolIds.has(relation.source) && !hiddenSymbolIds.has(relation.target),
     ),
     ...syntheticRelations,
-  ];
+  ].filter((relation) => !hiddenSymbolIds.has(relation.source) && !hiddenSymbolIds.has(relation.target));
 
   return {
-    nodeRefs: nextNodeRefs,
+    nodeRefs: nextNodeRefs.filter((nodeRef) => !hiddenSymbolIds.has(nodeRef)),
     relations,
     hiddenSymbolIds,
     symbolOverrides,
   };
+}
+
+function shouldHideInputStagePackage(view: DiagramView, modes: ArtifactViewModes): boolean {
+  return modes.input !== "hidden" && view.nodeRefs.includes(INPUT_STAGE_PACKAGE_ID);
 }
 
 function artifactModeForSymbol(
@@ -513,6 +536,62 @@ function buildRelationsBySymbolId(relations: Relation[]): Map<string, Relation[]
   }
 
   return relationsBySymbolId;
+}
+
+function buildStageBypassRelations(
+  hiddenSymbolId: string,
+  relations: Relation[],
+  relationKeySet: Set<string>,
+): Relation[] {
+  const incomingRelations = relations.filter(
+    (relation) => relation.target === hiddenSymbolId && relation.type !== "contains",
+  );
+  const outgoingRelations = relations.filter(
+    (relation) => relation.source === hiddenSymbolId && relation.type !== "contains",
+  );
+  const bypassRelations: Relation[] = [];
+
+  for (const incoming of incomingRelations) {
+    for (const outgoing of outgoingRelations) {
+      if (incoming.source === outgoing.target) continue;
+
+      const type = incoming.type === outgoing.type ? incoming.type : outgoing.type;
+      const key = `${incoming.source}|${outgoing.target}|${type}`;
+      if (relationKeySet.has(key)) continue;
+
+      relationKeySet.add(key);
+      bypassRelations.push({
+        id: `virtual:bypass:${sanitizeId(hiddenSymbolId)}:${sanitizeId(incoming.source)}:${sanitizeId(outgoing.target)}:${type}`,
+        type,
+        source: incoming.source,
+        target: outgoing.target,
+        label: selectBypassRelationLabel(incoming, outgoing),
+        confidence: Math.min(incoming.confidence ?? 1, outgoing.confidence ?? 1),
+      });
+    }
+  }
+
+  return bypassRelations;
+}
+
+function selectBypassRelationLabel(incoming: Relation, outgoing: Relation): string | undefined {
+  return isGenericRelationLabel(incoming.label, incoming.type)
+    ? outgoing.label ?? incoming.label
+    : incoming.label ?? outgoing.label;
+}
+
+function isGenericRelationLabel(label: string | undefined, relationType: Relation["type"]): boolean {
+  if (!label) return true;
+  const normalized = label.trim().toLowerCase();
+  return (
+    normalized.length === 0 ||
+    normalized === relationType ||
+    normalized === "reads" ||
+    normalized === "writes" ||
+    normalized === "writes to" ||
+    normalized === "imports" ||
+    normalized === "calls"
+  );
 }
 
 function writeLabelForCategory(category?: string): string {

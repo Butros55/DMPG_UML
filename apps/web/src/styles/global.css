@@ -1211,6 +1211,22 @@ body,
   padding: 2px 0;
 }
 
+/* Interface stereotype — italicize the class name and tint the accent. */
+.uml-class-node--interface .node-label {
+  font-style: italic;
+}
+.uml-class-node--interface .class-header .stereotype {
+  color: #8da0ff;
+}
+.uml-class-node--interface {
+  border-color: rgba(141, 160, 255, 0.45);
+}
+
+/* Abstract classes — italicize the name per UML convention. */
+.node-label--abstract {
+  font-style: italic;
+}
+
 /* ─── UML Function Node ──────────────────────── */
 .uml-function-node {
   min-width: 140px;
@@ -2479,8 +2495,22 @@ body,
 }
 
 .edge-inherits .react-flow__edge-path {
-  stroke: var(--yellow) !important;
+  stroke: #d6b14d !important;
   stroke-width: 2 !important;
+}
+
+/* Realization: dashed line + hollow triangle (marker defined in UmlMarkerDefs). */
+.edge-realizes .react-flow__edge-path {
+  stroke: #8da0ff !important;
+  stroke-width: 1.8 !important;
+  stroke-dasharray: 8 4 !important;
+}
+
+/* Dependency: dashed line + open arrow. */
+.edge-dependency .react-flow__edge-path {
+  stroke: #8a94b0 !important;
+  stroke-width: 1.4 !important;
+  stroke-dasharray: 5 4 !important;
 }
 
 .edge-reads .react-flow__edge-path {
@@ -2547,6 +2577,36 @@ body,
 .react-flow__edge-text {
   font-size: 10px !important;
   fill: var(--text-dim) !important;
+}
+
+/* UML multiplicity / role annotations at edge endpoints. */
+.uml-endpoint-annotation {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  background: rgba(15, 17, 23, 0.82);
+  color: #e6e9f0;
+  border: 1px solid rgba(124, 138, 176, 0.35);
+  border-radius: 3px;
+  white-space: nowrap;
+  user-select: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.uml-endpoint-multiplicity {
+  font-weight: 600;
+  color: #ffd866;
+}
+
+.uml-endpoint-role {
+  font-style: italic;
+  color: #9aa4c0;
+  font-size: 9px;
 }
 
 .sequence-message-edge .react-flow__edge-text {

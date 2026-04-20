@@ -132,6 +132,8 @@ export const RelationTypeEnum = z.enum([
   "reads",
   "writes",
   "inherits",
+  "realizes",
+  "dependency",
   "uses_config",
   "instantiates",
   "association",
@@ -149,6 +151,16 @@ export const EvidenceSchema = z.object({
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;
 
+/**
+ * UML multiplicity notation for relation endpoints.
+ * Examples: "1", "0..1", "0..*", "1..*", "*", "3", "0..5".
+ */
+export const UmlMultiplicitySchema = z.string().regex(
+  /^(\*|\d+|\d+\.\.\*|\d+\.\.\d+|0\.\.\*|0\.\.1|1\.\.\*)$/,
+  "Invalid UML multiplicity (expected e.g. 1, 0..1, 0..*, 1..*, 3, 0..5)",
+);
+export type UmlMultiplicity = z.infer<typeof UmlMultiplicitySchema>;
+
 export const RelationSchema = z.object({
   id: z.string(),
   type: RelationTypeEnum,
@@ -157,6 +169,14 @@ export const RelationSchema = z.object({
   evidence: z.array(EvidenceSchema).optional(),
   confidence: z.number().min(0).max(1).optional(),
   label: z.string().optional(),
+  /** UML multiplicity at the source endpoint (e.g. "1", "0..*"). */
+  sourceMultiplicity: UmlMultiplicitySchema.optional(),
+  /** UML multiplicity at the target endpoint. */
+  targetMultiplicity: UmlMultiplicitySchema.optional(),
+  /** Role label at the source endpoint (e.g. attribute name). */
+  sourceRole: z.string().optional(),
+  /** Role label at the target endpoint. */
+  targetRole: z.string().optional(),
   /** True if this relation was discovered by AI analysis */
   aiGenerated: z.boolean().optional(),
 });

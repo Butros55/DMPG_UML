@@ -68,6 +68,142 @@ const edgeTypes = {
 
 const proOptions = { hideAttribution: true };
 
+/**
+ * UML-compliant SVG marker definitions.
+ *
+ * React Flow only ships plain arrow + closed arrow markers, which is not
+ * enough for a real UML class diagram. This component renders a hidden SVG
+ * whose `<defs>` contain the shapes UML needs: a hollow triangle for
+ * inheritance/realization, hollow and filled diamonds for aggregation /
+ * composition, an open "V" arrowhead for dependencies and associations.
+ *
+ * Edges reference these markers via `url(#uml-...-...)` in their markerEnd.
+ */
+function UmlMarkerDefs() {
+  return (
+    <svg
+      aria-hidden
+      width={0}
+      height={0}
+      style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}
+    >
+      <defs>
+        {/* Hollow triangle — generalization / inheritance. */}
+        <marker
+          id="uml-inherits-triangle"
+          viewBox="0 0 14 14"
+          refX="13"
+          refY="7"
+          markerWidth="14"
+          markerHeight="14"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M1,1 L13,7 L1,13 z" fill="#ffffff" stroke="#d6b14d" strokeWidth="1.4" />
+        </marker>
+
+        {/* Hollow triangle — realization (interface implementation). */}
+        <marker
+          id="uml-realizes-triangle"
+          viewBox="0 0 14 14"
+          refX="13"
+          refY="7"
+          markerWidth="14"
+          markerHeight="14"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M1,1 L13,7 L1,13 z" fill="#ffffff" stroke="#8da0ff" strokeWidth="1.4" />
+        </marker>
+
+        {/* Hollow diamond — aggregation. */}
+        <marker
+          id="uml-aggregation-diamond"
+          viewBox="0 0 18 10"
+          refX="17"
+          refY="5"
+          markerWidth="18"
+          markerHeight="10"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M1,5 L9,1 L17,5 L9,9 z" fill="#ffffff" stroke="#a79df0" strokeWidth="1.4" />
+        </marker>
+
+        {/* Filled diamond — composition. */}
+        <marker
+          id="uml-composition-diamond"
+          viewBox="0 0 18 10"
+          refX="17"
+          refY="5"
+          markerWidth="18"
+          markerHeight="10"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M1,5 L9,1 L17,5 L9,9 z" fill="#a79df0" stroke="#a79df0" strokeWidth="1.4" />
+        </marker>
+
+        {/* Open stick arrow — dependency / uses. */}
+        <marker
+          id="uml-dependency-arrow"
+          viewBox="0 0 14 14"
+          refX="12"
+          refY="7"
+          markerWidth="14"
+          markerHeight="14"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path
+            d="M1,1 L12,7 L1,13"
+            fill="none"
+            stroke="#8a94b0"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        </marker>
+
+        {/* Open thin arrow — association / navigable association. */}
+        <marker
+          id="uml-association-arrow"
+          viewBox="0 0 14 14"
+          refX="12"
+          refY="7"
+          markerWidth="14"
+          markerHeight="14"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path
+            d="M1,1 L12,7 L1,13"
+            fill="none"
+            stroke="#6c8cff"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        </marker>
+
+        {/* Solid closed arrow — instantiates. */}
+        <marker
+          id="uml-instantiates-arrow"
+          viewBox="0 0 12 12"
+          refX="11"
+          refY="6"
+          markerWidth="12"
+          markerHeight="12"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M1,1 L11,6 L1,11 z" fill="#6c8cff" stroke="#6c8cff" strokeWidth="1" />
+        </marker>
+      </defs>
+    </svg>
+  );
+}
+
 const INPUT_ARTIFACT_MODE_ORDER: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
 const ARTIFACT_MODE_ORDER: DiagramArtifactMode[] = ["hidden", "grouped", "individual"];
 const OUTPUT_ARTIFACT_MODE_TEXT: Record<DiagramArtifactMode, string> = {
@@ -164,6 +300,11 @@ type PreparedProjectedEdge = {
   animated: boolean;
   confidence: number;
   typeCounts: Partial<Record<RelationType, number>>;
+  /** UML multiplicity/role annotations (class-diagram mode). */
+  sourceMultiplicity?: string;
+  targetMultiplicity?: string;
+  sourceRole?: string;
+  targetRole?: string;
 };
 
 function toTypeCounts(
@@ -226,11 +367,39 @@ function edgeLabelForMode(
     .join(", ");
 }
 
-function edgeMarkerEndForRelation(type: RelationType) {
+/**
+ * Custom UML marker IDs — these are defined in <UmlMarkerDefs/> and referenced
+ * via markerEnd/markerStart URLs on each edge. React Flow's built-in MarkerType
+ * only offers plain or closed arrows, which is not enough for a real UML class
+ * diagram (hollow triangle for inheritance/realization, diamond heads for
+ * aggregation/composition, open stick arrow for dependency, etc.).
+ */
+const UML_MARKER = {
+  inheritsTriangle: "url(#uml-inherits-triangle)",
+  realizesTriangle: "url(#uml-realizes-triangle)",
+  aggregationDiamond: "url(#uml-aggregation-diamond)",
+  compositionDiamond: "url(#uml-composition-diamond)",
+  dependencyArrow: "url(#uml-dependency-arrow)",
+  associationArrow: "url(#uml-association-arrow)",
+  instantiatesArrow: "url(#uml-instantiates-arrow)",
+} as const;
+
+function edgeMarkerEndForRelation(type: RelationType): string | { type: MarkerType; width: number; height: number; color: string } | undefined {
   switch (type) {
     case "inherits":
-      return { type: MarkerType.ArrowClosed, width: 20, height: 20, color: "#d6b14d" };
+      return UML_MARKER.inheritsTriangle;
+    case "realizes":
+      return UML_MARKER.realizesTriangle;
+    case "aggregation":
+      return UML_MARKER.aggregationDiamond;
+    case "composition":
+      return UML_MARKER.compositionDiamond;
+    case "dependency":
+      return UML_MARKER.dependencyArrow;
+    case "association":
+      return UML_MARKER.associationArrow;
     case "instantiates":
+      return UML_MARKER.instantiatesArrow;
     case "imports":
     case "uses_config":
       return { type: MarkerType.Arrow, width: 18, height: 18, color: "#6c8cff" };
@@ -272,6 +441,10 @@ function toPreparedEdges(
           label: edgeLabelForMode(labelsMode, typeCounts, 1, rel.type, rel.label),
           confidence: rel.confidence ?? pe.confidence ?? 1,
           typeCounts,
+          sourceMultiplicity: rel.sourceMultiplicity,
+          targetMultiplicity: rel.targetMultiplicity,
+          sourceRole: rel.sourceRole,
+          targetRole: rel.targetRole,
         });
       }
       continue;
@@ -298,6 +471,10 @@ function toPreparedEdges(
       label: edgeLabelForMode(labelsMode, typeCounts, visibleRelationIds.length, dominant, pe.label),
       confidence: pe.confidence ?? 1,
       typeCounts,
+      sourceMultiplicity: pe.sourceMultiplicity,
+      targetMultiplicity: pe.targetMultiplicity,
+      sourceRole: pe.sourceRole,
+      targetRole: pe.targetRole,
     });
   }
 
@@ -635,20 +812,35 @@ export function Canvas() {
     });
     const symbolOverrides = resolvedArtifactView.symbolOverrides;
     const hiddenSymbolIds = resolvedArtifactView.hiddenSymbolIds;
-    const visibleViewNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
-    const visibleViewNodeRefSet = new Set(visibleViewNodeRefs);
     // Projection mode is explicitly controlled by the UI switch.
     const isExplicitSequenceProjection = projectionMode === "sequence";
     const isClassProjection = projectionMode === "class";
+
+    // In a real UML class diagram we only want classes/interfaces. Everything
+    // else (modules, packages, scripts, standalone functions/methods, artifacts)
+    // is noise, so we hide it in class-projection mode.
+    const symbolKindById = new Map<string, Sym["kind"]>();
+    for (const sym of graph.symbols) symbolKindById.set(sym.id, sym.kind);
+    const isUmlClassSymbolId = (id: string): boolean => {
+      const kind = symbolKindById.get(id);
+      return kind === "class" || kind === "interface" || kind === "external";
+    };
+
+    const baseVisibleNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
+    const visibleViewNodeRefs = isClassProjection
+      ? baseVisibleNodeRefs.filter(isUmlClassSymbolId)
+      : baseVisibleNodeRefs;
+    const visibleViewNodeRefSet = new Set(visibleViewNodeRefs);
+
+    // For a proper class diagram only structural UML relations should be shown.
     const relationWhitelist = isClassProjection
       ? new Set<RelationType>([
         "inherits",
-        "instantiates",
+        "realizes",
+        "dependency",
         "association",
         "aggregation",
         "composition",
-        "imports",
-        "uses_config",
       ])
       : null;
     const visibleRelations = resolvedArtifactView.relations.filter(
@@ -720,9 +912,15 @@ export function Canvas() {
 
       const savedPos = view.nodePositions?.find((p) => p.symbolId === symId);
 
-      // Choose node type based on symbol kind and view scope
+      // Choose node type based on symbol kind and view scope.
+      // In class-projection mode we always render proper UML class boxes,
+      // so the ad-hoc scope checks are bypassed for classes/interfaces.
       let nodeType = "uml";
-      if (sym.umlType === "database" || sym.umlType === "artifact" || sym.umlType === "component" || sym.umlType === "note") {
+      if (isClassProjection && (sym.kind === "class" || sym.kind === "interface")) {
+        nodeType = "umlClass";
+      } else if (isClassProjection && sym.kind === "external") {
+        nodeType = "umlClass";
+      } else if (sym.umlType === "database" || sym.umlType === "artifact" || sym.umlType === "component" || sym.umlType === "note") {
         nodeType = "umlArtifact";
       } else if (sym.umlType === "package") {
         nodeType = "umlGroup";
@@ -779,6 +977,7 @@ export function Canvas() {
           label: sym.label,
           kind: sym.kind,
           umlType: sym.umlType,
+          stereotype: sym.stereotype,
           summary: sym.doc?.summary,
           symbolId: sym.id,
           childViewId: sym.childViewId,
@@ -893,7 +1092,15 @@ export function Canvas() {
         markerEnd: edgeMarkerEndForRelation(pe.type),
         className: `${pe.className}${edgeVisibilityClass}${edgeReviewClass}`,
         style: { strokeWidth: diagramSettings.edgeStrokeWidth },
-        data: { relationIds: pe.relationIds, relationType: pe.type },
+        data: {
+          relationIds: pe.relationIds,
+          relationType: pe.type,
+          sourceMultiplicity: pe.sourceMultiplicity,
+          targetMultiplicity: pe.targetMultiplicity,
+          sourceRole: pe.sourceRole,
+          targetRole: pe.targetRole,
+          showUmlAnnotations: isClassProjection,
+        },
       };
     });
 
@@ -2107,6 +2314,7 @@ export function Canvas() {
 
   return (
     <div className="canvas-area">
+      <UmlMarkerDefs />
       <ReactFlow
         className={renderMode === "sequence" ? "canvas-flow canvas-flow--sequence" : "canvas-flow"}
         style={renderMode === "sequence" ? { background: "#f7f8fc" } : undefined}

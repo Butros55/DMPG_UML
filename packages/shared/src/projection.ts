@@ -27,6 +27,14 @@ export interface ProjectedEdge {
   className: string;
   /** Breakdown of relation types and their counts */
   typeCounts?: Record<string, number>;
+  /** UML multiplicity at the source endpoint. */
+  sourceMultiplicity?: string;
+  /** UML multiplicity at the target endpoint. */
+  targetMultiplicity?: string;
+  /** Role label at the source endpoint. */
+  sourceRole?: string;
+  /** Role label at the target endpoint. */
+  targetRole?: string;
 }
 
 export interface ProjectionOptions {
@@ -90,6 +98,8 @@ const EDGE_STYLE: Record<string, { animated: boolean; cssClass: string }> = {
   calls: { animated: true, cssClass: "edge-calls" },
   imports: { animated: false, cssClass: "edge-imports" },
   inherits: { animated: false, cssClass: "edge-inherits" },
+  realizes: { animated: false, cssClass: "edge-realizes" },
+  dependency: { animated: false, cssClass: "edge-dependency" },
   reads: { animated: true, cssClass: "edge-reads" },
   writes: { animated: true, cssClass: "edge-writes" },
   instantiates: { animated: true, cssClass: "edge-instantiates" },
@@ -127,6 +137,8 @@ export function projectEdgesForView(
     reads: "reads",
     writes: "writes to",
     inherits: "inherits",
+    realizes: "realizes",
+    dependency: "uses",
     instantiates: "creates",
     uses_config: "config",
     association: "associates",
@@ -230,6 +242,32 @@ export function projectEdgesForView(
     const lowConf = agg.confidence < 0.9 ? " edge-low-confidence" : "";
     const className = `${dominantStyle.cssClass}${multiClass}${lowConf}`;
 
+    // Propagate multiplicity/role — take values from the first raw relation whose
+    // source/target endpoints are directly visible (not projected to an ancestor).
+    // When multiple relations bundle into one edge, pick the dominant-typed one.
+    let sourceMultiplicity: string | undefined;
+    let targetMultiplicity: string | undefined;
+    let sourceRole: string | undefined;
+    let targetRole: string | undefined;
+    const candidates = agg.relationIds
+      .map((id) => allRelations.find((r) => r.id === id))
+      .filter((r): r is Relation => Boolean(r));
+    const preferred =
+      candidates.find(
+        (r) =>
+          r.type === dominantType &&
+          r.source === agg.source &&
+          r.target === agg.target,
+      ) ??
+      candidates.find((r) => r.type === dominantType) ??
+      candidates[0];
+    if (preferred) {
+      sourceMultiplicity = preferred.sourceMultiplicity;
+      targetMultiplicity = preferred.targetMultiplicity;
+      sourceRole = preferred.sourceRole;
+      targetRole = preferred.targetRole;
+    }
+
     result.push({
       key,
       source: agg.source,
@@ -242,6 +280,10 @@ export function projectEdgesForView(
       animated,
       className,
       typeCounts: agg.typeCounts,
+      sourceMultiplicity,
+      targetMultiplicity,
+      sourceRole,
+      targetRole,
     });
   }
 

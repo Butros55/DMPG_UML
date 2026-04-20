@@ -16,7 +16,20 @@ type ElkEdgeData = {
   elkRoute?: EdgeRoute;
   fallbackEdgeType?: DiagramEdgeType;
   hideFallback?: boolean;
+  /** UML multiplicity / role annotations for class-diagram mode. */
+  sourceMultiplicity?: string;
+  targetMultiplicity?: string;
+  sourceRole?: string;
+  targetRole?: string;
+  showUmlAnnotations?: boolean;
 } & Partial<SequenceMessageEdgeData>;
+
+type EndpointAnchor = {
+  x: number;
+  y: number;
+  nx: number; // outward normal X (away from the node)
+  ny: number; // outward normal Y
+};
 
 type BaseEdgeConfig = {
   label?: EdgeProps<Edge<ElkEdgeData>>["label"];
@@ -36,6 +49,40 @@ function buildPolylinePath(route: EdgeRoute): string {
   return route.points
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x},${point.y}`)
     .join(" ");
+}
+
+/** Derive endpoint anchors (with outward normal) from a polyline route. */
+function anchorsFromRoute(route: EdgeRoute): { source: EndpointAnchor; target: EndpointAnchor } | null {
+  const pts = route.points;
+  if (pts.length < 2) return null;
+  const s0 = pts[0];
+  const s1 = pts[1];
+  const tN = pts[pts.length - 1];
+  const tN1 = pts[pts.length - 2];
+  const sNormal = normalize(s0.x - s1.x, s0.y - s1.y);
+  const tNormal = normalize(tN.x - tN1.x, tN.y - tN1.y);
+  return {
+    source: { x: s0.x, y: s0.y, nx: sNormal.x, ny: sNormal.y },
+    target: { x: tN.x, y: tN.y, nx: tNormal.x, ny: tNormal.y },
+  };
+}
+
+/** Derive endpoint anchors from the raw React Flow source/target props. */
+function anchorsFromProps(props: EdgeProps<Edge<ElkEdgeData>>): { source: EndpointAnchor; target: EndpointAnchor } {
+  const dx = props.targetX - props.sourceX;
+  const dy = props.targetY - props.sourceY;
+  const sNormal = normalize(-dx, -dy);
+  const tNormal = normalize(dx, dy);
+  return {
+    source: { x: props.sourceX, y: props.sourceY, nx: sNormal.x, ny: sNormal.y },
+    target: { x: props.targetX, y: props.targetY, nx: tNormal.x, ny: tNormal.y },
+  };
+}
+
+function normalize(x: number, y: number): { x: number; y: number } {
+  const mag = Math.hypot(x, y);
+  if (mag < 1e-6) return { x: 0, y: -1 };
+  return { x: x / mag, y: y / mag };
 }
 
 function buildFallbackPath(
@@ -116,6 +163,7 @@ export function ElkEdge(props: EdgeProps<Edge<ElkEdgeData>>) {
       label,
       className,
       data: props.data,
+      anchors: anchorsFromRoute(route) ?? anchorsFromProps(props),
       selected: props.selected ?? false,
       onSelectEdge: selectEdge,
     });
@@ -135,6 +183,7 @@ export function ElkEdge(props: EdgeProps<Edge<ElkEdgeData>>) {
     label,
     className,
     data: props.data,
+    anchors: anchorsFromProps(props),
     selected: props.selected ?? false,
     onSelectEdge: selectEdge,
   });
@@ -149,10 +198,11 @@ function renderEdge(params: {
   label?: string;
   className?: string;
   data?: ElkEdgeData;
+  anchors?: { source: EndpointAnchor; target: EndpointAnchor };
   selected: boolean;
   onSelectEdge: (id: string | null) => void;
 }) {
-  const { baseEdgeProps, path, labelX, labelY, edgeId, label, className, data, selected, onSelectEdge } = params;
+  const { baseEdgeProps, path, labelX, labelY, edgeId, label, className, data, anchors, selected, onSelectEdge } = params;
   const isSequenceEdge = !!data?.sequenceKind;
   const labelClassName = [
     "sequence-edge-label",
@@ -162,6 +212,12 @@ function renderEdge(params: {
   ]
     .filter(Boolean)
     .join(" ");
+
+  const showUml = !!data?.showUmlAnnotations && !isSequenceEdge;
+  const hasSourceAnnotation =
+    showUml && !!(data?.sourceMultiplicity || data?.sourceRole);
+  const hasTargetAnnotation =
+    showUml && !!(data?.targetMultiplicity || data?.targetRole);
 
   return (
     <>
@@ -197,6 +253,60 @@ function renderEdge(params: {
           </div>
         </EdgeLabelRenderer>
       ) : null}
+      {hasSourceAnnotation && anchors ? (
+        <UmlEndpointAnnotation
+          anchor={anchors.source}
+          multiplicity={data?.sourceMultiplicity}
+          role={data?.sourceRole}
+          position="source"
+        />
+      ) : null}
+      {hasTargetAnnotation && anchors ? (
+        <UmlEndpointAnnotation
+          anchor={anchors.target}
+          multiplicity={data?.targetMultiplicity}
+          role={data?.targetRole}
+          position="target"
+        />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * Render the UML multiplicity + role annotation just outside an endpoint,
+ * offset along the outward normal so it doesn't overlap the arrowhead.
+ */
+function UmlEndpointAnnotation(params: {
+  anchor: EndpointAnchor;
+  multiplicity?: string;
+  role?: string;
+  position: "source" | "target";
+}) {
+  const { anchor, multiplicity, role, position } = params;
+  if (!multiplicity && !role) return null;
+
+  const offset = position === "source" ? 14 : 20;
+  const x = anchor.x + anchor.nx * offset;
+  const y = anchor.y + anchor.ny * offset;
+
+  return (
+    <EdgeLabelRenderer>
+      <div
+        className={`uml-endpoint-annotation uml-endpoint-annotation--${position}`}
+        style={{
+          position: "absolute",
+          transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+          pointerEvents: "none",
+        }}
+      >
+        {multiplicity ? (
+          <span className="uml-endpoint-multiplicity">{multiplicity}</span>
+        ) : null}
+        {role ? (
+          <span className="uml-endpoint-role">{role}</span>
+        ) : null}
+      </div>
+    </EdgeLabelRenderer>
   );
 }
