@@ -533,6 +533,8 @@ function buildLayerOneInputNodes(
   const inputSymbols = stageNodeRefs
     .map((nodeRef) => ctx.symbolById.get(nodeRef))
     .filter((symbol): symbol is Symbol => Boolean(symbol));
+  const sortedInputSymbols = [...inputSymbols]
+    .sort((left, right) => left.label.localeCompare(right.label));
   const inputLabels = unique(inputSymbols.map((symbol) => symbol.label));
   const fileInputs = flowGroups
     .filter((group) =>
@@ -544,9 +546,16 @@ function buildLayerOneInputNodes(
   const dbExamples = inputLabels.filter((label) =>
     /\bdruid\b|\bdb\b|\bsql\b|\bdatabase\b/.test(normalize(label)),
   );
+  const dbSymbols = sortedInputSymbols.filter((symbol) =>
+    /\bdruid\b|\bdb\b|\bsql\b|\bdatabase\b/.test(normalize(symbol.label)),
+  );
   const externalExamples = inputLabels.filter((label) =>
     /\bmes\b|\bapi\b|\bexternal\b|\bconnector\b/.test(normalize(label)) &&
     !dbExamples.includes(label),
+  );
+  const externalSymbols = sortedInputSymbols.filter((symbol) =>
+    /\bmes\b|\bapi\b|\bexternal\b|\bconnector\b/.test(normalize(symbol.label)) &&
+    !dbSymbols.some((candidate) => candidate.id === symbol.id),
   );
 
   const nodes: LayerOneSideNodeConfig[] = [];
@@ -557,7 +566,7 @@ function buildLayerOneInputNodes(
         "proc:input:database-import",
         "Database Import",
         "database",
-        buildExamplePreview(dbExamples),
+        buildInputSymbolPreview(dbSymbols, "source"),
       ),
       edgeLabel: "database import",
     });
@@ -569,19 +578,20 @@ function buildLayerOneInputNodes(
         "proc:input:file-imports",
         "CSV / Files",
         "artifact",
-        buildExamplePreview(fileInputs.map((group) => group.label)),
+        buildDetailedArtifactPreview(fileInputs, "inputs"),
       ),
       edgeLabel: "file ingest",
     });
   }
 
   if (externalExamples.length > 0 || (inputLabels.length > 0 && dbExamples.length === 0)) {
+    const previewSymbols = externalSymbols.length > 0 ? externalSymbols : sortedInputSymbols;
     nodes.push({
       node: createLayerOneSideNode(
         "proc:input:external-sources",
         "MES / External Sources",
         "component",
-        buildExamplePreview(externalExamples.length > 0 ? externalExamples : inputLabels),
+        buildInputSymbolPreview(previewSymbols, "source"),
       ),
       edgeLabel: "external feeds",
     });
@@ -1243,6 +1253,17 @@ function buildStructuredArtifactPreview(
   ];
 }
 
+function buildArtifactPreviewFromItems(
+  meta: ArtifactPreviewMetaPayload,
+  items: ArtifactPreviewItemPayload[],
+): string[] | undefined {
+  if (items.length === 0) return undefined;
+  return [
+    encodeArtifactPreviewLine("preview", meta),
+    ...items.map((item) => encodeArtifactPreviewLine("item", item)),
+  ];
+}
+
 function buildImportClusterPreview(
   stage: StageId,
   entries: Array<{
@@ -1263,26 +1284,61 @@ function buildImportClusterPreview(
     pathCount: entries.length,
   };
 
-  return [
-    encodeArtifactPreviewLine("preview", meta),
-    ...entries.map((entry) =>
-      encodeArtifactPreviewLine("item", {
-        label: entry.symbol.label,
-        paths: [entry.symbol.label],
-        artifactIds: [entry.symbol.id],
-        writeCount: 0,
-        readCount: entry.count,
-        producerIds: [...entry.importerIds].sort((left, right) => left.localeCompare(right)),
-        consumerIds: [],
-        producers: [...entry.importerLabels].sort((left, right) => left.localeCompare(right)),
-        consumers: [],
-        producerStages: [stage],
-        consumerStages: [],
-        category: "libraries-imports",
-        groupKind: "input",
-      } satisfies ArtifactPreviewItemPayload),
-    ),
-  ];
+  return buildArtifactPreviewFromItems(
+    meta,
+    entries.map((entry) => ({
+      label: entry.symbol.label,
+      paths: [entry.symbol.label],
+      artifactIds: [entry.symbol.id],
+      writeCount: 0,
+      readCount: entry.count,
+      producerIds: [...entry.importerIds].sort((left, right) => left.localeCompare(right)),
+      consumerIds: [],
+      producers: [...entry.importerLabels].sort((left, right) => left.localeCompare(right)),
+      consumers: [],
+      producerStages: [stage],
+      consumerStages: [],
+      category: "libraries-imports",
+      groupKind: "input",
+    })),
+  ) ?? [];
+}
+
+function buildInputSymbolPreview(
+  symbols: Symbol[],
+  category: ArtifactCategory,
+): string[] | undefined {
+  const items = symbols
+    .map((symbol) => ({
+      label: symbol.label,
+      paths: [symbol.location?.file ? shortArtifactPath(symbol.location.file) : symbol.label],
+      artifactIds: [symbol.id],
+      writeCount: 0,
+      readCount: 1,
+      producerIds: [],
+      consumerIds: [],
+      producers: [],
+      consumers: [stageTitle("inputs")],
+      producerStages: [],
+      consumerStages: ["inputs"] satisfies StageId[],
+      category,
+      groupKind: "input" as const,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+
+  return buildArtifactPreviewFromItems(
+    {
+      kind: "artifact-preview",
+      mode: "cluster",
+      stageId: "inputs",
+      stageLabel: stageTitle("inputs"),
+      category,
+      groupKind: "input",
+      groupCount: items.length,
+      pathCount: items.reduce((sum, item) => sum + Math.max(1, item.paths.length), 0),
+    },
+    items,
+  );
 }
 
 function buildArtifactPreviewItem(group: ArtifactFlowGroup): ArtifactPreviewItemPayload {
@@ -2069,16 +2125,9 @@ function buildStageArtifactOverlay(
   const edgeIdSet = new Set<string>();
 
   for (const group of flowGroups) {
-    if (!group.producerStageIds.includes(stage)) continue;
-
-    const visibleWriters = unique(
-      group.producerSourceIds
-        .map((sourceId) => findNearestVisible(sourceId, visibleCore, ctx.ancestorsById))
-        .filter((sourceId): sourceId is string => Boolean(sourceId)),
-    );
-
-    const writerRefs = visibleWriters.length > 0 ? visibleWriters : coreNodeRefs.slice(0, 1);
-    if (writerRefs.length === 0) continue;
+    const isProducedInStage = group.producerStageIds.includes(stage);
+    const isConsumedInStage = group.consumerStageIds.includes(stage);
+    if (!isProducedInStage && !isConsumedInStage) continue;
 
     const artifactNodeId = flowNodeId(group);
     if (!nodeRefSet.has(artifactNodeId)) {
@@ -2087,17 +2136,46 @@ function buildStageArtifactOverlay(
       nodes.push(flowGroupToNode(group));
     }
 
-    for (const writerRef of writerRefs) {
-      const edgeId = `stage-flow:${slugify(writerRef)}:${slugify(artifactNodeId)}:write`;
-      if (edgeIdSet.has(edgeId)) continue;
-      edgeIdSet.add(edgeId);
-      edges.push({
-        id: edgeId,
-        source: writerRef,
-        target: artifactNodeId,
-        type: "writes",
-        label: flowWriteLabel(group),
-      });
+    if (isProducedInStage) {
+      const writerRefs = unique(
+        group.producerSourceIds
+          .map((sourceId) => findNearestVisible(sourceId, visibleCore, ctx.ancestorsById))
+          .filter((sourceId): sourceId is string => Boolean(sourceId)),
+      );
+
+      for (const writerRef of writerRefs) {
+        const edgeId = `stage-flow:${slugify(writerRef)}:${slugify(artifactNodeId)}:write`;
+        if (edgeIdSet.has(edgeId)) continue;
+        edgeIdSet.add(edgeId);
+        edges.push({
+          id: edgeId,
+          source: writerRef,
+          target: artifactNodeId,
+          type: "writes",
+          label: flowWriteLabel(group),
+        });
+      }
+    }
+
+    if (isConsumedInStage) {
+      const consumerRefs = unique(
+        group.consumerSourceIds
+          .map((sourceId) => findNearestVisible(sourceId, visibleCore, ctx.ancestorsById))
+          .filter((sourceId): sourceId is string => Boolean(sourceId)),
+      );
+
+      for (const consumerRef of consumerRefs) {
+        const edgeId = `stage-flow:${slugify(artifactNodeId)}:${slugify(consumerRef)}:read`;
+        if (edgeIdSet.has(edgeId)) continue;
+        edgeIdSet.add(edgeId);
+        edges.push({
+          id: edgeId,
+          source: artifactNodeId,
+          target: consumerRef,
+          type: "reads",
+          label: flowReadLabel(group, stage),
+        });
+      }
     }
   }
 
@@ -2128,6 +2206,7 @@ function buildStageImportOverlay(
     const sourceSymbol = ctx.symbolById.get(relation.source);
     const targetSymbol = ctx.symbolById.get(relation.target);
     if (!sourceSymbol || !targetSymbol) continue;
+    if (sourceSymbol.id.startsWith("proc:") || targetSymbol.id.startsWith("proc:")) continue;
     if (mapSymbolToStage(sourceSymbol, ctx) !== stage) continue;
     if (mapSymbolToStage(targetSymbol, ctx) === stage && visibleCore.has(targetSymbol.id)) continue;
 

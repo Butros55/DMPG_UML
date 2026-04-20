@@ -244,3 +244,57 @@ class PipelineController:
     fs.rmSync(projectDir, { recursive: true, force: true });
   }
 });
+
+test("scanProject annotates sync and async call kinds for sequence diagrams", async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "dmpg-sequence-call-kinds-"));
+  try {
+    writeProjectFile(projectDir, "pipeline.py", `
+import asyncio
+
+async def fetch_data():
+    return 1
+
+def compute():
+    return 2
+
+async def pipeline():
+    await fetch_data()
+    asyncio.create_task(fetch_data())
+    compute()
+
+def run():
+    compute()
+`);
+
+    const graph = await scanProject(projectDir);
+
+    const fetchCalls = graph.relations.filter((relation) =>
+      relation.type === "calls" &&
+      relation.source === "mod:pipeline:pipeline" &&
+      relation.target === "mod:pipeline:fetch_data",
+    );
+    assert.equal(fetchCalls.length, 2);
+    assert.deepEqual(
+      fetchCalls
+        .map((relation) => relation.evidence?.[0]?.callKind)
+        .sort(),
+      ["async", "sync"],
+    );
+
+    const computeFromPipeline = graph.relations.find((relation) =>
+      relation.type === "calls" &&
+      relation.source === "mod:pipeline:pipeline" &&
+      relation.target === "mod:pipeline:compute",
+    );
+    assert.equal(computeFromPipeline?.evidence?.[0]?.callKind, "sync");
+
+    const computeFromRun = graph.relations.find((relation) =>
+      relation.type === "calls" &&
+      relation.source === "mod:pipeline:run" &&
+      relation.target === "mod:pipeline:compute",
+    );
+    assert.equal(computeFromRun?.evidence?.[0]?.callKind, "sync");
+  } finally {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});

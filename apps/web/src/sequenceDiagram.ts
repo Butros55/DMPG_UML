@@ -162,6 +162,7 @@ type RawSequenceMessage = {
   descriptor: SequenceLabelDescriptor;
   isSelfCall: boolean;
   isCreateMessage: boolean;
+  edgeKindHint?: SequenceEdgeKind | null;
 };
 
 type SequenceMessage = {
@@ -181,6 +182,7 @@ type SequenceMessage = {
   signalScore: number;
   isSelfCall: boolean;
   isCreateMessage: boolean;
+  edgeKindHint?: SequenceEdgeKind | null;
 };
 
 type SequenceLabelDescriptor = {
@@ -380,6 +382,7 @@ export function buildPackageSequenceDiagramDetails(params: {
       sortIndex,
       isSelfCall: normalizedSourceParticipantId === normalizedTargetParticipantId,
       isCreateMessage: relation.type === "instantiates",
+      edgeKindHint: inferSequenceEdgeKindForRelation(relation, sourceSymbol, targetSymbol),
     });
 
     if (!displayBaseParticipantSet.has(normalizedSourceParticipantId) && !extraParticipantOrder.has(normalizedSourceParticipantId)) {
@@ -1319,6 +1322,7 @@ function buildStageProcessSequenceMessage(params: {
     signalScore: descriptor.signal,
     isSelfCall: relation.source === relation.target,
     isCreateMessage: relation.type === "instantiates",
+    edgeKindHint: inferSequenceEdgeKindForRelation(relation, sourceSymbol, targetSymbol),
   };
 }
 
@@ -1460,6 +1464,11 @@ function buildGroupedStageSequenceMessage(params: {
     signalScore: descriptor.signal,
     isSelfCall: false,
     isCreateMessage: group.relationType === "instantiates",
+    edgeKindHint: inferSequenceEdgeKindForRelation(
+      firstRelation,
+      symbolById.get(firstRelation.source),
+      symbolById.get(firstRelation.target),
+    ),
   };
 }
 
@@ -2438,6 +2447,9 @@ function compactSequenceMessages(
       previous.count += 1;
       previous.descriptors.push(message.descriptor);
       previous.signalScore = Math.max(previous.signalScore, message.descriptor.signal);
+      if (previous.edgeKindHint == null && message.edgeKindHint != null) {
+        previous.edgeKindHint = message.edgeKindHint;
+      }
       previous.label = buildCompactedSequenceMessageLabel(previous, labelsMode);
       continue;
     }
@@ -2459,6 +2471,7 @@ function compactSequenceMessages(
       signalScore: message.descriptor.signal,
       isSelfCall: message.isSelfCall,
       isCreateMessage: message.isCreateMessage,
+      edgeKindHint: message.edgeKindHint ?? null,
     });
   }
 
@@ -2470,7 +2483,8 @@ function canMergeSequenceMessages(previous: SequenceMessage, current: RawSequenc
     previous.sourceParticipantId !== current.sourceParticipantId ||
     previous.targetParticipantId !== current.targetParticipantId ||
     previous.relationType !== current.relation.type ||
-    previous.isSelfCall !== current.isSelfCall
+    previous.isSelfCall !== current.isSelfCall ||
+    resolveSequenceEdgeKind(previous) !== resolveRawSequenceEdgeKind(current)
   ) {
     return false;
   }
@@ -2788,11 +2802,62 @@ function participantCategoryRank(meta: SequenceParticipantMeta): number {
   return 4;
 }
 
+function inferSequenceEdgeKindForRelation(
+  relation: Relation,
+  sourceSymbol: Symbol | undefined,
+  targetSymbol: Symbol | undefined,
+): SequenceEdgeKind | null {
+  if (relation.source === relation.target) return "self";
+  if (relation.type === "instantiates") return "create";
+  if (relation.type !== "calls") return null;
+
+  const evidenceKinds = new Set(
+    (relation.evidence ?? [])
+      .map((evidence) => evidence.callKind)
+      .filter((callKind): callKind is "sync" | "async" => callKind === "sync" || callKind === "async"),
+  );
+  if (evidenceKinds.has("async")) return "async";
+  if (evidenceKinds.has("sync")) return "sync";
+
+  return looksLikeAsyncSequenceCall(relation, sourceSymbol, targetSymbol) ? "async" : "sync";
+}
+
+function looksLikeAsyncSequenceCall(
+  relation: Relation,
+  sourceSymbol: Symbol | undefined,
+  targetSymbol: Symbol | undefined,
+): boolean {
+  if (targetSymbol?.tags?.some((tag) => tag.toLowerCase() === "async")) {
+    return true;
+  }
+
+  const haystack = [
+    relation.label,
+    sourceSymbol?.label,
+    targetSymbol?.label,
+    ...(relation.evidence ?? []).map((evidence) => evidence.snippet ?? ""),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ")
+    .toLowerCase();
+
+  if (!haystack) return false;
+  if (/\b(asyncio\.create_task|create_task|ensure_future|publish|emit|dispatch|enqueue|submit|notify|broadcast|schedule|produce|push)\b/.test(haystack)) {
+    return true;
+  }
+  return /\b(queue|broker|pubsub|topic|event|webhook|stream|socket)\b/.test(haystack);
+}
+
+function resolveRawSequenceEdgeKind(message: RawSequenceMessage): SequenceEdgeKind {
+  if (message.isSelfCall) return "self";
+  if (message.isCreateMessage) return "create";
+  return message.edgeKindHint ?? (message.relation.type === "calls" ? "sync" : "async");
+}
+
 function resolveSequenceEdgeKind(message: SequenceMessage): SequenceEdgeKind {
   if (message.isSelfCall) return "self";
   if (message.isCreateMessage) return "create";
-  if (message.relationType === "calls") return "sync";
-  return "async";
+  return message.edgeKindHint ?? (message.relationType === "calls" ? "sync" : "async");
 }
 
 function prefixMessageIndex(index: number, label: string | undefined): string | undefined {

@@ -145,6 +145,7 @@ export const EvidenceSchema = z.object({
   startLine: z.number().int().optional(),
   endLine: z.number().int().optional(),
   snippet: z.string().optional(),
+  callKind: z.enum(["sync", "async"]).optional(),
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;
 

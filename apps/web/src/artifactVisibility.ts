@@ -407,6 +407,7 @@ function buildSyntheticClusterRelations(
 
   if (item.category === "libraries-imports") {
     for (const source of explicitProducerIds) {
+      if (source === artifactId) continue;
       const key = `${source}|${artifactId}|imports`;
       if (relationKeySet.has(key)) continue;
       relations.push({
@@ -418,10 +419,25 @@ function buildSyntheticClusterRelations(
         confidence: 1,
       });
     }
+    for (const producerStage of unique(producerStages)) {
+      const source = STAGE_PACKAGE_BY_ID[producerStage];
+      if (!source || source === artifactId) continue;
+      const key = `${source}|${artifactId}|imports`;
+      if (relationKeySet.has(key)) continue;
+      relations.push({
+        id: `virtual:artifact:${sanitizeId(clusterId)}:${sanitizeId(artifactId)}:import-stage:${producerStage}`,
+        type: "imports",
+        source,
+        target: artifactId,
+        label: "imports",
+        confidence: 1,
+      });
+    }
     return relations;
   }
 
   for (const source of explicitProducerIds) {
+    if (source === artifactId) continue;
     const key = `${source}|${artifactId}|writes`;
     if (relationKeySet.has(key)) continue;
     relations.push({
@@ -435,6 +451,7 @@ function buildSyntheticClusterRelations(
   }
 
   for (const target of explicitConsumerIds) {
+    if (target === artifactId) continue;
     const key = `${artifactId}|${target}|reads`;
     if (relationKeySet.has(key)) continue;
     relations.push({
@@ -447,13 +464,10 @@ function buildSyntheticClusterRelations(
     });
   }
 
-  if (explicitProducerIds.length > 0 || explicitConsumerIds.length > 0) {
-    return relations;
-  }
-
   for (const producerStage of unique(producerStages)) {
     const relationType = "writes";
     const source = STAGE_PACKAGE_BY_ID[producerStage];
+    if (!source || source === artifactId) continue;
     const key = `${source}|${artifactId}|${relationType}`;
     if (relationKeySet.has(key)) continue;
     relations.push({
@@ -469,6 +483,7 @@ function buildSyntheticClusterRelations(
   for (const consumerStage of unique(consumerStages)) {
     const relationType = "reads";
     const target = STAGE_PACKAGE_BY_ID[consumerStage];
+    if (!target || target === artifactId) continue;
     const key = `${artifactId}|${target}|${relationType}`;
     if (relationKeySet.has(key)) continue;
     relations.push({

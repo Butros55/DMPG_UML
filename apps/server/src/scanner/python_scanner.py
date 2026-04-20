@@ -80,6 +80,7 @@ def scan_directory(root: str) -> dict[str, Any]:
     edges: list[dict] = []
     symbol_table: dict[str, str] = {}
     class_ids: set[str] = set()
+    async_function_ids: set[str] = set()
     import_aliases: dict[str, dict[str, str]] = {}
     module_sources: dict[str, str] = {}
     meta = {"files_scanned": 0, "files_failed": 0, "jedi_available": JEDI_AVAILABLE}
@@ -158,6 +159,9 @@ def scan_directory(root: str) -> dict[str, Any]:
                             "endLine": getattr(item, "end_lineno", None),
                             "parentId": cls_id,
                         }
+                        if isinstance(item, ast.AsyncFunctionDef):
+                            meth_entry["tags"] = ["async"]
+                            async_function_ids.add(meth_id)
                         params = _extract_params(item)
                         returns = _extract_returns(item)
                         if params or returns or meth_doc:
@@ -250,6 +254,9 @@ def scan_directory(root: str) -> dict[str, Any]:
                     "endLine": getattr(node, "end_lineno", None),
                     "parentId": mod_id,
                 }
+                if isinstance(node, ast.AsyncFunctionDef):
+                    func_entry["tags"] = ["async"]
+                    async_function_ids.add(func_id)
                 params = _extract_params(node)
                 returns = _extract_returns(node)
                 if params or returns or func_doc:
@@ -285,6 +292,7 @@ def scan_directory(root: str) -> dict[str, Any]:
             source=source,
             symbol_table=symbol_table,
             class_ids=class_ids,
+            async_function_ids=async_function_ids,
             import_aliases=import_aliases.get(mod_id, {}),
         )
         visitor.visit(tree)
@@ -330,7 +338,17 @@ def scan_directory(root: str) -> dict[str, Any]:
     seen: set[tuple] = set()
     unique_edges: list[dict] = []
     for e in edges:
-        key = (e["source"], e["target"], e["type"])
+        evidence = e.get("evidence") or {}
+        key = (
+            e["source"],
+            e["target"],
+            e["type"],
+            e.get("label"),
+            evidence.get("file"),
+            evidence.get("startLine"),
+            evidence.get("endLine"),
+            evidence.get("callKind"),
+        )
         if key not in seen:
             seen.add(key)
             unique_edges.append(e)
@@ -347,6 +365,7 @@ class _RelationVisitor(ast.NodeVisitor):
 
     def __init__(self, mod_id: str, mod_name: str, rel_path: str, source: str,
                  symbol_table: dict[str, str], class_ids: set[str],
+                 async_function_ids: set[str],
                  import_aliases: dict[str, str]):
         self.mod_id = mod_id
         self.mod_name = mod_name
@@ -354,10 +373,13 @@ class _RelationVisitor(ast.NodeVisitor):
         self.source = source
         self.symbol_table = symbol_table
         self.class_ids = class_ids
+        self.async_function_ids = async_function_ids
         self.local_aliases: dict[str, str] = dict(import_aliases)
         self.edges: list[dict] = []
         self._scope_stack: list[str] = [mod_id]
         self._literal_bindings_stack: list[dict[str, str]] = [{}]
+        self._async_scope_stack: list[bool] = [False]
+        self._node_stack: list[ast.AST] = []
 
     @property
     def _current_scope(self) -> str:
@@ -366,6 +388,17 @@ class _RelationVisitor(ast.NodeVisitor):
     @property
     def _current_bindings(self) -> dict[str, str]:
         return self._literal_bindings_stack[-1]
+
+    @property
+    def _current_async_scope(self) -> bool:
+        return self._async_scope_stack[-1]
+
+    def visit(self, node: ast.AST) -> Any:
+        self._node_stack.append(node)
+        try:
+            return super().visit(node)
+        finally:
+            self._node_stack.pop()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         cls_id = f"{self.mod_id}:{node.name}"
@@ -387,8 +420,10 @@ class _RelationVisitor(ast.NodeVisitor):
             func_id = f"{self.mod_id}:{node.name}"
         self._scope_stack.append(func_id)
         self._literal_bindings_stack.append(dict(self._literal_bindings_stack[-1]))
+        self._async_scope_stack.append(isinstance(node, ast.AsyncFunctionDef))
         _bind_function_defaults(node, self._current_bindings)
         self.generic_visit(node)
+        self._async_scope_stack.pop()
         self._literal_bindings_stack.pop()
         self._scope_stack.pop()
 
@@ -435,7 +470,7 @@ class _RelationVisitor(ast.NodeVisitor):
             self.local_aliases[local_name] = target_id
             self.edges.append({
                 "source": self.mod_id, "target": target_id, "type": "imports",
-                "evidence": _make_evidence(self.rel_path, node),
+                "evidence": _make_evidence(self.rel_path, node, self.source),
             })
         self.generic_visit(node)
 
@@ -455,7 +490,7 @@ class _RelationVisitor(ast.NodeVisitor):
                 target_id = f"mod:{base_mod}"
                 self.edges.append({
                     "source": self.mod_id, "target": target_id, "type": "imports",
-                    "evidence": _make_evidence(self.rel_path, node),
+                    "evidence": _make_evidence(self.rel_path, node, self.source),
                 })
             else:
                 local_name = alias.asname or alias.name
@@ -468,7 +503,7 @@ class _RelationVisitor(ast.NodeVisitor):
                 self.local_aliases[local_name] = target_id
                 self.edges.append({
                     "source": self.mod_id, "target": target_id, "type": "imports",
-                    "evidence": _make_evidence(self.rel_path, node),
+                    "evidence": _make_evidence(self.rel_path, node, self.source),
                 })
         self.generic_visit(node)
 
@@ -479,7 +514,7 @@ class _RelationVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _process_call(self, node: ast.Call, callee_str: str) -> None:
-        evidence = _make_evidence(self.rel_path, node)
+        evidence = _make_evidence(self.rel_path, node, self.source)
         source_id = self._current_scope
 
         # Detect reads/writes
@@ -508,6 +543,16 @@ class _RelationVisitor(ast.NodeVisitor):
         if not target_id:
             # Unresolved → external
             if not callee_str.startswith("self."):
+                call_kind = _classify_call_kind(
+                    node,
+                    callee_str,
+                    None,
+                    self.async_function_ids,
+                    self._node_stack,
+                    self._current_async_scope,
+                )
+                if call_kind:
+                    evidence["callKind"] = call_kind
                 ext_id = f"ext:{callee_str}"
                 self.edges.append({
                     "source": source_id, "target": ext_id, "type": "calls",
@@ -519,6 +564,17 @@ class _RelationVisitor(ast.NodeVisitor):
         # Check if target is a class → instantiates
         is_instantiation = target_id in self.class_ids
         edge_type = "instantiates" if is_instantiation else "calls"
+        if edge_type == "calls":
+            call_kind = _classify_call_kind(
+                node,
+                callee_str,
+                target_id,
+                self.async_function_ids,
+                self._node_stack,
+                self._current_async_scope,
+            )
+            if call_kind:
+                evidence["callKind"] = call_kind
         self.edges.append({
             "source": source_id, "target": target_id,
             "type": edge_type, "confidence": 0.8, "evidence": evidence,
@@ -732,6 +788,73 @@ def _detect_read_write(
             return "writes"
         return "reads"
     return None
+
+
+ASYNC_DISPATCH_CALLS = {
+    "asyncio.create_task",
+    "create_task",
+    "asyncio.ensure_future",
+    "ensure_future",
+    "loop.create_task",
+}
+
+
+def _classify_call_kind(
+    node: ast.Call,
+    callee: str,
+    target_id: Optional[str],
+    async_function_ids: set[str],
+    node_stack: list[ast.AST],
+    current_async_scope: bool,
+) -> str:
+    if _is_wrapped_in_async_dispatch(node, node_stack):
+        return "async"
+
+    normalized = callee.lower()
+    target_name = (target_id or callee).lower()
+
+    if _is_awaited_call(node_stack):
+        return "sync"
+
+    if target_id in async_function_ids:
+        return "async" if current_async_scope else "sync"
+
+    if _looks_like_async_message_target(normalized, target_name):
+        return "async"
+
+    return "sync"
+
+
+def _is_awaited_call(node_stack: list[ast.AST]) -> bool:
+    if len(node_stack) < 2:
+        return False
+    parent = node_stack[-2]
+    return isinstance(parent, ast.Await)
+
+
+def _is_wrapped_in_async_dispatch(node: ast.Call, node_stack: list[ast.AST]) -> bool:
+    if len(node_stack) < 2:
+        return False
+
+    for ancestor in reversed(node_stack[:-1]):
+        if not isinstance(ancestor, ast.Call):
+            continue
+        wrapper_name = _resolve_call_name(ancestor)
+        if not wrapper_name or wrapper_name.lower() not in ASYNC_DISPATCH_CALLS:
+            continue
+        if any(arg is node for arg in ancestor.args):
+            return True
+    return False
+
+
+def _looks_like_async_message_target(callee: str, target_name: str) -> bool:
+    haystack = f"{callee} {target_name}"
+    if re.search(r"\b(kafka|queue|broker|pubsub|topic|event|webhook|socket|stream)\b", haystack):
+        return True
+    return re.search(
+        r"\b(publish|emit|dispatch|enqueue|submit|notify|broadcast|schedule|produce|push)\b",
+        haystack,
+    ) is not None
 
 
 def _module_name_from_symbol_id(symbol_id: str) -> Optional[str]:
@@ -1071,12 +1194,22 @@ def _looks_like_artifact_name(value: str) -> bool:
     ))
 
 
-def _make_evidence(rel_path: str, node: ast.AST) -> dict:
+def _make_evidence(rel_path: str, node: ast.AST, source: Optional[str] = None) -> dict:
     ev: dict = {"file": rel_path}
     if hasattr(node, "lineno"):
         ev["startLine"] = node.lineno
     if hasattr(node, "end_lineno"):
         ev["endLine"] = node.end_lineno
+    if source and hasattr(node, "lineno"):
+        try:
+            lines = source.splitlines()
+            start = max(0, getattr(node, "lineno", 1) - 1)
+            end = min(len(lines), getattr(node, "end_lineno", getattr(node, "lineno", 1)))
+            snippet = "\n".join(lines[start:end]).strip()
+            if snippet:
+                ev["snippet"] = snippet[:500]
+        except Exception:
+            pass
     return ev
 
 

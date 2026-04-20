@@ -2623,7 +2623,6 @@ body,
 .sequence-message-edge--async .react-flow__edge-path {
   stroke: rgba(51, 65, 85, 0.9) !important;
   stroke-width: 1.8px !important;
-  stroke-dasharray: 4 3;
 }
 
 .sequence-message-edge--create .react-flow__edge-path {

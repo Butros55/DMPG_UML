@@ -21,6 +21,12 @@ function hasEdge(
   return config.edges.some(predicate);
 }
 
+function isStageStructuralNodeRef(nodeRef: string): boolean {
+  return !nodeRef.startsWith("proc:artifact:") &&
+    !nodeRef.startsWith("proc:artifact-cluster:") &&
+    !nodeRef.startsWith("proc:import-cluster:");
+}
+
 test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 dataflow overview", () => {
   const config = buildProcessDiagramConfigFromGraph(loadPipelineGraph());
 
@@ -54,6 +60,15 @@ test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 d
   assert.ok(arrivalTable?.preview?.some((line) => line.includes("Arrival_Groß.csv")));
   assert.ok(arrivalTable?.preview?.some((line) => line.includes("Arrival_Klein.csv")));
 
+  const fileImports = config.nodes.find((node) => node.id === "proc:input:file-imports");
+  assert.ok(fileImports?.preview?.[0]?.startsWith("@preview "));
+  assert.ok(fileImports?.preview?.some((line) => line.includes("Material_Cluster_Zuordnung.XLSX")));
+  assert.ok(fileImports?.preview?.some((line) => line.includes("Wegrezept.csv")));
+
+  const databaseImports = config.nodes.find((node) => node.id === "proc:input:database-import");
+  assert.ok(databaseImports?.preview?.[0]?.startsWith("@preview "));
+  assert.ok(databaseImports?.preview?.some((line) => line.includes("DruidConnector")));
+
   const simulationResults = config.nodes.find((node) => node.id === "proc:output:simulation-results");
   assert.ok(simulationResults?.preview?.[0]?.startsWith("@preview "));
   assert.ok(simulationResults?.preview?.some((line) => line.includes("filter_stats.xlsx")));
@@ -76,6 +91,8 @@ test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 d
   assert.ok(hasEdge(config, (edge) => edge.source === "mod:kerndichteschätzer" && edge.target === "proc:artifact:kde_min_max_values_json" && edge.label === "persists"));
   assert.ok(hasEdge(config, (edge) => edge.source === "mod:arrival_table.generate_arrival_table" && edge.target === "proc:artifact:arrival_gro_csv" && edge.label === "creates"));
   assert.ok(hasEdge(config, (edge) => edge.source === "mod:arrival_table.generate_arrival_table" && edge.target === "proc:artifact:arrival_klein_csv" && edge.label === "creates"));
+  assert.ok(hasEdge(config, (edge) => edge.type === "reads" && edge.target === "mod:data_extraction:DataExtraction"));
+  assert.ok(hasEdge(config, (edge) => edge.source === "proc:artifact:df_data_csv" && edge.target === "mod:simulation_data_generator:SimulationDataGenerator" && edge.label === "consumes"));
   assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:inputs" && edge.target === "proc:pkg:extract" && edge.label === "source records"));
   assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:distribution" && edge.target === "proc:pkg:simulation" && edge.label === "fitted distributions / KDE"));
   assert.ok(!hasEdge(config, (edge) => edge.source === "proc:pkg:simulation" && edge.target === "proc:pkg:outputs"));
@@ -122,7 +139,7 @@ test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 d
     assert.ok(stageView.nodeRefs.length > 0);
     assert.ok(stageView.nodeRefs.every((nodeRef) => !nodeRef.startsWith("ext:")));
     assert.ok(stageView.nodeRefs.every((nodeRef) => !nodeRef.startsWith("stub:")));
-    for (const nodeRef of stageView.nodeRefs) {
+    for (const nodeRef of stageView.nodeRefs.filter(isStageStructuralNodeRef)) {
       assert.equal(
         assignedStageByNodeRef.get(nodeRef),
         undefined,
@@ -238,7 +255,7 @@ test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated sta
 
   const assignedStageByNodeRef = new Map<string, string>();
   for (const stageView of classStageViews) {
-    for (const nodeRef of stageView.nodeRefs) {
+    for (const nodeRef of stageView.nodeRefs.filter(isStageStructuralNodeRef)) {
       assert.equal(
         assignedStageByNodeRef.get(nodeRef),
         undefined,
