@@ -136,7 +136,8 @@ test("scanPyreverse reports AST fallback warning when Pyreverse is unavailable",
     const model = await scanPyreverse(projectDir);
 
     assert.equal(model.classes.length, 0);
-    assert.match(model.warnings.join("\n"), /Pyreverse unavailable; AST fallback active/i);
+    assert.match(model.warnings.join("\n"), /Pyreverse unavailable; install apps\/server\/requirements\.txt \/ pylint/i);
+    assert.match(model.warnings.join("\n"), /AST fallback active/i);
   } finally {
     if (previousPath == null) delete process.env.PATH;
     else process.env.PATH = previousPath;

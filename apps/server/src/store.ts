@@ -18,7 +18,8 @@ function resolveOptionalPath(value: string | undefined): string | null {
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DATA_DIR = path.resolve(MODULE_DIR, "..", ".dmpg-data");
-const DATA_DIR = resolveOptionalPath(process.env.DMPG_DATA_DIR) ?? DEFAULT_DATA_DIR;
+const CONFIGURED_DATA_DIR = resolveOptionalPath(process.env.DMPG_DATA_DIR);
+const DATA_DIR = CONFIGURED_DATA_DIR ?? DEFAULT_DATA_DIR;
 const PROJECTS_DIR = path.join(DATA_DIR, "projects");
 const META_FILE = path.join(DATA_DIR, "projects-meta.json");
 const SNAPSHOTS_DIR_NAME = "snapshots";
@@ -34,6 +35,8 @@ for (const dir of [DATA_DIR, PROJECTS_DIR]) {
 }
 
 function migrateBlankEnvDataDir(): void {
+  if (CONFIGURED_DATA_DIR) return;
+
   const legacyDataDir = path.resolve(process.cwd());
   if (comparableProjectPath(DATA_DIR) === comparableProjectPath(legacyDataDir)) return;
 

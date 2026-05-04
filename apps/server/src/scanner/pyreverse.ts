@@ -533,10 +533,10 @@ function buildPyreverseUnavailableWarning(failures: string[]): string {
   const pylintMissing = failures.some((failure) => failure.includes("pylint module is not installed"));
 
   if (commandMissing && pylintMissing) {
-    return "Pyreverse unavailable; AST fallback active (`pyreverse` is not on PATH and Python `pylint` is not installed). Install it with `python -m pip install -r apps/server/requirements.txt` or set PYREVERSE_ENABLED=false.";
+    return "Pyreverse unavailable; install apps/server/requirements.txt / pylint. AST fallback active (`pyreverse` is not on PATH and Python `pylint` is not installed).";
   }
 
-  return `Pyreverse unavailable; AST fallback active: ${joined || "no parseable UML output"}.`;
+  return `Pyreverse unavailable; install apps/server/requirements.txt / pylint. AST fallback active: ${joined || "no parseable UML output"}.`;
 }
 
 function unavailablePyreverseModel(warning: string): PyreverseModel {
@@ -681,18 +681,20 @@ function relationConfidence(type: RelationType): number {
 }
 
 function findDuplicateRelation(relations: Relation[], candidate: Relation): Relation | undefined {
-  return relations.find((relation) =>
-    relation.source === candidate.source &&
-    relation.target === candidate.target &&
-    relation.type === candidate.type &&
-    (
-      relation.label === candidate.label ||
-      relation.label == null ||
-      candidate.label == null ||
-      relation.sourceRole === candidate.sourceRole ||
-      relation.targetRole === candidate.targetRole
-    ),
-  );
+  return relations.find((relation) => {
+    if (
+      relation.source !== candidate.source ||
+      relation.target !== candidate.target ||
+      relation.type !== candidate.type
+    ) {
+      return false;
+    }
+
+    const existingRoleKey = relation.targetRole ?? relation.sourceRole ?? relation.label;
+    const candidateRoleKey = candidate.targetRole ?? candidate.sourceRole ?? candidate.label;
+    if (existingRoleKey && candidateRoleKey) return existingRoleKey === candidateRoleKey;
+    return true;
+  });
 }
 
 function mergeRelationMetadata(existing: Relation, candidate: Relation): boolean {

@@ -162,7 +162,11 @@ function loadLegacyGraph(): ProjectGraph {
 
 async function loadStoreModule(dataDir: string) {
   const previousDataDir = process.env.DMPG_DATA_DIR;
+  const previousFscanProjectPath = process.env.FSCAN_PROJECT_PATH;
+  const previousScanProjectPath = process.env.SCAN_PROJECT_PATH;
   process.env.DMPG_DATA_DIR = dataDir;
+  delete process.env.FSCAN_PROJECT_PATH;
+  delete process.env.SCAN_PROJECT_PATH;
   try {
     const storeUrl = `${pathToFileURL(path.resolve(import.meta.dirname, "./store.ts")).href}?test=${Date.now()}-${Math.random()}`;
     return await import(storeUrl);
@@ -171,6 +175,16 @@ async function loadStoreModule(dataDir: string) {
       delete process.env.DMPG_DATA_DIR;
     } else {
       process.env.DMPG_DATA_DIR = previousDataDir;
+    }
+    if (previousFscanProjectPath == null) {
+      delete process.env.FSCAN_PROJECT_PATH;
+    } else {
+      process.env.FSCAN_PROJECT_PATH = previousFscanProjectPath;
+    }
+    if (previousScanProjectPath == null) {
+      delete process.env.SCAN_PROJECT_PATH;
+    } else {
+      process.env.SCAN_PROJECT_PATH = previousScanProjectPath;
     }
   }
 }

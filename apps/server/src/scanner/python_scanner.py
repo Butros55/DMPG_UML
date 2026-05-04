@@ -46,6 +46,21 @@ BUILTIN_TYPE_NAMES = {
     "list", "object", "set", "str", "tuple", "type",
 }
 
+LIBRARY_TYPE_NAMES = {
+    "ArrayLike", "DataFrame", "Index", "NDArray", "Series", "ndarray",
+    "pd.DataFrame", "pd.Series", "np.ndarray", "numpy.ndarray",
+    "pandas.DataFrame", "pandas.Series",
+}
+
+LIBRARY_TYPE_PREFIXES = (
+    "numpy.",
+    "np.",
+    "pandas.",
+    "pd.",
+    "sklearn.",
+    "scipy.",
+)
+
 # Collection-like wrappers that imply a multiplicity of 0..* at the target endpoint.
 MANY_CONTAINER_TYPES = {
     "list", "List", "Sequence", "MutableSequence", "Iterable", "Iterator",
@@ -174,6 +189,7 @@ def scan_directory(root: str) -> dict[str, Any]:
                             "startLine": item.lineno,
                             "endLine": getattr(item, "end_lineno", None),
                             "parentId": cls_id,
+                            "snippet": _source_snippet(source, item.lineno, getattr(item, "end_lineno", item.lineno)),
                         }
                         if isinstance(item, ast.AsyncFunctionDef):
                             meth_entry["tags"] = ["async"]
@@ -207,13 +223,20 @@ def scan_directory(root: str) -> dict[str, Any]:
                                 "kind": "variable",
                                 "file": str(rel),
                                 "startLine": attr["line"],
-                                "endLine": attr["line"],
+                                "endLine": attr.get("endLine", attr["line"]),
                                 "parentId": cls_id,
+                                "snippet": _source_snippet(
+                                    source,
+                                    int(attr["line"]),
+                                    int(attr.get("endLine", attr["line"])),
+                                ),
                             }
                             if attr.get("type"):
                                 attr_entry["doc"] = {"inputs": [{"name": attr_name, "type": attr["type"]}]}
                             if attr.get("relationType"):
                                 attr_entry["relationType"] = attr["relationType"]
+                            if attr.get("targetMultiplicity"):
+                                attr_entry["targetMultiplicity"] = attr["targetMultiplicity"]
 
                             symbols.append(attr_entry)
                             edges.append({"source": cls_id, "target": attr_id, "type": "contains"})
@@ -231,9 +254,12 @@ def scan_directory(root: str) -> dict[str, Any]:
                             "startLine": item.lineno,
                             "endLine": getattr(item, "end_lineno", item.lineno),
                             "parentId": cls_id,
+                            "snippet": _source_snippet(source, item.lineno, getattr(item, "end_lineno", item.lineno)),
                         }
                         if attr_type:
                             attr_entry["doc"] = {"inputs": [{"name": attr_name, "type": attr_type}]}
+                        if _is_optional_default(item.value):
+                            attr_entry["targetMultiplicity"] = "0..1"
                         symbols.append(attr_entry)
                         edges.append({"source": cls_id, "target": attr_id, "type": "contains"})
                         class_attr_ids.add(attr_id)
@@ -610,9 +636,27 @@ class _RelationVisitor(ast.NodeVisitor):
 
 # ── Helper functions ──────────────────────────────
 
+def _param_default_map(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, ast.expr]:
+    defaults_by_name: dict[str, ast.expr] = {}
+
+    positional = [*node.args.posonlyargs, *node.args.args]
+    defaults = node.args.defaults
+    if defaults:
+        offset = len(positional) - len(defaults)
+        for arg, default in zip(positional[offset:], defaults):
+            defaults_by_name[arg.arg] = default
+
+    for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
+        if default is not None:
+            defaults_by_name[arg.arg] = default
+
+    return defaults_by_name
+
+
 def _extract_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict]:
     params: list[dict] = []
-    for arg in node.args.args:
+    defaults_by_name = _param_default_map(node)
+    for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
         if arg.arg in ("self", "cls"):
             continue
         p: dict[str, str] = {"name": arg.arg}
@@ -620,6 +664,11 @@ def _extract_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict]:
             ann = _node_to_str(arg.annotation)
             if ann:
                 p["type"] = ann
+        default = defaults_by_name.get(arg.arg)
+        if default is not None:
+            rendered_default = _node_to_str(default)
+            if rendered_default:
+                p["default"] = rendered_default
         params.append(p)
     return params
 
@@ -635,7 +684,7 @@ def _extract_returns(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict]
 
 def _extract_param_type_map(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
     param_types: dict[str, str] = {}
-    for arg in node.args.args:
+    for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
         if arg.arg in ("self", "cls"):
             continue
         if not arg.annotation:
@@ -683,18 +732,27 @@ def _extract_instance_attributes(node: ast.FunctionDef | ast.AsyncFunctionDef) -
             attr: dict[str, str | int] = {
                 "name": target.attr,
                 "line": line or getattr(target, "lineno", 1),
+                "endLine": getattr(value, "end_lineno", line or getattr(target, "lineno", 1)) if value else line or getattr(target, "lineno", 1),
             }
             inferred_type = _infer_attribute_type(value, param_types, annotation)
             if inferred_type:
                 attr["type"] = inferred_type
+            if _is_optional_default(value):
+                attr["targetMultiplicity"] = "0..1"
             if isinstance(value, ast.Call):
                 attr["relationType"] = "composition"
+            elif isinstance(value, ast.Name) and value.id in param_types:
+                attr["relationType"] = "aggregation"
             elif inferred_type:
                 attr["relationType"] = "association"
             attrs[target.attr] = attr
 
     _InstanceAttributeVisitor().visit(node)
     return list(attrs.values())
+
+
+def _is_optional_default(value: Optional[ast.AST]) -> bool:
+    return isinstance(value, ast.Constant) and value.value is None
 
 
 def _infer_attribute_type(
@@ -753,6 +811,12 @@ def _node_to_str(node: ast.expr) -> Optional[str]:
     elif isinstance(node, ast.Tuple):
         elts = [_node_to_str(e) for e in node.elts]
         return ", ".join(e for e in elts if e)
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left = _node_to_str(node.left)
+        right = _node_to_str(node.right)
+        if left and right:
+            return f"{left} | {right}"
+        return left or right
     return None
 
 
@@ -901,7 +965,13 @@ def _extract_type_names(type_text: Optional[str]) -> list[str]:
         short = token.split(".")[-1]
         if token in BUILTIN_TYPE_NAMES or short in BUILTIN_TYPE_NAMES:
             continue
+        if token in LIBRARY_TYPE_NAMES or short in LIBRARY_TYPE_NAMES:
+            continue
+        if token.startswith(LIBRARY_TYPE_PREFIXES):
+            continue
         for candidate in (token, short):
+            if candidate in LIBRARY_TYPE_NAMES or candidate.startswith(LIBRARY_TYPE_PREFIXES):
+                continue
             if not candidate or candidate in seen:
                 continue
             seen.add(candidate)
@@ -909,7 +979,7 @@ def _extract_type_names(type_text: Optional[str]) -> list[str]:
     return names
 
 
-def _infer_target_multiplicity(type_text: Optional[str]) -> str:
+def _infer_target_multiplicity(type_text: Optional[str], default_text: Optional[str] = None) -> str:
     """Derive UML target multiplicity from a type annotation string.
 
     Examples:
@@ -919,7 +989,7 @@ def _infer_target_multiplicity(type_text: Optional[str]) -> str:
         User            -> "1"
     """
     if not type_text:
-        return "1"
+        return "0..1" if default_text == "None" else "1"
 
     normalized = type_text.strip()
     tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", normalized)
@@ -929,6 +999,9 @@ def _infer_target_multiplicity(type_text: Optional[str]) -> str:
         return "0..*"
 
     if "None" in token_set or token_set & OPTIONAL_CONTAINER_TYPES:
+        return "0..1"
+
+    if default_text == "None":
         return "0..1"
 
     return "1"
@@ -985,6 +1058,7 @@ def _build_structural_class_relations(
 ) -> list[dict[str, Any]]:
     symbol_index = {symbol["id"]: symbol for symbol in symbols}
     relations: list[dict[str, Any]] = []
+    pending_dependencies: list[dict[str, Any]] = []
 
     def add_relation(
         source_id: str,
@@ -1000,6 +1074,7 @@ def _build_structural_class_relations(
         target_multiplicity: Optional[str] = None,
         source_role: Optional[str] = None,
         target_role: Optional[str] = None,
+        snippet: Optional[str] = None,
     ) -> None:
         if source_id == target_id:
             return
@@ -1026,8 +1101,43 @@ def _build_structural_class_relations(
                 evidence["startLine"] = start_line
             if end_line is not None:
                 evidence["endLine"] = end_line
+            if snippet:
+                evidence["snippet"] = snippet[:500]
             relation["evidence"] = evidence
         relations.append(relation)
+
+    def queue_signature_dependency(
+        source_id: str,
+        target_id: str,
+        *,
+        label: str,
+        file: Optional[str],
+        start_line: Optional[int],
+        end_line: Optional[int],
+        target_multiplicity: str,
+        snippet: Optional[str],
+    ) -> None:
+        if source_id == target_id:
+            return
+        pending_dependencies.append({
+            "source_id": source_id,
+            "target_id": target_id,
+            "label": label,
+            "file": file,
+            "start_line": start_line,
+            "end_line": end_line,
+            "target_multiplicity": target_multiplicity,
+            "snippet": snippet,
+        })
+
+    def relation_confidence(relation_type: str) -> float:
+        if relation_type == "composition":
+            return 0.9
+        if relation_type == "aggregation":
+            return 0.87
+        if relation_type == "association":
+            return 0.84
+        return 0.72
 
     for symbol in symbols:
         parent_id = symbol.get("parentId")
@@ -1042,7 +1152,10 @@ def _build_structural_class_relations(
             relation_type = symbol.get("relationType") or "association"
             label = str(symbol.get("label") or symbol.get("id") or "").split(".")[-1]
             for item in items:
-                target_multiplicity = _infer_target_multiplicity(item.get("type"))
+                target_multiplicity = (
+                    symbol.get("targetMultiplicity") or
+                    _infer_target_multiplicity(item.get("type"), item.get("default"))
+                )
                 for type_name in _extract_type_names(item.get("type")):
                     target_id = _resolve_internal_class_name(
                         type_name,
@@ -1061,10 +1174,11 @@ def _build_structural_class_relations(
                         file=symbol.get("file"),
                         start_line=symbol.get("startLine"),
                         end_line=symbol.get("endLine"),
-                        confidence=0.84 if relation_type == "association" else 0.88,
+                        confidence=relation_confidence(str(relation_type)),
                         source_multiplicity="1",
-                        target_multiplicity=target_multiplicity,
+                        target_multiplicity=str(target_multiplicity),
                         target_role=label,
+                        snippet=symbol.get("snippet"),
                     )
             continue
 
@@ -1074,7 +1188,7 @@ def _build_structural_class_relations(
         symbol_doc = symbol.get("doc") or {}
         method_name = str(symbol.get("label") or symbol.get("id") or "").split(".")[-1]
         for item in symbol_doc.get("inputs") or []:
-            target_multiplicity = _infer_target_multiplicity(item.get("type"))
+            target_multiplicity = _infer_target_multiplicity(item.get("type"), item.get("default"))
             for type_name in _extract_type_names(item.get("type")):
                 target_id = _resolve_internal_class_name(
                     type_name,
@@ -1085,21 +1199,19 @@ def _build_structural_class_relations(
                 )
                 if not target_id:
                     continue
-                add_relation(
+                queue_signature_dependency(
                     parent_id,
                     target_id,
-                    "association",
                     label=method_name,
                     file=symbol.get("file"),
                     start_line=symbol.get("startLine"),
                     end_line=symbol.get("endLine"),
-                    confidence=0.72,
                     target_multiplicity=target_multiplicity,
-                    target_role=method_name,
+                    snippet=symbol.get("snippet"),
                 )
 
         for item in symbol_doc.get("outputs") or []:
-            target_multiplicity = _infer_target_multiplicity(item.get("type"))
+            target_multiplicity = _infer_target_multiplicity(item.get("type"), item.get("default"))
             for type_name in _extract_type_names(item.get("type")):
                 target_id = _resolve_internal_class_name(
                     type_name,
@@ -1110,18 +1222,46 @@ def _build_structural_class_relations(
                 )
                 if not target_id:
                     continue
-                add_relation(
+                queue_signature_dependency(
                     parent_id,
                     target_id,
-                    "association",
                     label=method_name,
                     file=symbol.get("file"),
                     start_line=symbol.get("startLine"),
                     end_line=symbol.get("endLine"),
-                    confidence=0.68,
                     target_multiplicity=target_multiplicity,
-                    target_role=method_name,
+                    snippet=symbol.get("snippet"),
                 )
+
+    stronger_pairs = {
+        (relation["source"], relation["target"])
+        for relation in relations
+        if relation.get("type") in {"composition", "aggregation", "association", "inherits", "realizes", "instantiates"}
+    }
+    dependency_keys: set[tuple[str, str, str]] = set()
+    for dependency in pending_dependencies:
+        source_id = str(dependency["source_id"])
+        target_id = str(dependency["target_id"])
+        label = str(dependency["label"])
+        if (source_id, target_id) in stronger_pairs:
+            continue
+        key = (source_id, target_id, label)
+        if key in dependency_keys:
+            continue
+        dependency_keys.add(key)
+        add_relation(
+            source_id,
+            target_id,
+            "dependency",
+            label=label,
+            file=dependency.get("file"),
+            start_line=dependency.get("start_line"),
+            end_line=dependency.get("end_line"),
+            confidence=0.7,
+            source_multiplicity="1",
+            target_multiplicity=dependency.get("target_multiplicity"),
+            snippet=dependency.get("snippet"),
+        )
 
     return relations
 
@@ -1281,6 +1421,19 @@ def _looks_like_artifact_name(value: str) -> bool:
         ".csv", ".tsv", ".json", ".xlsx", ".xls", ".pkl", ".pickle",
         ".parquet", ".joblib", ".txt", ".yaml", ".yml", ".xml",
     ))
+
+
+def _source_snippet(source: str, start_line: Optional[int], end_line: Optional[int]) -> Optional[str]:
+    if start_line is None:
+        return None
+    try:
+        lines = source.splitlines()
+        start = max(0, start_line - 1)
+        end = min(len(lines), end_line or start_line)
+        snippet = "\n".join(lines[start:end]).strip()
+        return snippet[:500] if snippet else None
+    except Exception:
+        return None
 
 
 def _make_evidence(rel_path: str, node: ast.AST, source: Optional[str] = None) -> dict:

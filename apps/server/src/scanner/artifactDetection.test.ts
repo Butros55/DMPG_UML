@@ -141,38 +141,27 @@ def load_extracted():
 
     const extractStageView = graph.views.find((view) => view.id === "view:process-stage:extract");
     assert.ok(extractStageView?.nodeRefs.includes("mod:data_extraction:DataExtraction"));
-    assert.ok(extractStageView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
-    assert.ok(extractStageView?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
-    assert.ok(extractStageView?.nodeRefs.includes("proc:artifact:df_data_csv"));
+    assert.ok(extractStageView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:artifact:")));
 
     const distributionStageView = graph.views.find((view) => view.id === "view:process-stage:distribution");
     assert.ok(distributionStageView?.nodeRefs.includes("mod:distribution.fit_distribution"));
-    assert.ok(distributionStageView?.nodeRefs.includes("proc:artifact:distribution_json"));
-    assert.ok(distributionStageView?.nodeRefs.includes("proc:artifact:fallback_json"));
-    assert.ok(distributionStageView?.nodeRefs.includes("proc:artifact:kde_min_max_values_json"));
-    assert.ok(distributionStageView?.nodeRefs.includes("proc:artifact:model_pickle"));
+    assert.ok(distributionStageView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:artifact:")));
 
     const simulationStageView = graph.views.find((view) => view.id === "view:process-stage:simulation");
     assert.ok(simulationStageView?.nodeRefs.includes("mod:simulation_data_generator"));
     assert.ok(simulationStageView?.nodeRefs.includes("mod:arrival_table.generate_arrival_table"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:arrival_gro_csv"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:arrival_klein_csv"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
-    assert.ok(simulationStageView?.nodeRefs.includes("proc:artifact:outliners_xlsx"));
+    assert.ok(simulationStageView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:artifact:")));
     assert.equal(graph.views.find((view) => view.id === "view:process-stage:outputs"), undefined);
 
     const distributionModuleView = graph.views.find((view) => view.id === "view:mod:distribution.fit_distribution");
-    assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:distribution_json"));
-    assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:fallback_json"));
-    assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:model_pickle"));
+    assert.ok(distributionModuleView?.nodeRefs.includes("mod:distribution.fit_distribution"));
+    assert.ok(distributionModuleView?.nodeRefs.every((nodeRef) => !nodeRef.startsWith("proc:artifact:")));
     assert.ok(hasProcessWriteEdge(graph, "mod:distribution.fit_distribution:save_to_file", "proc:artifact:distribution_json"));
     assert.ok(hasProcessWriteEdge(graph, "mod:distribution.fit_distribution:save_to_file", "proc:artifact:fallback_json"));
     assert.ok(hasProcessWriteEdge(graph, "mod:distribution.fit_distribution:persist_model", "proc:artifact:model_pickle"));
 
     const extractionClassView = graph.views.find((view) => view.id === "view:mod:data_extraction:DataExtraction");
-    assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-    assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_with_order_csv"));
-    assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
+    assert.deepEqual(extractionClassView?.nodeRefs, ["mod:data_extraction:DataExtraction"]);
     assert.ok(hasProcessWriteEdge(graph, "mod:data_extraction:DataExtraction.build", "proc:artifact:df_data_csv"));
     assert.ok(hasProcessWriteEdge(graph, "mod:data_extraction:DataExtraction.build", "proc:artifact:df_data_with_order_csv"));
     assert.ok(hasProcessWriteEdge(graph, "mod:data_extraction:DataExtraction.build", "proc:artifact:df_data_with_order_cluster_csv"));
@@ -184,8 +173,9 @@ def load_extracted():
       "mod:simulation_data_generator:load_extracted",
     );
     assert.ok(simulationReadEdgeId);
-    assert.ok(simulationModuleView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-    assert.ok(simulationModuleView?.edgeRefs.includes(simulationReadEdgeId));
+    assert.ok(simulationModuleView?.nodeRefs.includes("mod:simulation_data_generator"));
+    assert.ok(!simulationModuleView?.nodeRefs.includes("proc:artifact:df_data_csv"));
+    assert.ok(!simulationModuleView?.edgeRefs.includes(simulationReadEdgeId));
 
     const stageWriteEdges = graph.relations.filter((relation) => relation.id.startsWith("process-edge:stage-flow:"));
     const stageWriteTargets = new Set(stageWriteEdges.map((relation) => relation.target));
@@ -250,7 +240,7 @@ class PipelineController:
     assert.equal(modeAttr?.doc?.inputs?.[0]?.type, "str");
 
     assert.ok(graph.relations.some((relation) =>
-      relation.type === "association" &&
+      relation.type === "aggregation" &&
       relation.source === "mod:pipeline:PipelineController" &&
       relation.target === "mod:pipeline:Repository",
     ));
@@ -260,7 +250,7 @@ class PipelineController:
       relation.target === "mod:pipeline:ScheduleBuilder",
     ));
     assert.ok(graph.relations.some((relation) =>
-      relation.type === "association" &&
+      relation.type === "dependency" &&
       relation.source === "mod:pipeline:PipelineController" &&
       relation.target === "mod:pipeline:JobResult",
     ));
