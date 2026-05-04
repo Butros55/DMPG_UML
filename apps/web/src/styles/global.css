@@ -6493,6 +6493,22 @@ body,
   z-index: 10;
 }
 
+.projection-switch--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.projection-switch__row {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.projection-switch__row--sub {
+  padding-left: 18px;
+}
+
 .projection-switch__btn {
   display: inline-flex;
   align-items: center;
@@ -6507,6 +6523,11 @@ body,
   cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
+}
+
+.projection-switch__btn--sub {
+  padding: 4px 10px;
+  font-size: 11px;
 }
 
 .projection-switch__btn:hover {

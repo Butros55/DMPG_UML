@@ -61,6 +61,34 @@ LIBRARY_TYPE_PREFIXES = (
     "scipy.",
 )
 
+LIBRARY_CALL_PREFIXES = (
+    "numpy.",
+    "np.",
+    "pandas.",
+    "pd.",
+    "sklearn.",
+    "scipy.",
+    "matplotlib.",
+    "seaborn.",
+    "pathlib.",
+    "os.",
+    "sys.",
+    "re.",
+    "math.",
+    "json.",
+    "yaml.",
+    "datetime.",
+)
+
+NOISE_CALL_NAMES = {
+    "abs", "all", "any", "bool", "bytes", "callable", "dict", "enumerate",
+    "filter", "float", "format", "frozenset", "getattr", "hasattr", "int",
+    "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min",
+    "next", "object", "print", "range", "repr", "reversed", "round", "set",
+    "slice", "sorted", "str", "sum", "tuple", "type", "zip",
+    "DataFrame", "Series", "array", "ndarray", "to_datetime", "to_timedelta",
+}
+
 # Collection-like wrappers that imply a multiplicity of 0..* at the target endpoint.
 MANY_CONTAINER_TYPES = {
     "list", "List", "Sequence", "MutableSequence", "Iterable", "Iterator",
@@ -428,11 +456,18 @@ class _RelationVisitor(ast.NodeVisitor):
         self.class_ids = class_ids
         self.async_function_ids = async_function_ids
         self.local_aliases: dict[str, str] = dict(import_aliases)
+        self.symbol_ids = set(symbol_table.values())
         self.edges: list[dict] = []
         self._scope_stack: list[str] = [mod_id]
         self._literal_bindings_stack: list[dict[str, str]] = [{}]
+        self._symbol_bindings_stack: list[dict[str, str]] = [{}]
+        self._class_instance_bindings: dict[str, dict[str, str]] = {}
+        self._class_literal_bindings: dict[str, dict[str, str]] = {}
         self._async_scope_stack: list[bool] = [False]
         self._node_stack: list[ast.AST] = []
+        self._control_stack: list[dict[str, Any]] = []
+        self._sequence_index = 0
+        self._fragment_index = 0
 
     @property
     def _current_scope(self) -> str:
@@ -441,6 +476,10 @@ class _RelationVisitor(ast.NodeVisitor):
     @property
     def _current_bindings(self) -> dict[str, str]:
         return self._literal_bindings_stack[-1]
+
+    @property
+    def _current_symbol_bindings(self) -> dict[str, str]:
+        return self._symbol_bindings_stack[-1]
 
     @property
     def _current_async_scope(self) -> bool:
@@ -472,11 +511,19 @@ class _RelationVisitor(ast.NodeVisitor):
         else:
             func_id = f"{self.mod_id}:{node.name}"
         self._scope_stack.append(func_id)
-        self._literal_bindings_stack.append(dict(self._literal_bindings_stack[-1]))
+        literal_bindings = dict(self._literal_bindings_stack[-1])
+        symbol_bindings = dict(self._symbol_bindings_stack[-1])
+        if parent in self.class_ids:
+            literal_bindings.update(self._class_literal_bindings.get(parent, {}))
+            symbol_bindings.update(self._class_instance_bindings.get(parent, {}))
+        self._literal_bindings_stack.append(literal_bindings)
+        self._symbol_bindings_stack.append(symbol_bindings)
         self._async_scope_stack.append(isinstance(node, ast.AsyncFunctionDef))
         _bind_function_defaults(node, self._current_bindings)
+        self._bind_parameter_class_types(node)
         self.generic_visit(node)
         self._async_scope_stack.pop()
+        self._symbol_bindings_stack.pop()
         self._literal_bindings_stack.pop()
         self._scope_stack.pop()
 
@@ -488,6 +535,7 @@ class _RelationVisitor(ast.NodeVisitor):
 
     def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
         self._literal_bindings_stack.append(dict(self._literal_bindings_stack[-1]))
+        self._symbol_bindings_stack.append(dict(self._symbol_bindings_stack[-1]))
         frame = self._current_bindings
         for item in node.items:
             if isinstance(item.context_expr, ast.Call):
@@ -500,20 +548,139 @@ class _RelationVisitor(ast.NodeVisitor):
             _bind_literal_target(item.optional_vars, path, frame)
         for stmt in node.body:
             self.visit(stmt)
+        self._symbol_bindings_stack.pop()
         self._literal_bindings_stack.pop()
+
+    def visit_For(self, node: ast.For) -> None:
+        self._visit_loop(node, "for", node.iter, node.body, node.orelse)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self._visit_loop(node, "async for", node.iter, node.body, node.orelse)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        self._visit_fragment_statements(
+            self._make_control_fragment("loop", node, "while", self._safe_unparse(node.test)),
+            node.body,
+        )
+        if node.orelse:
+            self._visit_fragment_statements(
+                self._make_control_fragment("opt", node, "while else", "else"),
+                node.orelse,
+            )
+
+    def _visit_loop(
+        self,
+        node: ast.For | ast.AsyncFor,
+        label: str,
+        iter_node: ast.AST,
+        body: list[ast.stmt],
+        orelse: list[ast.stmt],
+    ) -> None:
+        self.visit(iter_node)
+        self._visit_fragment_statements(
+            self._make_control_fragment("loop", node, label, self._safe_unparse(iter_node)),
+            body,
+        )
+        if orelse:
+            self._visit_fragment_statements(
+                self._make_control_fragment("opt", node, f"{label} else", "else"),
+                orelse,
+            )
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        guard = self._safe_unparse(node.test)
+        self._visit_fragment_statements(
+            self._make_control_fragment("alt", node, "if", guard),
+            node.body,
+        )
+        if node.orelse:
+            self._visit_fragment_statements(
+                self._make_control_fragment("alt", node, "else", "else"),
+                node.orelse,
+            )
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._visit_fragment_statements(
+            self._make_control_fragment("try", node, "try", None),
+            node.body,
+        )
+        for handler in node.handlers:
+            guard = self._safe_unparse(handler.type) if handler.type else "except"
+            self._visit_fragment_statements(
+                self._make_control_fragment("alt", handler, "except", guard),
+                handler.body,
+            )
+        if node.orelse:
+            self._visit_fragment_statements(
+                self._make_control_fragment("opt", node, "try else", "else"),
+                node.orelse,
+            )
+        if node.finalbody:
+            self._visit_fragment_statements(
+                self._make_control_fragment("opt", node, "finally", "finally"),
+                node.finalbody,
+            )
+
+    def _make_control_fragment(
+        self,
+        fragment_type: str,
+        node: ast.AST,
+        label: str,
+        guard: Optional[str],
+    ) -> dict[str, Any]:
+        fragment_id = f"{self._current_scope}:fragment:{self._fragment_index}"
+        self._fragment_index += 1
+        return {
+            "id": fragment_id,
+            "type": fragment_type,
+            "label": label,
+            "guard": guard,
+            "startLine": getattr(node, "lineno", None),
+            "endLine": getattr(node, "end_lineno", getattr(node, "lineno", None)),
+        }
+
+    def _visit_fragment_statements(self, fragment: dict[str, Any], statements: list[ast.stmt]) -> None:
+        self._control_stack.append(fragment)
+        try:
+            for stmt in statements:
+                self.visit(stmt)
+        finally:
+            self._control_stack.pop()
+
+    def _safe_unparse(self, node: Optional[ast.AST]) -> Optional[str]:
+        if node is None:
+            return None
+        try:
+            return ast.unparse(node)
+        except Exception:
+            return _node_to_str(node) if isinstance(node, ast.expr) else None
 
     def visit_Assign(self, node: ast.Assign) -> None:
         resolved = _extract_string_literal(node.value, self._current_bindings)
+        bound_class_id = self._resolve_symbol_binding_from_value(node.value)
         if resolved:
             for target in node.targets:
                 _bind_literal_target(target, resolved, self._current_bindings)
+                self._bind_instance_literal_target(target, resolved)
+        if bound_class_id:
+            for target in node.targets:
+                _bind_symbol_target(target, bound_class_id, self._current_symbol_bindings)
+                self._bind_instance_symbol_target(target, bound_class_id)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        bound_class_id = self._resolve_symbol_binding_from_annotation(node.annotation)
         if node.value is not None:
             resolved = _extract_string_literal(node.value, self._current_bindings)
             if resolved:
                 _bind_literal_target(node.target, resolved, self._current_bindings)
+                self._bind_instance_literal_target(node.target, resolved)
+            bound_class_id = self._resolve_symbol_binding_from_value(node.value) or bound_class_id
+        if bound_class_id:
+            _bind_symbol_target(node.target, bound_class_id, self._current_symbol_bindings)
+            self._bind_instance_symbol_target(node.target, bound_class_id)
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -566,24 +733,141 @@ class _RelationVisitor(ast.NodeVisitor):
             self._process_call(node, callee_str)
         self.generic_visit(node)
 
-    def _process_call(self, node: ast.Call, callee_str: str) -> None:
+    def _next_sequence_index(self) -> int:
+        current = self._sequence_index
+        self._sequence_index += 1
+        return current
+
+    def _sequence_evidence(
+        self,
+        node: ast.Call,
+        callee_str: str,
+        message_kind: str,
+    ) -> dict:
         evidence = _make_evidence(self.rel_path, node, self.source)
+        receiver_name, callee_name = _split_call_receiver(callee_str)
+        if receiver_name:
+            evidence["receiverName"] = receiver_name
+        if callee_name:
+            evidence["calleeName"] = callee_name
+        evidence["enclosingSymbolId"] = self._current_scope
+        evidence["sequenceIndex"] = self._next_sequence_index()
+        evidence["messageKind"] = message_kind
+        evidence["operationKind"] = message_kind
+        evidence["nestingDepth"] = len(self._control_stack)
+        if self._control_stack:
+            fragment = self._control_stack[-1]
+            evidence["fragmentId"] = fragment["id"]
+            evidence["fragmentType"] = fragment["type"]
+            evidence["fragmentLabel"] = fragment["label"]
+            if fragment.get("guard"):
+                evidence["fragmentGuard"] = fragment["guard"]
+            if fragment.get("startLine") is not None:
+                evidence["fragmentStartLine"] = fragment["startLine"]
+            if fragment.get("endLine") is not None:
+                evidence["fragmentEndLine"] = fragment["endLine"]
+        return evidence
+
+    def _bind_parameter_class_types(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+            if arg.arg in ("self", "cls") or not arg.annotation:
+                continue
+            class_id = self._resolve_symbol_binding_from_annotation(arg.annotation)
+            if class_id:
+                self._current_symbol_bindings[arg.arg] = class_id
+
+    def _resolve_symbol_binding_from_annotation(self, annotation: Optional[ast.AST]) -> Optional[str]:
+        if annotation is None:
+            return None
+        rendered = _node_to_str(annotation)
+        return self._resolve_class_from_type_text(rendered)
+
+    def _resolve_symbol_binding_from_value(self, value: ast.AST) -> Optional[str]:
+        if isinstance(value, ast.Call):
+            callee = _resolve_call_name(value)
+            if not callee:
+                return None
+            target_id = _resolve_name(callee, self.symbol_table, self.local_aliases)
+            return target_id if target_id in self.class_ids else None
+        if isinstance(value, (ast.Name, ast.Attribute)):
+            key = _node_to_str(value)
+            return self._current_symbol_bindings.get(key or "")
+        return None
+
+    def _resolve_class_from_type_text(self, type_text: Optional[str]) -> Optional[str]:
+        for type_name in _extract_type_names(type_text):
+            target_id = _resolve_name(type_name, self.symbol_table, self.local_aliases)
+            if target_id in self.class_ids:
+                return target_id
+        return None
+
+    def _resolve_bound_method_call(self, callee_str: str) -> Optional[str]:
+        if "." not in callee_str:
+            return None
+        receiver_name, method_name = callee_str.rsplit(".", 1)
+        class_id = self._current_symbol_bindings.get(receiver_name)
+        if not class_id:
+            return None
+        target_id = f"{class_id}.{method_name}"
+        return target_id if target_id in self.symbol_ids else None
+
+    def _current_class_scope(self) -> Optional[str]:
+        for scope in reversed(self._scope_stack):
+            if scope in self.class_ids:
+                return scope
+        return None
+
+    def _bind_instance_symbol_target(self, target: ast.AST, class_id: str) -> None:
+        key = _node_to_str(target)
+        if not key or not key.startswith("self."):
+            return
+        owner_class_id = self._current_class_scope()
+        if not owner_class_id:
+            return
+        bindings = self._class_instance_bindings.setdefault(owner_class_id, {})
+        bindings[key] = class_id
+
+    def _bind_instance_literal_target(self, target: ast.AST, value: str) -> None:
+        key = _node_to_str(target)
+        if not key or not key.startswith("self."):
+            return
+        owner_class_id = self._current_class_scope()
+        if not owner_class_id:
+            return
+        bindings = self._class_literal_bindings.setdefault(owner_class_id, {})
+        bindings[key] = value
+
+    def _process_call(self, node: ast.Call, callee_str: str) -> None:
         source_id = self._current_scope
 
         # Detect reads/writes
         rw = _detect_read_write(node, callee_str, self._current_bindings)
         if rw:
+            rw_evidence = self._sequence_evidence(node, callee_str, "read" if rw == "reads" else "write")
             artifact_names = _extract_artifact_names(node, callee_str, self._current_bindings)
             for artifact_name in artifact_names:
                 artifact_id = f"ext:{artifact_name}"
+                evidence = dict(rw_evidence)
+                if _is_dynamic_artifact_name(artifact_name):
+                    evidence["artifactResolution"] = "unresolved_dynamic_path"
+                    confidence = 0.65
+                else:
+                    evidence["artifactResolution"] = "resolved"
+                    confidence = 0.85
                 self.edges.append({
                     "source": source_id, "target": artifact_id, "type": rw,
-                    "confidence": 0.7, "evidence": evidence,
+                    "confidence": confidence, "evidence": evidence,
+                    "label": _artifact_operation_label(rw, artifact_name),
                     "artifactLabel": artifact_name,
                 })
+            if _is_library_or_builtin_call(callee_str):
+                return
 
         # Resolve the callee to a symbol ID
-        target_id = _resolve_name(callee_str, self.symbol_table, self.local_aliases)
+        target_id = (
+            self._resolve_bound_method_call(callee_str)
+            or _resolve_name(callee_str, self.symbol_table, self.local_aliases)
+        )
 
         # Handle self.method()
         if not target_id and callee_str.startswith("self."):
@@ -596,6 +880,9 @@ class _RelationVisitor(ast.NodeVisitor):
         if not target_id:
             # Unresolved → external
             if not callee_str.startswith("self."):
+                if _is_library_or_builtin_call(callee_str):
+                    return
+                evidence = self._sequence_evidence(node, callee_str, "call")
                 call_kind = _classify_call_kind(
                     node,
                     callee_str,
@@ -617,6 +904,7 @@ class _RelationVisitor(ast.NodeVisitor):
         # Check if target is a class → instantiates
         is_instantiation = target_id in self.class_ids
         edge_type = "instantiates" if is_instantiation else "calls"
+        evidence = self._sequence_evidence(node, callee_str, "create" if is_instantiation else "call")
         if edge_type == "calls":
             call_kind = _classify_call_kind(
                 node,
@@ -628,6 +916,8 @@ class _RelationVisitor(ast.NodeVisitor):
             )
             if call_kind:
                 evidence["callKind"] = call_kind
+        else:
+            evidence["callKind"] = "sync"
         self.edges.append({
             "source": source_id, "target": target_id,
             "type": edge_type, "confidence": 0.8, "evidence": evidence,
@@ -837,6 +1127,13 @@ def _resolve_call_name(node: ast.Call) -> Optional[str]:
     return None
 
 
+def _split_call_receiver(callee: str) -> tuple[Optional[str], str]:
+    if "." not in callee:
+        return None, callee
+    receiver, _, method = callee.rpartition(".")
+    return receiver or None, method or callee
+
+
 def _resolve_name(name: str, symbol_table: dict[str, str],
                   local_aliases: dict[str, str]) -> Optional[str]:
     if name in symbol_table:
@@ -858,6 +1155,19 @@ def _resolve_name(name: str, symbol_table: dict[str, str],
         if short in symbol_table:
             return symbol_table[short]
     return None
+
+
+def _is_library_or_builtin_call(callee: str) -> bool:
+    normalized = callee.strip().lower()
+    if not normalized:
+        return False
+    if normalized.startswith(tuple(prefix.lower() for prefix in LIBRARY_CALL_PREFIXES)):
+        return True
+    first = normalized.split(".", 1)[0]
+    last = normalized.rsplit(".", 1)[-1]
+    if first in {"pd", "np", "df"}:
+        return True
+    return first in {name.lower() for name in NOISE_CALL_NAMES} or last in {name.lower() for name in NOISE_CALL_NAMES}
 
 
 def _detect_read_write(
@@ -1347,6 +1657,8 @@ def _extract_string_literal(node: ast.AST, literal_bindings: dict[str, str]) -> 
         right = _extract_string_literal(node.right, literal_bindings)
         if left and right:
             return left.rstrip("/\\") + "/" + right.lstrip("/\\")
+        if right and _looks_like_artifact_name(right):
+            return right
         return None
 
     if isinstance(node, ast.Call):
@@ -1359,7 +1671,12 @@ def _extract_string_literal(node: ast.AST, literal_bindings: dict[str, str]) -> 
                 tail = joined[1:]
                 return "/".join([head.rstrip("/\\"), *tail]) if tail else head
         if callee in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"} and node.args:
-            return _extract_string_literal(node.args[0], literal_bindings)
+            parts = [_extract_string_literal(arg, literal_bindings) for arg in node.args]
+            joined = [part.strip("/\\") for part in parts if part]
+            if joined:
+                head = joined[0]
+                tail = joined[1:]
+                return "/".join([head.rstrip("/\\"), *tail]) if tail else head
         return _extract_open_path(node, literal_bindings)
 
     return None
@@ -1397,6 +1714,17 @@ def _bind_literal_target(
             literal_bindings[key] = value
 
 
+def _bind_symbol_target(
+    node: ast.AST,
+    class_id: str,
+    symbol_bindings: dict[str, str],
+) -> None:
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        key = _node_to_str(node)
+        if key:
+            symbol_bindings[key] = class_id
+
+
 def _extract_open_mode(node: ast.Call, literal_bindings: dict[str, str]) -> Optional[str]:
     if len(node.args) > 1:
         mode = _extract_string_literal(node.args[1], literal_bindings)
@@ -1421,6 +1749,20 @@ def _looks_like_artifact_name(value: str) -> bool:
         ".csv", ".tsv", ".json", ".xlsx", ".xls", ".pkl", ".pickle",
         ".parquet", ".joblib", ".txt", ".yaml", ".yml", ".xml",
     ))
+
+
+def _is_dynamic_artifact_name(value: str) -> bool:
+    return "{" in value or "}" in value
+
+
+def _artifact_operation_label(relation_type: str, artifact_name: str) -> str:
+    verb = "read" if relation_type == "reads" else "write"
+    suffix = Path(artifact_name).suffix.lower().lstrip(".")
+    if suffix in {"xlsx", "xls"}:
+        suffix = "excel"
+    if suffix == "pickle":
+        suffix = "pkl"
+    return f"{verb} {suffix}" if suffix else verb
 
 
 def _source_snippet(source: str, start_line: Optional[int], end_line: Optional[int]) -> Optional[str]:

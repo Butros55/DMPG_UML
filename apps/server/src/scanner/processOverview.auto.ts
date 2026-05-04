@@ -10,6 +10,14 @@ type StageId =
 
 type ScoreMap = Record<StageId, number>;
 type ArtifactCategory = "tabular" | "json" | "binary" | "arrival" | "source" | "artifact" | "libraries-imports";
+type ArtifactFlowKind =
+  | "input"
+  | "handoff"
+  | "internal"
+  | "output"
+  | "orphan_write"
+  | "orphan_read"
+  | "unmatched_candidate";
 type UmlType =
   | "package"
   | "database"
@@ -149,8 +157,9 @@ interface ArtifactFlowGroup {
   readCount: number;
   writeCount: number;
   category: ArtifactCategory;
-  kind: "input" | "handoff" | "output";
+  kind: ArtifactFlowKind;
   score: number;
+  reviewHints?: string[];
 }
 
 interface LayerOneContent {
@@ -164,6 +173,7 @@ interface LayerOneSideNodeConfig {
   edgeLabel: string;
   groupKeys?: string[];
   groups?: ArtifactFlowGroup[];
+  producerStageId?: StageId;
 }
 
 interface LayerOneStageArtifactItem {
@@ -199,6 +209,7 @@ interface ArtifactPreviewMetaPayload {
   groupKind?: ArtifactFlowGroup["kind"];
   groupCount: number;
   pathCount: number;
+  reviewHints?: string[];
 }
 
 interface ArtifactPreviewItemPayload {
@@ -215,6 +226,7 @@ interface ArtifactPreviewItemPayload {
   consumerStages: StageId[];
   category: ArtifactCategory;
   groupKind: ArtifactFlowGroup["kind"];
+  reviewHints?: string[];
 }
 
 const MIN_STAGE_CLUSTER_BUCKET_SIZE = 3;
@@ -483,9 +495,10 @@ function buildLayerOneContent(
 
   nodes.push(...positionOutputNodes(outputNodes.map((entry) => entry.node)));
   for (const outputNode of outputNodes) {
+    const producerStage = outputNode.producerStageId ?? "simulation";
     edges.push({
-      id: `flow:${slugify(outputNode.node.id)}:to-simulation-output`,
-      source: "proc:pkg:simulation",
+      id: `flow:${slugify(outputNode.node.id)}:to-${producerStage}-output`,
+      source: stageDef(producerStage).packageId,
       target: outputNode.node.id,
       type: "writes",
       label: summarizeArtifactEdgeLabel(
@@ -602,24 +615,12 @@ function buildLayerOneInputNodes(
 
 function buildLayerOneOutputNodes(flowGroups: ArtifactFlowGroup[]): LayerOneSideNodeConfig[] {
   const relevantGroups = flowGroups
-    .filter((group) => {
-      const producerStage = dominantStage(group.producerStageIds);
-      return producerStage === "simulation" && group.kind === "output";
-    })
+    .filter(isLayerOneOutputGroup)
     .sort((a, b) =>
       outputSelectionPriority(b) - outputSelectionPriority(a) ||
       b.score - a.score ||
       a.label.localeCompare(b.label),
     );
-
-  const usedKeys = new Set<string>();
-  const takeGroups = (predicate: (group: ArtifactFlowGroup) => boolean): ArtifactFlowGroup[] => {
-    const groups = relevantGroups.filter((group) => !usedKeys.has(group.key) && predicate(group));
-    for (const group of groups) {
-      usedKeys.add(group.key);
-    }
-    return groups;
-  };
 
   const nodes: LayerOneSideNodeConfig[] = [];
   const addNode = (
@@ -628,6 +629,7 @@ function buildLayerOneOutputNodes(flowGroups: ArtifactFlowGroup[]): LayerOneSide
     umlType: UmlType,
     edgeLabel: string,
     groups: ArtifactFlowGroup[],
+    producerStageId: StageId,
   ) => {
     if (groups.length === 0) return;
     nodes.push({
@@ -635,66 +637,188 @@ function buildLayerOneOutputNodes(flowGroups: ArtifactFlowGroup[]): LayerOneSide
         id,
         label,
         umlType,
-        buildDetailedArtifactPreview(groups),
+        buildDetailedArtifactPreview(groups, producerStageId),
       ),
       edgeLabel,
       groupKeys: groups.map((group) => group.key),
       groups,
+      producerStageId,
     });
   };
 
-  const arrivalGroups = takeGroups((group) =>
-    group.category === "arrival" || /\barrival\b/.test(normalize(group.label)),
-  );
-  addNode("proc:output:arrival-table", "Arrival Table", "artifact", "arrival data", arrivalGroups);
+  for (const stage of STAGES) {
+    if (stage.id === "inputs") continue;
+    const stageGroups = relevantGroups.filter((group) => dominantStage(group.producerStageIds) === stage.id);
+    if (stageGroups.length === 0) continue;
 
-  const generatedDataGroups = takeGroups((group) =>
-    group.category === "tabular" &&
-    !/\barrival\b/.test(normalize(group.label)) &&
-    !isSimulationResultGroup(group) &&
-    !isVisualArtifactGroup(group),
-  );
-  addNode("proc:output:generated-data", "Generated Data", "artifact", "generated data", generatedDataGroups);
+    if (stage.id === "simulation") {
+      const usedKeys = new Set<string>();
+      const takeGroups = (predicate: (group: ArtifactFlowGroup) => boolean): ArtifactFlowGroup[] => {
+        const groups = stageGroups.filter((group) => !usedKeys.has(group.key) && predicate(group));
+        for (const group of groups) {
+          usedKeys.add(group.key);
+        }
+        return groups;
+      };
 
-  const generatedSimulationDataGroups = takeGroups((group) =>
-    (group.category === "json" || group.category === "binary" || looksLikePersistedOutput(normalize(group.label))) &&
-    !isSimulationResultGroup(group),
-  );
-  addNode(
-    "proc:output:generated-simulation-data",
-    "Generated Simulation Data",
-    "artifact",
-    "generated simulation data",
-    generatedSimulationDataGroups,
-  );
-
-  const simulationResultGroups = takeGroups((group) => isSimulationResultGroup(group) || isVisualArtifactGroup(group));
-  addNode(
-    "proc:output:simulation-results",
-    "Simulation Results",
-    "artifact",
-    "simulation results",
-    simulationResultGroups,
-  );
-
-  const remainingGroups = relevantGroups.filter((group) => !usedKeys.has(group.key));
-  if (remainingGroups.length > 0) {
-    const generatedNode = nodes.find((entry) => entry.node.id === "proc:output:generated-data");
-    if (generatedNode) {
-      generatedNode.groups = [...(generatedNode.groups ?? []), ...remainingGroups];
-      generatedNode.groupKeys = unique([
-        ...(generatedNode.groupKeys ?? []),
-        ...remainingGroups.map((group) => group.key),
-      ]);
-      generatedNode.node.preview = buildDetailedArtifactPreview(
-        generatedNode.groups,
+      const arrivalGroups = takeGroups((group) =>
+        group.category === "arrival" || /\barrival\b/.test(normalize(group.label)),
       );
-    } else {
-      addNode("proc:output:generated-data", "Generated Data", "artifact", "generated data", remainingGroups);
+      addNode("proc:output:arrival-table", "Arrival Table", "artifact", "arrival data", arrivalGroups, stage.id);
+
+      const generatedDataGroups = takeGroups((group) =>
+        group.category === "tabular" &&
+        !/\barrival\b/.test(normalize(group.label)) &&
+        !isSimulationResultGroup(group) &&
+        !isVisualArtifactGroup(group),
+      );
+      addNode("proc:output:generated-data", "Generated Data", "artifact", "generated data", generatedDataGroups, stage.id);
+
+      const generatedSimulationDataGroups = takeGroups((group) =>
+        (group.category === "json" || group.category === "binary" || looksLikePersistedOutput(normalize(group.label))) &&
+        !isSimulationResultGroup(group),
+      );
+      addNode(
+        "proc:output:generated-simulation-data",
+        "Generated Simulation Data",
+        "artifact",
+        "generated simulation data",
+        generatedSimulationDataGroups,
+        stage.id,
+      );
+
+      const simulationResultGroups = takeGroups((group) => isSimulationResultGroup(group) || isVisualArtifactGroup(group));
+      addNode(
+        "proc:output:simulation-results",
+        "Simulation Results",
+        "artifact",
+        "simulation results",
+        simulationResultGroups,
+        stage.id,
+      );
+
+      const remainingGroups = stageGroups.filter((group) => !usedKeys.has(group.key));
+      if (remainingGroups.length > 0) {
+        const generatedNode = nodes.find((entry) => entry.node.id === "proc:output:generated-data");
+        if (generatedNode) {
+          generatedNode.groups = [...(generatedNode.groups ?? []), ...remainingGroups];
+          generatedNode.groupKeys = unique([
+            ...(generatedNode.groupKeys ?? []),
+            ...remainingGroups.map((group) => group.key),
+          ]);
+          generatedNode.node.preview = buildDetailedArtifactPreview(
+            generatedNode.groups,
+            stage.id,
+          );
+        } else {
+          addNode(
+            "proc:output:generated-data",
+            "Generated Data",
+            "artifact",
+            "generated data",
+            remainingGroups,
+            stage.id,
+          );
+        }
+      }
+      continue;
+    }
+
+    const buckets = buildOutputBucketsForStage(stage.id, stageGroups);
+    for (const bucket of buckets) {
+      addNode(
+        bucket.id,
+        bucket.label,
+        "artifact",
+        outputSinkEdgeLabel(bucket.groups),
+        bucket.groups,
+        stage.id,
+      );
     }
   }
 
   return nodes;
+}
+
+function isLayerOneOutputGroup(group: ArtifactFlowGroup): boolean {
+  const producerStage = dominantStage(group.producerStageIds);
+  if (!producerStage || producerStage === "inputs") return false;
+  return (group.kind === "output" || group.kind === "orphan_write") && crossStageConsumers(group).length === 0;
+}
+
+function buildOutputBucketsForStage(
+  stage: StageId,
+  groups: ArtifactFlowGroup[],
+): Array<{ id: string; label: string; groups: ArtifactFlowGroup[] }> {
+  if (groups.length === 0) return [];
+
+  const sortedGroups = [...groups].sort((a, b) =>
+    outputSelectionPriority(b) - outputSelectionPriority(a) ||
+    b.score - a.score ||
+    a.label.localeCompare(b.label),
+  );
+  const categoryBuckets = groupBy(sortedGroups, outputBucketKey);
+  const shouldSplitByCategory = categoryBuckets.size > 1 && sortedGroups.length >= 5;
+  const buckets = shouldSplitByCategory
+    ? [...categoryBuckets.entries()].map(([bucketKey, bucketGroups]) => ({
+        id: `proc:output:${stage}-${bucketKey}`,
+        label: `${shortStageTitle(stage)} ${outputBucketTitle(bucketKey)}`,
+        groups: bucketGroups,
+      }))
+    : [{
+        id: `proc:output:${stage}-outputs`,
+        label: `${shortStageTitle(stage)} Outputs`,
+        groups: sortedGroups,
+      }];
+
+  return buckets.sort((a, b) =>
+    outputSelectionPriority(b.groups[0]!) - outputSelectionPriority(a.groups[0]!) ||
+    a.label.localeCompare(b.label),
+  );
+}
+
+function outputBucketKey(group: ArtifactFlowGroup): string {
+  switch (group.category) {
+    case "tabular":
+    case "arrival":
+      return "tabular";
+    case "json":
+      return "json";
+    case "binary":
+      return "binary";
+    case "source":
+      return "reports";
+    case "artifact":
+    case "libraries-imports":
+      return "artifacts";
+  }
+}
+
+function outputBucketTitle(bucketKey: string): string {
+  switch (bucketKey) {
+    case "tabular":
+      return "Tabular Outputs";
+    case "json":
+      return "JSON Outputs";
+    case "binary":
+      return "Binary / Pickle Outputs";
+    case "reports":
+      return "Reports / Excel Outputs";
+    default:
+      return "Outputs";
+  }
+}
+
+function outputSinkEdgeLabel(groups: ArtifactFlowGroup[]): string {
+  if (groups.every((group) => group.kind === "orphan_write")) {
+    return "not read in scanned project";
+  }
+  if (groups.some((group) => group.kind === "orphan_write")) {
+    return "persists / not read in scanned project";
+  }
+  return groups.some((group) => group.category === "json" || group.category === "binary")
+    ? "persists"
+    : "final output";
 }
 
 function buildLayerOneStageArtifactItems(
@@ -708,7 +832,7 @@ function buildLayerOneStageArtifactItems(
 
     const stageGroups = flowGroups.filter((group) =>
       dominantStage(group.producerStageIds) === stage.id &&
-      group.kind !== "input" &&
+      group.kind === "handoff" &&
       !excludedGroupKeys.has(group.key),
     );
     if (stageGroups.length === 0) continue;
@@ -966,7 +1090,19 @@ function buildStagePackagePreview(
   const produced = summarizeStageFlowGroupLabels(
     stage,
     flowGroups
-      .filter((group) => group.producerStageIds.includes(stage)),
+      .filter((group) => group.producerStageIds.includes(stage) && group.kind !== "internal"),
+    3,
+  );
+  const internalArtifacts = summarizeStageFlowGroupLabels(
+    stage,
+    flowGroups
+      .filter((group) => group.producerStageIds.includes(stage) && group.kind === "internal"),
+    3,
+  );
+  const writtenOnly = summarizeStageFlowGroupLabels(
+    stage,
+    flowGroups
+      .filter((group) => group.producerStageIds.includes(stage) && group.kind === "orphan_write"),
     3,
   );
 
@@ -974,6 +1110,8 @@ function buildStagePackagePreview(
     focus ? `Focus: ${focus}` : null,
     consumed ? `Consumes: ${consumed}` : null,
     produced ? `Produces: ${produced}` : null,
+    internalArtifacts ? `Internal artifacts: ${internalArtifacts}` : null,
+    writtenOnly ? `Written but not read: ${writtenOnly}` : null,
   ].filter((line): line is string => Boolean(line));
 
   return lines.length > 0 ? lines : undefined;
@@ -1077,7 +1215,7 @@ function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactF
     byKey.set(key, bucket);
   }
 
-  return [...byKey.entries()]
+  const groups = [...byKey.entries()]
     .map(([key, bucket]) => {
       const producerStageIds = sortStagesByWeight(bucket.producerStageCounts);
       const consumerStageIds = sortStagesByWeight(bucket.consumerStageCounts);
@@ -1085,12 +1223,12 @@ function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactF
 
       const category = detectArtifactCategory(bucket.originalLabel, [...bucket.paths]);
       const differentConsumers = consumerStageIds.filter((stageId) => !producerStageIds.includes(stageId));
-      const kind: ArtifactFlowGroup["kind"] =
-        producerStageIds.length === 0
-          ? "input"
-          : differentConsumers.length > 0
-            ? "handoff"
-            : "output";
+      const kind = classifyArtifactFlowGroup({
+        producerStageIds,
+        consumerStageIds,
+        readCount: bucket.readCount,
+        writeCount: bucket.writeCount,
+      });
 
       const score =
         bucket.readCount +
@@ -1098,6 +1236,9 @@ function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactF
         differentConsumers.length * 5 +
         bucket.paths.size +
         (kind === "input" ? 4 : 0) +
+        (kind === "handoff" ? 8 : 0) +
+        (kind === "internal" ? -2 : 0) +
+        (kind === "orphan_write" ? -4 : 0) +
         (category === "arrival" ? 4 : 0) +
         (category === "json" || category === "binary" ? 3 : 0);
 
@@ -1120,8 +1261,89 @@ function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactF
         score,
       } satisfies ArtifactFlowGroup;
     })
-    .filter((group): group is ArtifactFlowGroup => Boolean(group))
+    .filter((group): group is ArtifactFlowGroup => Boolean(group));
+
+  return annotateArtifactFlowReviewHints(groups)
     .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+}
+
+function classifyArtifactFlowGroup(group: Pick<
+  ArtifactFlowGroup,
+  "producerStageIds" | "consumerStageIds" | "readCount" | "writeCount"
+>): ArtifactFlowKind {
+  const producerStageIds = sortUniqueStages(group.producerStageIds);
+  const consumerStageIds = sortUniqueStages(group.consumerStageIds);
+  const dominantProducer = dominantStage(producerStageIds);
+  const externalConsumers = dominantProducer
+    ? consumerStageIds.filter((stageId) => stageId !== dominantProducer)
+    : consumerStageIds;
+
+  if (group.readCount > 0 && group.writeCount === 0) {
+    return producerStageIds.length === 0 ? "input" : "orphan_read";
+  }
+
+  if (group.writeCount > 0 && consumerStageIds.length === 0) {
+    return "orphan_write";
+  }
+
+  if (group.writeCount > 0 && producerStageIds.length > 0 && externalConsumers.length > 0) {
+    return "handoff";
+  }
+
+  if (
+    group.writeCount > 0 &&
+    producerStageIds.length === 1 &&
+    consumerStageIds.length > 0 &&
+    consumerStageIds.every((stageId) => stageId === dominantProducer)
+  ) {
+    return "internal";
+  }
+
+  if (group.writeCount > 0 && externalConsumers.length === 0) {
+    return "output";
+  }
+
+  if (group.readCount > 0 && producerStageIds.length === 0) {
+    return "orphan_read";
+  }
+
+  return "unmatched_candidate";
+}
+
+function annotateArtifactFlowReviewHints(groups: ArtifactFlowGroup[]): ArtifactFlowGroup[] {
+  const writerOnlyGroups = groups.filter((group) => group.writeCount > 0 && crossStageConsumers(group).length === 0);
+  const readerOnlyGroups = groups.filter((group) => group.readCount > 0 && group.producerStageIds.length === 0);
+
+  return groups.map((group) => {
+    const reviewHints = new Set(group.reviewHints ?? []);
+    if (group.kind === "orphan_write") {
+      reviewHints.add("written but not read");
+    }
+    if (group.kind === "input" || group.kind === "orphan_read") {
+      reviewHints.add("read but no writer");
+    }
+    if (group.kind === "internal") {
+      reviewHints.add("internal to stage");
+    }
+
+    const candidatePool = group.writeCount > 0 ? readerOnlyGroups : writerOnlyGroups;
+    const candidate = candidatePool
+      .filter((candidateGroup) => candidateGroup.key !== group.key)
+      .map((candidateGroup) => ({
+        group: candidateGroup,
+        confidence: artifactFuzzyMatchConfidence(group, candidateGroup),
+      }))
+      .filter((entry) => entry.confidence >= 0.55 && entry.confidence < 0.82)
+      .sort((a, b) => b.confidence - a.confidence || a.group.label.localeCompare(b.group.label))[0];
+
+    if (candidate) {
+      reviewHints.add(`possible unmatched candidate: ${group.label} vs ${candidate.group.label}`);
+    }
+
+    return reviewHints.size > 0
+      ? { ...group, reviewHints: [...reviewHints].sort((a, b) => a.localeCompare(b)) }
+      : group;
+  });
 }
 
 function selectArtifactFlowGroupsForLayer(flowGroups: ArtifactFlowGroup[]): ArtifactFlowGroup[] {
@@ -1157,7 +1379,7 @@ function selectArtifactFlowGroupsForLayer(flowGroups: ArtifactFlowGroup[]): Arti
       flowGroups
         .filter((group) =>
           dominantStage(group.producerStageIds) === stage.id &&
-          (group.kind === "handoff" || stage.id === "distribution" || stage.id === "simulation"),
+          (group.kind === "handoff" || group.kind === "output" || group.kind === "orphan_write" || stage.id === "distribution" || stage.id === "simulation"),
         )
         .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)),
       limit,
@@ -1166,7 +1388,7 @@ function selectArtifactFlowGroupsForLayer(flowGroups: ArtifactFlowGroup[]): Arti
 
   take(
     flowGroups
-      .filter((group) => group.kind === "output")
+      .filter((group) => group.kind === "output" || group.kind === "orphan_write")
       .sort((a, b) =>
         outputSelectionPriority(b) - outputSelectionPriority(a) ||
         b.score - a.score ||
@@ -1282,6 +1504,7 @@ function buildStructuredArtifactPreview(
     groupKind: primaryKind,
     groupCount: sortedGroups.length,
     pathCount: sortedGroups.reduce((sum, group) => sum + group.paths.length, 0),
+    reviewHints: unique(sortedGroups.flatMap((group) => group.reviewHints ?? [])),
   };
 
   return [
@@ -1395,6 +1618,7 @@ function buildArtifactPreviewItem(group: ArtifactFlowGroup): ArtifactPreviewItem
     consumerStages: sortUniqueStages(group.consumerStageIds),
     category: group.category,
     groupKind: group.kind,
+    reviewHints: group.reviewHints,
   };
 }
 
@@ -1408,6 +1632,15 @@ function encodeArtifactPreviewLine(
 function buildFlowLine(group: ArtifactFlowGroup): string {
   const producer = dominantStage(group.producerStageIds);
   const consumer = dominantStage(crossStageConsumers(group)) ?? dominantStage(group.consumerStageIds);
+  if (group.kind === "orphan_write" && producer) {
+    return `Not read in scanned project: ${stageTitle(producer)}`;
+  }
+  if (group.kind === "internal" && producer) {
+    return `Internal to: ${stageTitle(producer)}`;
+  }
+  if (group.kind === "output" && producer) {
+    return `Final output: ${stageTitle(producer)}`;
+  }
   if (!producer && consumer) {
     return `Feeds: ${stageTitle("inputs")}`;
   }
@@ -1521,17 +1754,17 @@ function looksLikeConcreteArtifact(label: string): boolean {
 }
 
 function artifactFamilyKey(label: string): string {
-  return basenameOf(canonicalArtifactLabel(label)).toLowerCase();
+  return normalizeArtifactIdentity(label).key;
 }
 
 function artifactDisplayLabel(primaryLabel: string, paths: string[]): string {
-  const basenames = unique(paths.map((path) => basenameOf(canonicalArtifactLabel(path))));
+  const basenames = unique(paths.map((path) => normalizeArtifactIdentity(path).basename));
   if (basenames.length === 1) return basenames[0];
-  return basenameOf(canonicalArtifactLabel(primaryLabel));
+  return normalizeArtifactIdentity(primaryLabel).basename;
 }
 
 function processArtifactDisplayLabel(canonicalLabel: string): string {
-  return basenameOf(canonicalLabel);
+  return normalizeArtifactIdentity(canonicalLabel).basename;
 }
 
 function detectArtifactCategory(
@@ -1658,11 +1891,17 @@ function compareFlowLayoutOrder(a: ArtifactFlowGroup, b: ArtifactFlowGroup): num
   const kindPriority = (group: ArtifactFlowGroup) => {
     switch (group.kind) {
       case "input":
+      case "orphan_read":
         return 1;
       case "handoff":
         return 2;
+      case "internal":
+        return 4;
       case "output":
+      case "orphan_write":
         return 3;
+      case "unmatched_candidate":
+        return 5;
     }
   };
 
@@ -1717,24 +1956,113 @@ function basenameOf(value: string): string {
 }
 
 function shortArtifactPath(value: string): string {
-  const normalized = canonicalArtifactLabel(value).replace(/\\/g, "/");
+  const normalized = normalizeArtifactIdentity(value).canonicalLabel.replace(/\\/g, "/");
   const segments = normalized.split("/").filter(Boolean);
   return segments.slice(-2).join("/");
 }
 
 function canonicalArtifactLabel(value: string): string {
-  const trimmed = value.trim();
-  const basename = basenameOf(trimmed);
+  return normalizeArtifactIdentity(value).canonicalLabel;
+}
+
+function normalizeArtifactIdentity(value: string): {
+  canonicalLabel: string;
+  basename: string;
+  extension: string;
+  key: string;
+} {
+  const trimmed = value
+    .trim()
+    .replace(/^['"]+|['"]+$/g, "")
+    .replace(/^file:\/*/i, "");
+  const withoutQuery = trimmed.replace(/[?#].*$/, "");
+  const slashNormalized = withoutQuery.replace(/\\/g, "/").replace(/\/+/g, "/");
+  const basename = basenameOf(slashNormalized);
+  const extensionMatch = basename.match(/(\.[A-Za-z0-9]+)$/);
+  const extension = extensionMatch?.[1]?.toLowerCase() ?? "";
+  const stem = extension ? basename.slice(0, -extension.length) : basename;
   const normalized = normalize(basename);
+  const normalizedStem = normalize(stem);
   for (const rule of KNOWN_ARTIFACT_LABELS) {
-    if (rule.pattern.test(normalized)) {
-      if (trimmed === basename) {
-        return rule.label;
-      }
-      return trimmed.replace(new RegExp(`${escapeRegExp(basename)}$`), rule.label);
+    if (rule.pattern.test(normalized) || rule.pattern.test(normalizedStem)) {
+      const canonicalLabel = slashNormalized === basename
+        ? rule.label
+        : slashNormalized.replace(new RegExp(`${escapeRegExp(basename)}$`), rule.label);
+      return {
+        canonicalLabel,
+        basename: basenameOf(canonicalLabel),
+        extension: basenameOf(canonicalLabel).match(/(\.[A-Za-z0-9]+)$/)?.[1]?.toLowerCase() ?? "",
+        key: artifactComparisonKey(basenameOf(canonicalLabel)),
+      };
     }
   }
-  return trimmed;
+
+  return {
+    canonicalLabel: slashNormalized || trimmed,
+    basename: basename || trimmed,
+    extension,
+    key: artifactComparisonKey(basename || trimmed),
+  };
+}
+
+function artifactComparisonKey(value: string): string {
+  const basename = basenameOf(value).toLowerCase();
+  const normalized = basename
+    .replace(/\.(csv|tsv|xlsx|xls|json|pkl|pickle|parquet|joblib|txt|yaml|yml|xml)$/i, (match) => match.toLowerCase())
+    .replace(/\s+/g, "_");
+  return normalized;
+}
+
+function artifactFuzzyMatchConfidence(left: ArtifactFlowGroup, right: ArtifactFlowGroup): number {
+  const leftIdentity = normalizeArtifactIdentity(left.label);
+  const rightIdentity = normalizeArtifactIdentity(right.label);
+  if (leftIdentity.key === rightIdentity.key) return 1;
+  if (leftIdentity.extension && rightIdentity.extension && leftIdentity.extension !== rightIdentity.extension) {
+    return 0;
+  }
+
+  const leftStem = artifactLooseStem(leftIdentity.basename);
+  const rightStem = artifactLooseStem(rightIdentity.basename);
+  if (!leftStem || !rightStem || leftStem === rightStem) {
+    return leftStem === rightStem ? 1 : 0;
+  }
+
+  const singularLeft = leftStem.endsWith("s") ? leftStem.slice(0, -1) : leftStem;
+  const singularRight = rightStem.endsWith("s") ? rightStem.slice(0, -1) : rightStem;
+  if (singularLeft === singularRight) return 0.6;
+
+  const distance = levenshteinDistance(leftStem, rightStem);
+  const maxLength = Math.max(leftStem.length, rightStem.length);
+  if (maxLength >= 5 && distance === 1) return 0.6;
+  if (maxLength >= 8 && distance === 2) return 0.56;
+  return 0;
+}
+
+function artifactLooseStem(value: string): string {
+  return basenameOf(value)
+    .toLowerCase()
+    .replace(/\.(csv|tsv|xlsx|xls|json|pkl|pickle|parquet|joblib|txt|yaml|yml|xml)$/i, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const current = new Array<number>(right.length + 1);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    current[0] = leftIndex;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1]! + 1,
+        previous[rightIndex]! + 1,
+        previous[rightIndex - 1]! + substitutionCost,
+      );
+    }
+    for (let index = 0; index < previous.length; index += 1) {
+      previous[index] = current[index]!;
+    }
+  }
+  return previous[right.length] ?? 0;
 }
 
 function unique(values: string[]): string[] {

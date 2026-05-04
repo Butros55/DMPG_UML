@@ -133,11 +133,15 @@ def load_extracted():
     assert.ok(processView?.nodeRefs.includes("proc:output:arrival-table"));
     assert.ok(processView?.nodeRefs.includes("proc:output:generated-simulation-data"));
     assert.ok(processView?.nodeRefs.includes("proc:output:simulation-results"));
+    assert.ok(processView?.nodeRefs.includes("proc:output:extract-outputs"));
+    assert.ok(processView?.nodeRefs.includes("proc:output:distribution-outputs"));
     assert.ok(processView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-    assert.ok(processView?.nodeRefs.some((nodeRef) => nodeRef.startsWith("proc:artifact-cluster:distribution_json")));
-    assert.ok(processView?.nodeRefs.includes("proc:artifact:model_pickle"));
+    assert.ok(!processView?.nodeRefs.some((nodeRef) => nodeRef.startsWith("proc:artifact-cluster:distribution_json")));
+    assert.ok(!processView?.nodeRefs.includes("proc:artifact:model_pickle"));
     assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_arrival_table:to-simulation-output"));
     assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_generated_simulation_data:to-simulation-output"));
+    assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_extract_outputs:to-extract-output"));
+    assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_distribution_outputs:to-distribution-output"));
 
     const extractStageView = graph.views.find((view) => view.id === "view:process-stage:extract");
     assert.ok(extractStageView?.nodeRefs.includes("mod:data_extraction:DataExtraction"));

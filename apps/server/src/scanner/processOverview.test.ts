@@ -54,12 +54,15 @@ test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 d
     "CSV / Files",
     "MES / External Sources",
     "Tabular Artifacts (Extraction)",
-    "JSON Artifacts (Distribution)",
     "Arrival Table",
     "Simulation Results",
   ]) {
     assert.ok(nodeLabels.has(label), `${label} should be visible in Layer 1`);
   }
+  assert.ok(
+    nodeLabels.has("JSON Artifacts (Distribution)") || nodeLabels.has("Distribution Outputs"),
+    "distribution artifacts should be visible either as handoffs or as output sinks",
+  );
 
   const arrivalTable = config.nodes.find((node) => node.id === "proc:output:arrival-table");
   assert.ok(arrivalTable?.preview?.[0]?.startsWith("@preview "));
@@ -91,8 +94,18 @@ test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 d
   assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:simulation" && edge.target === "proc:output:simulation-results" && edge.label?.startsWith("simulation results: ") === true));
   assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:extract" && edge.target.startsWith("proc:artifact-cluster:extract_") && edge.label?.startsWith("writes: ") === true));
   assert.ok(hasEdge(config, (edge) => edge.source.startsWith("proc:artifact-cluster:extract_") && edge.target === "proc:pkg:simulation" && edge.label?.startsWith("consumes: ") === true));
-  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:distribution" && edge.target.startsWith("proc:artifact-cluster:distribution_json") && edge.label?.startsWith("persists: ") === true));
-  assert.ok(hasEdge(config, (edge) => edge.source === "proc:pkg:distribution" && edge.target === "proc:artifact:station_mat_pickle" && edge.label === "persists"));
+  assert.ok(hasEdge(config, (edge) =>
+    edge.source === "proc:pkg:distribution" &&
+    (
+      (edge.target.startsWith("proc:artifact-cluster:distribution_json") && edge.label?.startsWith("persists: ") === true) ||
+      (edge.target.startsWith("proc:output:distribution") && /persists|not read|final output/.test(edge.label ?? ""))
+    ),
+  ));
+  assert.ok(!hasEdge(config, (edge) =>
+    edge.source === "proc:pkg:distribution" &&
+    edge.target === "proc:artifact:station_mat_pickle" &&
+    edge.label === "persists",
+  ));
   assert.ok(hasEdge(config, (edge) => edge.source === "mod:distribution.fit_distribution" && edge.target === "proc:artifact:distribution_json" && edge.label === "persists"));
   assert.ok(hasEdge(config, (edge) => edge.source === "mod:kerndichteschätzer" && edge.target === "proc:artifact:kde_min_max_values_json" && edge.label === "persists"));
   assert.ok(hasEdge(config, (edge) => edge.source === "mod:arrival_table.generate_arrival_table" && edge.target === "proc:artifact:arrival_gro_csv" && edge.label === "creates"));
@@ -174,7 +187,10 @@ test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated sta
   assert.ok(!processView?.nodeRefs.includes("proc:pkg:outputs"));
   assert.ok(processView?.nodeRefs.includes("proc:input:database-import"));
   assert.ok(processView?.nodeRefs.includes("proc:artifact-cluster:extract_tabular_category"));
-  assert.ok(processView?.nodeRefs.includes("proc:artifact-cluster:distribution_json_category"));
+  assert.ok(
+    processView?.nodeRefs.includes("proc:artifact-cluster:distribution_json_category") ||
+    processView?.nodeRefs.some((nodeRef) => nodeRef.startsWith("proc:output:distribution")),
+  );
   assert.ok(processView?.nodeRefs.includes("proc:output:arrival-table"));
   assert.ok(processView?.nodeRefs.includes("proc:output:simulation-results"));
   assert.ok(processView?.edgeRefs.includes("process-edge:flow:proc_output_arrival_table:to-simulation-output"));

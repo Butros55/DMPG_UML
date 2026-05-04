@@ -18,6 +18,7 @@ export interface ArtifactPreviewMeta {
   groupKind?: string;
   groupCount?: number;
   pathCount?: number;
+  reviewHints?: string[];
 }
 
 export interface ArtifactPreviewItem {
@@ -34,6 +35,7 @@ export interface ArtifactPreviewItem {
   consumerStages: string[];
   category?: string;
   groupKind?: string;
+  reviewHints?: string[];
 }
 
 export interface ArtifactPreviewDetailRow {
@@ -167,6 +169,7 @@ export function buildArtifactPreviewMetaChips(preview: ArtifactPreviewData): str
       : preview.meta?.groupKind
         ? `Rolle: ${humanizePreviewValue(preview.meta.groupKind)}`
         : null,
+    ...(preview.meta?.reviewHints ?? []).slice(0, 2).map((hint) => `Hinweis: ${hint}`),
   ].filter((entry): entry is string => Boolean(entry));
 }
 
@@ -240,6 +243,7 @@ function parseStructuredPreviewMeta(line: string): ArtifactPreviewMeta | null {
       groupKind: normalizePreviewText(payload.groupKind),
       groupCount: normalizePreviewNumber(payload.groupCount) ?? undefined,
       pathCount: normalizePreviewNumber(payload.pathCount) ?? undefined,
+      reviewHints: normalizePreviewArray(payload.reviewHints),
     };
   } catch {
     return null;
@@ -267,6 +271,7 @@ function parseStructuredPreviewItem(line: string): ArtifactPreviewItem | null {
       consumerStages: normalizePreviewArray(payload.consumerStages),
       category: normalizePreviewText(payload.category),
       groupKind: normalizePreviewText(payload.groupKind),
+      reviewHints: normalizePreviewArray(payload.reviewHints),
     };
   } catch {
     return null;
@@ -375,6 +380,7 @@ function normalizeLegacyArtifactPreview(
       consumerStages: uniquePreviewValues(consumerStages),
       category,
       groupKind: inferredGroupKind,
+      reviewHints: [],
     },
     meta: {
       mode: "single",

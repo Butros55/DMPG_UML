@@ -204,6 +204,7 @@ function SequenceProjectionCard({
         </div>
       )}
       <div className="shc-preview-chip-row">
+        <span className="shc-preview-chip">Mode {projection.sequenceMode}</span>
         <span className="shc-preview-chip">Participants {projection.usedParticipants}/{projection.participantLimit}</span>
         <span className="shc-preview-chip">Messages {projection.usedMessages}/{projection.messageLimit}</span>
         <span className="shc-preview-chip">Buckets {projection.bucketsActive ? "active" : "inactive"}</span>
@@ -652,6 +653,7 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const projectionMode = useAppStore((s) => s.projectionMode);
+  const sequenceProjectionMode = useAppStore((s) => s.sequenceProjectionMode);
   const sequenceContext = useAppStore((s) => s.sequenceContext);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const updateRelation = useAppStore((s) => s.updateRelation);
@@ -700,6 +702,7 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
       symbolOverrides: resolvedArtifactView.symbolOverrides,
       relationFilters: diagramSettings.relationFilters,
       labelsMode: diagramSettings.labels,
+      sequenceMode: sequenceProjectionMode,
       selectedSymbolId,
       selectedEdgeId,
     });
@@ -709,6 +712,7 @@ function EdgeInspector({ onToggleInspector }: { onToggleInspector: () => void })
     diagramSettings.relationFilters,
     graph,
     projectionMode,
+    sequenceProjectionMode,
     resolvedArtifactView,
     selectedEdgeId,
     selectedSymbolId,
@@ -1293,6 +1297,19 @@ function ArtifactPreviewItemCard({
         </div>
       )}
 
+      {(item.reviewHints?.length ?? 0) > 0 && (
+        <div className="shc-preview-subsection">
+          <div className="shc-preview-subsection-label">Diagnose</div>
+          <div className="shc-preview-chip-row">
+            {(item.reviewHints ?? []).map((hint, index) => (
+              <span key={`${itemKeyPrefix}-hint-${index}`} className="shc-preview-chip">
+                {hint}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <ArtifactRelationSection
         title="Liest"
         badgeKey="out:reads"
@@ -1531,6 +1548,7 @@ export function Inspector() {
   const openSourceViewer = useAppStore((s) => s.openSourceViewer);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const diagramSettings = useAppStore((s) => s.diagramSettings);
+  const sequenceProjectionMode = useAppStore((s) => s.sequenceProjectionMode);
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -1585,6 +1603,7 @@ export function Inspector() {
       symbolOverrides: resolvedArtifactView.symbolOverrides,
       relationFilters: diagramSettings.relationFilters,
       labelsMode: diagramSettings.labels,
+      sequenceMode: sequenceProjectionMode,
       selectedSymbolId,
       selectedEdgeId,
     });
@@ -1594,6 +1613,7 @@ export function Inspector() {
     diagramSettings.relationFilters,
     graph,
     resolvedArtifactView,
+    sequenceProjectionMode,
     selectedEdgeId,
     selectedSymbolId,
     sequenceView,

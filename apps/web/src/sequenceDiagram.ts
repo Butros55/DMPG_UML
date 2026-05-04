@@ -38,8 +38,10 @@ const ACTIVATION_GAP = 8;
 const SEQUENCE_ACTIVATION_WIDTH = 10;
 const SELF_CALL_VERTICAL_GAP = 12;
 const RESPONSE_EDGE_OFFSET = 14;
-const MAX_SEQUENCE_MESSAGES = 20;
+const MAX_SEQUENCE_MESSAGES = 30;
 const MAX_SEQUENCE_PARTICIPANTS = 8;
+
+export type SequenceProjectionMode = "code" | "artifact" | "full";
 
 export type SequenceParticipantLaneKind = "internal" | "external" | "artifact";
 
@@ -108,6 +110,7 @@ export type SequenceMessagePanelData = {
 
 export type SequenceProjectionMeta = {
   frameNodeId: string;
+  sequenceMode: SequenceProjectionMode;
   usedParticipants: number;
   participantLimit: number;
   usedMessages: number;
@@ -239,7 +242,57 @@ type SequenceProjectionSeed = {
   messagesCollapsed: boolean;
   activeRelationFilters: RelationType[];
   labelMode: DiagramLabelMode;
+  sequenceMode: SequenceProjectionMode;
 };
+
+type SequenceContext = {
+  graph: ProjectGraph;
+  view: DiagramView;
+  visibleNodeIds: string[];
+  hiddenSymbolIds: Set<string>;
+  symbolById: Map<string, Symbol>;
+  parentMap: Map<string, string | undefined>;
+  childrenByParent: Map<string, Symbol[]>;
+  ancestorIndex: Map<string, string[]>;
+  stageOwnerViewId: string | null;
+  stageSymbol: Symbol | null;
+  stageScopeIds: Set<string>;
+  seedParticipantIds: Set<string>;
+  artifactFocusIds: Set<string>;
+  artifactFocusLabels: Set<string>;
+  artifactCategory: ArtifactFocusCategory | null;
+  isArtifactCentered: boolean;
+  sequenceMode: SequenceProjectionMode;
+  relationFilters: Record<RelationType, boolean>;
+  labelsMode: DiagramLabelMode;
+};
+
+type SequenceEntryPoint = {
+  symbolId: string;
+  participantId: string;
+  score: number;
+  line: number;
+};
+
+type ScenarioRelation = {
+  relation: Relation;
+  sourceParticipantId: string;
+  targetParticipantId: string;
+  sourceSymbolId: string;
+  targetSymbolId: string;
+  order: number;
+  depth: number;
+  signalScore: number;
+};
+
+type SequenceParticipantBuildResult = {
+  displayBaseParticipantIds: string[];
+  extraParticipantOrder: Map<string, number>;
+  participantsCollapsed: boolean;
+  bucketsActive: boolean;
+};
+
+type ArtifactFocusCategory = "tabular" | "json" | "binary" | "config" | "artifact";
 
 export function isPackageSequenceView(
   view: DiagramView | null | undefined,
@@ -265,6 +318,7 @@ export function buildPackageSequenceDiagramDetails(params: {
   symbolOverrides: Map<string, Symbol>;
   relationFilters: Record<RelationType, boolean>;
   labelsMode: DiagramLabelMode;
+  sequenceMode?: SequenceProjectionMode;
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
 }): SequenceProjectionDetails {
@@ -276,6 +330,7 @@ export function buildPackageSequenceDiagramDetails(params: {
     symbolOverrides,
     relationFilters,
     labelsMode,
+    sequenceMode = "code",
     selectedSymbolId,
     selectedEdgeId,
   } = params;
@@ -293,6 +348,7 @@ export function buildPackageSequenceDiagramDetails(params: {
     symbolById,
     relationFilters,
     labelsMode,
+    sequenceMode,
   });
   if (stageSeed) {
     return buildSequenceProjectionElements({
@@ -436,6 +492,7 @@ export function buildPackageSequenceDiagramDetails(params: {
     messagesCollapsed: messages.length < compactedMessages.length,
     activeRelationFilters: activeRelationFilterList(relationFilters),
     labelMode: labelsMode,
+    sequenceMode,
   });
 }
 
@@ -447,6 +504,7 @@ export function buildPackageSequenceDiagram(params: {
   symbolOverrides: Map<string, Symbol>;
   relationFilters: Record<RelationType, boolean>;
   labelsMode: DiagramLabelMode;
+  sequenceMode?: SequenceProjectionMode;
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
 }): { nodes: Node[]; edges: Edge[] } {
@@ -532,6 +590,7 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
     messagesCollapsed,
     activeRelationFilters,
     labelMode,
+    sequenceMode,
   } = params;
   const participantStats = collectParticipantStats(messages);
   const displayBaseParticipantSet = new Set(displayBaseParticipantIds);
@@ -724,7 +783,7 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
       label: `sd ${view.title}`,
       kind: "group",
       symbolId: `sequence-frame:${view.id}`,
-      sequenceSubtitle: "Static interaction projection",
+      sequenceSubtitle: sequenceMode === "artifact" ? "Static artifact flow projection" : "Static code path projection",
     } satisfies UmlNodeData,
     className: "sequence-frame-node",
   }];
@@ -894,6 +953,7 @@ function buildSequenceProjectionElements(params: SequenceProjectionSeed & {
 
   const projection: SequenceProjectionMeta = {
     frameNodeId,
+    sequenceMode,
     usedParticipants: orderedParticipantIds.length,
     participantLimit: MAX_SEQUENCE_PARTICIPANTS,
     usedMessages: messages.length,
@@ -1181,6 +1241,7 @@ function buildStageSequenceProjectionSeed(params: {
   symbolById: Map<string, Symbol>;
   relationFilters: Record<RelationType, boolean>;
   labelsMode: DiagramLabelMode;
+  sequenceMode: SequenceProjectionMode;
 }): SequenceProjectionSeed | null {
   const {
     graph,
@@ -1190,89 +1251,330 @@ function buildStageSequenceProjectionSeed(params: {
     symbolById,
     relationFilters,
     labelsMode,
+    sequenceMode,
   } = params;
 
-  const stageOwnerViewId = view.diagramType === "sequence"
-    ? (view.parentViewId ?? view.id)
-    : view.id;
-  const stageSymbol = graph.symbols.find((symbol) =>
-    symbol.id.startsWith("proc:pkg:") && symbol.childViewId === stageOwnerViewId,
-  );
-  if (!stageSymbol) return null;
-  symbolById.set(stageSymbol.id, stageSymbol);
-
-  const internalNodeSet = new Set(visibleViewNodeRefs.filter((nodeId) => !hiddenSymbolIds.has(nodeId)));
-  const messages: SequenceMessage[] = [];
-  let sortIndex = 0;
-
-  const processRelations = graph.relations.filter((relation) =>
-    relationFilters[relation.type] && SEQUENCE_RELATION_TYPES.includes(relation.type),
-  );
-
-  const incoming = processRelations
-    .filter((relation) => relation.target === stageSymbol.id)
-    .sort(compareSequenceRelationEvidence(symbolById));
-  const outgoing = processRelations
-    .filter((relation) => relation.source === stageSymbol.id)
-    .sort(compareSequenceRelationEvidence(symbolById));
-
-  for (const relation of incoming) {
-    messages.push(buildStageProcessSequenceMessage({
-      relation,
-      stageSymbol,
-      symbolById,
-      labelsMode,
-      sortIndex: sortIndex++,
-    }));
-  }
-
-  const hasProcessArtifactOutputs = outgoing.some((relation) => isProcessArtifactId(relation.target));
-  const groupedInternal = buildGroupedStageMessages({
+  const context = resolveSequenceContext({
     graph,
     view,
-    stageSymbol,
-    internalNodeSet,
+    visibleViewNodeRefs,
+    hiddenSymbolIds,
     symbolById,
     relationFilters,
     labelsMode,
-    skipWrites: hasProcessArtifactOutputs,
+    sequenceMode,
   });
-  for (const message of groupedInternal) {
-    messages.push({ ...message, sortIndex: sortIndex++ });
-  }
+  if (!context) return null;
 
-  for (const relation of outgoing) {
-    messages.push(buildStageProcessSequenceMessage({
-      relation,
-      stageSymbol,
-      symbolById,
-      labelsMode,
-      sortIndex: sortIndex++,
-    }));
-  }
-
-  const downstreamArtifactMessages = buildDownstreamArtifactMessages({
-    processRelations,
-    outgoing,
-    stageSymbol,
-    symbolById,
-    labelsMode,
-    startSortIndex: sortIndex,
-  });
-  messages.push(...downstreamArtifactMessages);
+  const entryPoints = resolveEntryPoints(context);
+  const scenarioRelations = pruneNoise(
+    orderMessagesByCallTree(
+      collectScenarioRelations(context, entryPoints),
+      context,
+    ),
+    context,
+  );
+  const entryActorMessage = buildEntryPointSequenceMessage({ context, entryPoints });
+  const rawMessages = [
+    ...(entryActorMessage ? [entryActorMessage] : []),
+    ...scenarioRelations.map((scenarioRelation) =>
+      buildScenarioSequenceMessage({
+        scenarioRelation,
+        context,
+      }),
+    ),
+  ];
+  const compactedMessages = compactSequenceMessages(rawMessages, labelsMode);
+  const messages = summarizeSequenceMessages(compactedMessages);
 
   if (messages.length === 0) {
     return null;
   }
 
-  const dedupedMessages = dedupeStageMessages(messages)
-    .sort((left, right) => left.sortIndex - right.sortIndex)
-    .slice(0, MAX_SEQUENCE_MESSAGES);
+  const participants = buildParticipants(context, messages, entryPoints);
+
+  return {
+    symbolById,
+    messages,
+    displayBaseParticipantIds: participants.displayBaseParticipantIds,
+    extraParticipantOrder: participants.extraParticipantOrder,
+    participantsCollapsed: participants.participantsCollapsed,
+    bucketsActive: participants.bucketsActive,
+    messagesCollapsed: messages.length < rawMessages.length,
+    activeRelationFilters: activeRelationFilterList(relationFilters),
+    labelMode: labelsMode,
+    sequenceMode,
+  };
+}
+
+function resolveSequenceContext(params: {
+  graph: ProjectGraph;
+  view: DiagramView;
+  visibleViewNodeRefs: string[];
+  hiddenSymbolIds: Set<string>;
+  symbolById: Map<string, Symbol>;
+  relationFilters: Record<RelationType, boolean>;
+  labelsMode: DiagramLabelMode;
+  sequenceMode: SequenceProjectionMode;
+}): SequenceContext | null {
+  const {
+    graph,
+    view,
+    visibleViewNodeRefs,
+    hiddenSymbolIds,
+    symbolById,
+    relationFilters,
+    labelsMode,
+    sequenceMode,
+  } = params;
+  const parentMap = new Map<string, string | undefined>(graph.symbols.map((symbol) => [symbol.id, symbol.parentId]));
+  const childrenByParent = buildChildrenByParent(graph.symbols);
+  const ancestorIndex = buildAncestorIndex(parentMap);
+  const visibleNodeIds = visibleViewNodeRefs.filter((nodeId) => !hiddenSymbolIds.has(nodeId));
+  const stageOwnerViewId = resolveStageOwnerViewId(graph, view);
+  const stageSymbol = resolveStageSymbol(graph, view, stageOwnerViewId, symbolById);
+  const artifactCategory = resolveArtifactFocusCategory(view);
+
+  if (!stageOwnerViewId && !stageSymbol && !artifactCategory) {
+    return null;
+  }
+
+  const stageScopeRootIds = new Set<string>(visibleNodeIds);
+  const stageOwnerView = stageOwnerViewId
+    ? graph.views.find((candidate) => candidate.id === stageOwnerViewId)
+    : null;
+  if (stageOwnerView && stageOwnerView.id !== view.id) {
+    for (const nodeId of stageOwnerView.nodeRefs) {
+      if (!hiddenSymbolIds.has(nodeId)) {
+        stageScopeRootIds.add(nodeId);
+      }
+    }
+  }
+
+  const stageScopeIds = collectVisibleScopeIds([...stageScopeRootIds], childrenByParent);
+  const participantResolver = { symbolById, parentMap, childrenByParent };
+  const seedParticipantIds = new Set<string>();
+  const seedSourceNodeIds = sequenceMode === "artifact" ? visibleNodeIds : [...stageScopeRootIds];
+  for (const nodeId of seedSourceNodeIds) {
+    const participantId = resolveSemanticSequenceParticipantId(nodeId, participantResolver);
+    if (participantId) {
+      seedParticipantIds.add(participantId);
+    }
+  }
+
+  const artifactFocus = collectArtifactFocus({
+    graph,
+    view,
+    visibleNodeIds,
+    stageScopeIds,
+    symbolById,
+    artifactCategory,
+    relationFilters,
+  });
+
+  const isArtifactCentered = artifactFocus.ids.size > 0 && (
+    view.id.startsWith("view:artifacts:") ||
+    view.id.startsWith("view:art-cat:") ||
+    /\bartifacts?\b|\bdata files\b|\btabular\b|\boutputs?\b|\binputs?\b/i.test(view.title)
+  );
+
+  return {
+    graph,
+    view,
+    visibleNodeIds,
+    hiddenSymbolIds,
+    symbolById,
+    parentMap,
+    childrenByParent,
+    ancestorIndex,
+    stageOwnerViewId,
+    stageSymbol,
+    stageScopeIds,
+    seedParticipantIds,
+    artifactFocusIds: artifactFocus.ids,
+    artifactFocusLabels: artifactFocus.labels,
+    artifactCategory,
+    isArtifactCentered,
+    sequenceMode,
+    relationFilters,
+    labelsMode,
+  };
+}
+
+function resolveEntryPoints(context: SequenceContext): SequenceEntryPoint[] {
+  const outgoingCount = new Map<string, number>();
+  for (const relation of context.graph.relations) {
+    if (!context.relationFilters[relation.type]) continue;
+    if (!SEQUENCE_RELATION_TYPES.includes(relation.type)) continue;
+    if (relation.type === "imports") continue;
+    if (isNoisySequenceRelation(relation, context)) continue;
+    outgoingCount.set(relation.source, (outgoingCount.get(relation.source) ?? 0) + 1);
+  }
+
+  const candidateIds = new Set<string>();
+  for (const symbolId of context.stageScopeIds) {
+    const symbol = context.symbolById.get(symbolId);
+    if (!symbol || !isCallableSequenceSymbol(symbol)) continue;
+    candidateIds.add(symbolId);
+  }
+
+  const candidates: SequenceEntryPoint[] = [];
+  for (const symbolId of candidateIds) {
+    const participantId = resolveSemanticSequenceParticipantId(symbolId, context);
+    if (!participantId) continue;
+    const symbol = context.symbolById.get(symbolId);
+    const methodName = methodNameForSequenceSymbol(symbol, symbolId);
+    let score = outgoingCount.get(symbolId) ?? 0;
+    if (isPreferredEntryPointName(methodName)) score += 120;
+    if (symbol?.kind === "method") score += 16;
+    if (!methodName.startsWith("_")) score += 10;
+    if (context.seedParticipantIds.has(participantId)) score += 12;
+    candidates.push({
+      symbolId,
+      participantId,
+      score,
+      line: symbol?.location?.startLine ?? Number.MAX_SAFE_INTEGER,
+    });
+  }
+
+  const sorted = candidates.sort((left, right) =>
+    right.score - left.score ||
+    left.line - right.line ||
+    left.symbolId.localeCompare(right.symbolId),
+  );
+  if (sorted.length > 0) {
+    return sorted.slice(0, 1);
+  }
+
+  return [...context.seedParticipantIds].map((participantId, index) => ({
+    symbolId: participantId,
+    participantId,
+    score: 0,
+    line: index,
+  })).slice(0, 1);
+}
+
+function collectScenarioRelations(
+  context: SequenceContext,
+  entryPoints: SequenceEntryPoint[],
+): ScenarioRelation[] {
+  if (context.sequenceMode === "artifact" && context.isArtifactCentered) {
+    return collectArtifactCenteredScenarioRelations(context);
+  }
+  if (context.sequenceMode === "full") {
+    return collectStageFallbackScenarioRelations(context);
+  }
+
+  const bySource = buildSequenceRelationsBySource(context);
+  const scenarios: ScenarioRelation[] = [];
+  const seenRelationIds = new Set<string>();
+  let order = 0;
+
+  const visit = (sourceSymbolId: string, depth: number) => {
+    if (depth > 3) return;
+    const relations = bySource.get(sourceSymbolId) ?? [];
+    for (const relation of relations) {
+      if (seenRelationIds.has(relation.id)) continue;
+      const scenario = projectRelationToScenario(relation, context, order++, depth);
+      if (!scenario) continue;
+      seenRelationIds.add(relation.id);
+      scenarios.push(scenario);
+
+      const targetSymbol = context.symbolById.get(relation.target);
+      if (relation.type === "calls" && targetSymbol && isCallableSequenceSymbol(targetSymbol)) {
+        visit(relation.target, depth + 1);
+      }
+    }
+  };
+
+  for (const entryPoint of entryPoints) {
+    visit(entryPoint.symbolId, 0);
+  }
+
+  if (scenarios.length > 0) {
+    return scenarios;
+  }
+
+  return collectStageFallbackScenarioRelations(context);
+}
+
+function orderMessagesByCallTree(
+  scenarioRelations: ScenarioRelation[],
+  context: SequenceContext,
+): ScenarioRelation[] {
+  return [...scenarioRelations].sort((left, right) => {
+    if (left.order !== right.order) return left.order - right.order;
+    const evidenceDiff = sequenceEvidenceOrder(left.relation, context) - sequenceEvidenceOrder(right.relation, context);
+    if (evidenceDiff !== 0) return evidenceDiff;
+    return left.relation.id.localeCompare(right.relation.id);
+  });
+}
+
+function pruneNoise(
+  scenarioRelations: ScenarioRelation[],
+  context: SequenceContext,
+): ScenarioRelation[] {
+  const pruned: ScenarioRelation[] = [];
+  const seen = new Set<string>();
+  const allowedParticipants = new Set<string>(context.seedParticipantIds);
+  if (context.stageSymbol) allowedParticipants.add(context.stageSymbol.id);
+
+  for (const scenario of scenarioRelations) {
+    if (isNoisySequenceRelation(scenario.relation, context)) continue;
+    if (isNoisyParticipantId(scenario.sourceParticipantId, context)) continue;
+    if (isNoisyParticipantId(scenario.targetParticipantId, context)) continue;
+
+    const key = [
+      scenario.relation.type,
+      scenario.sourceParticipantId,
+      scenario.targetParticipantId,
+      scenarioLabelMergeKey(scenario.relation, context),
+      scenario.relation.evidence?.[0]?.startLine ?? "",
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pruned.push(scenario);
+    allowedParticipants.add(scenario.sourceParticipantId);
+    allowedParticipants.add(scenario.targetParticipantId);
+  }
+
+  if (pruned.length <= MAX_SEQUENCE_MESSAGES) {
+    return pruned;
+  }
+
+  const highSignal = pruned.filter((scenario) => scenario.signalScore >= 5);
+  const selfCalls = pruned.filter((scenario) =>
+    scenario.sourceParticipantId === scenario.targetParticipantId &&
+    !highSignal.includes(scenario),
+  );
+  const selected = [...highSignal, ...selfCalls].slice(0, MAX_SEQUENCE_MESSAGES);
+  if (selected.length >= MAX_SEQUENCE_MESSAGES) {
+    return selected.sort((left, right) => left.order - right.order);
+  }
+  for (const scenario of pruned) {
+    if (selected.includes(scenario)) continue;
+    selected.push(scenario);
+    if (selected.length >= MAX_SEQUENCE_MESSAGES) break;
+  }
+  return selected.sort((left, right) => left.order - right.order);
+}
+
+function buildParticipants(
+  context: SequenceContext,
+  messages: SequenceMessage[],
+  entryPoints: SequenceEntryPoint[],
+): SequenceParticipantBuildResult {
+  const displayBaseParticipantIds = dedupeParticipantIds([
+    ...entryPoints.map((entryPoint) => entryPoint.participantId),
+    ...context.seedParticipantIds,
+  ].filter((participantId) => messages.some((message) =>
+    message.sourceParticipantId === participantId || message.targetParticipantId === participantId,
+  )));
 
   const extraParticipantOrder = new Map<string, number>();
-  for (const message of dedupedMessages) {
+  for (const message of messages) {
     for (const participantId of [message.sourceParticipantId, message.targetParticipantId]) {
-      if (participantId === stageSymbol.id) continue;
+      if (displayBaseParticipantIds.includes(participantId)) continue;
       if (!extraParticipantOrder.has(participantId)) {
         extraParticipantOrder.set(participantId, extraParticipantOrder.size);
       }
@@ -1280,16 +1582,663 @@ function buildStageSequenceProjectionSeed(params: {
   }
 
   return {
-    symbolById,
-    messages: dedupedMessages,
-    displayBaseParticipantIds: [stageSymbol.id],
+    displayBaseParticipantIds,
     extraParticipantOrder,
     participantsCollapsed: false,
     bucketsActive: false,
-    messagesCollapsed: dedupedMessages.length < messages.length,
-    activeRelationFilters: activeRelationFilterList(relationFilters),
-    labelMode: labelsMode,
   };
+}
+
+function buildScenarioSequenceMessage(params: {
+  scenarioRelation: ScenarioRelation;
+  context: SequenceContext;
+}): RawSequenceMessage {
+  const { scenarioRelation, context } = params;
+  const { relation } = scenarioRelation;
+  const sourceSymbol = context.symbolById.get(relation.source);
+  const targetSymbol = context.symbolById.get(relation.target);
+  const evidence = relation.evidence?.[0];
+  const descriptor = buildScenarioMessageDescriptor(relation, sourceSymbol, targetSymbol, context);
+
+  return {
+    relation,
+    sourceParticipantId: scenarioRelation.sourceParticipantId,
+    targetParticipantId: scenarioRelation.targetParticipantId,
+    sourceSymbolId: relation.source,
+    targetSymbolId: relation.target,
+    file: evidence?.file ?? sourceSymbol?.location?.file ?? targetSymbol?.location?.file ?? "",
+    line: evidence?.startLine ?? Number.MAX_SAFE_INTEGER,
+    sortIndex: scenarioRelation.order,
+    label: pipelineTruncateSequenceMessageLabel(descriptor.text, context.labelsMode),
+    descriptor,
+    isSelfCall: scenarioRelation.sourceParticipantId === scenarioRelation.targetParticipantId,
+    isCreateMessage: relation.type === "instantiates",
+    edgeKindHint: inferSequenceEdgeKindForRelation(relation, sourceSymbol, targetSymbol),
+  };
+}
+
+function buildEntryPointSequenceMessage(params: {
+  context: SequenceContext;
+  entryPoints: SequenceEntryPoint[];
+}): RawSequenceMessage | null {
+  const { context, entryPoints } = params;
+  if (context.sequenceMode === "artifact") return null;
+  const entryPoint = entryPoints[0];
+  if (!entryPoint) return null;
+
+  const entrySymbol = context.symbolById.get(entryPoint.symbolId);
+  const methodName = methodNameForSequenceSymbol(entrySymbol, entryPoint.symbolId);
+  const actorId = `sequence-actor:${safeSequenceId(context.view.id)}:${safeSequenceId(entryPoint.symbolId)}`;
+  const actorSymbol: Symbol = {
+    id: actorId,
+    label: context.stageSymbol?.label ? `${context.stageSymbol.label} Actor` : "Main Script Actor",
+    kind: "external",
+    umlType: "external",
+    tags: ["sequence-actor"],
+  };
+  context.symbolById.set(actorId, actorSymbol);
+
+  const line = entrySymbol?.location?.startLine ?? 0;
+  const relation: Relation = {
+    id: `sequence-entry:${safeSequenceId(context.view.id)}:${safeSequenceId(entryPoint.symbolId)}`,
+    type: "calls",
+    source: actorId,
+    target: entryPoint.symbolId,
+    confidence: 0.95,
+    evidence: [{
+      file: entrySymbol?.location?.file ?? "",
+      startLine: entrySymbol?.location?.startLine,
+      endLine: entrySymbol?.location?.endLine,
+      callKind: "sync",
+      calleeName: methodName,
+      enclosingSymbolId: entryPoint.symbolId,
+      sequenceIndex: 0,
+      messageKind: "call",
+    }],
+  };
+  const descriptor = createExactSequenceDescriptor(`${methodName}()`, 8);
+
+  return {
+    relation,
+    sourceParticipantId: actorId,
+    targetParticipantId: entryPoint.participantId,
+    sourceSymbolId: actorId,
+    targetSymbolId: entryPoint.symbolId,
+    file: entrySymbol?.location?.file ?? "",
+    line,
+    sortIndex: -1,
+    label: descriptor.text,
+    descriptor,
+    isSelfCall: false,
+    isCreateMessage: false,
+    edgeKindHint: "sync",
+  };
+}
+
+function buildScenarioMessageDescriptor(
+  relation: Relation,
+  sourceSymbol: Symbol | undefined,
+  targetSymbol: Symbol | undefined,
+  context: SequenceContext,
+): SequenceLabelDescriptor {
+  const evidence = relation.evidence?.[0];
+  if (relation.type === "instantiates") {
+    return createExactSequenceDescriptor(`create ${shortDisplayName(targetSymbol ?? fallbackSymbol(relation.target))}`, 6);
+  }
+  if (relation.type === "reads") {
+    return createExactSequenceDescriptor(`read ${artifactMessageLabel(targetSymbol, relation.target, context)}`, 6);
+  }
+  if (relation.type === "writes") {
+    return createExactSequenceDescriptor(`write ${artifactMessageLabel(targetSymbol, relation.target, context)}`, 6);
+  }
+  if (relation.type === "uses_config") {
+    return createExactSequenceDescriptor(`read ${artifactMessageLabel(targetSymbol, relation.target, context)}`, 4);
+  }
+  if (relation.type === "imports") {
+    return createExactSequenceDescriptor(`import ${shortDisplayName(targetSymbol ?? fallbackSymbol(relation.target))}`, 2, true);
+  }
+
+  const callLabel = callMessageLabel(relation, sourceSymbol, targetSymbol, evidence?.calleeName);
+  const selfSignal = sourceSymbol?.parentId && targetSymbol?.parentId && sourceSymbol.parentId === targetSymbol.parentId ? 5 : 4;
+  return createExactSequenceDescriptor(callLabel, selfSignal);
+}
+
+function createExactSequenceDescriptor(
+  text: string,
+  signal = 4,
+  generic = false,
+): SequenceLabelDescriptor {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const firstSpace = normalized.indexOf(" ");
+  const action = firstSpace > 0 ? normalized.slice(0, firstSpace) : normalized;
+  const object = firstSpace > 0 ? normalized.slice(firstSpace + 1) : undefined;
+  return {
+    action,
+    object,
+    text: normalized,
+    mergeKey: normalizeSequenceObjectFamily(normalized),
+    objectFamily: normalizeSequenceObjectFamily(object ?? normalized),
+    signal,
+    generic,
+  };
+}
+
+function collectArtifactCenteredScenarioRelations(context: SequenceContext): ScenarioRelation[] {
+  const selected: ScenarioRelation[] = [];
+  let order = 0;
+
+  for (const relation of [...context.graph.relations].sort(compareArtifactCenteredRelationOrder(context))) {
+    if (!context.relationFilters[relation.type]) continue;
+    if (relation.type !== "reads" && relation.type !== "writes") continue;
+    if (!relationMatchesFocusedArtifact(relation, context)) continue;
+    const scenario = projectRelationToScenario(relation, context, order++, 0);
+    if (scenario) selected.push({ ...scenario, signalScore: scenario.signalScore + 2 });
+  }
+
+  if (selected.length === 0) {
+    return collectStageFallbackScenarioRelations(context)
+      .filter((scenario) => scenario.relation.type === "reads" || scenario.relation.type === "writes");
+  }
+
+  const participantMethodIds = new Set(selected.flatMap((scenario) => [
+    scenario.relation.source,
+    scenario.relation.target,
+  ]).filter((symbolId) => {
+    const symbol = context.symbolById.get(symbolId);
+    return !!symbol && isCallableSequenceSymbol(symbol);
+  }));
+
+  for (const relation of [...context.graph.relations].sort(compareSequenceRelationEvidence(context.symbolById))) {
+    if (!context.relationFilters[relation.type]) continue;
+    if (relation.type !== "calls" && relation.type !== "instantiates") continue;
+    if (!participantMethodIds.has(relation.source)) continue;
+    if (!isRelevantArtifactContextCall(relation, context)) continue;
+    const scenario = projectRelationToScenario(relation, context, order++, 1);
+    if (scenario) selected.push(scenario);
+  }
+
+  return selected.sort((left, right) => left.order - right.order);
+}
+
+function collectStageFallbackScenarioRelations(context: SequenceContext): ScenarioRelation[] {
+  const scenarios: ScenarioRelation[] = [];
+  let order = 0;
+  for (const relation of [...context.graph.relations].sort(compareSequenceRelationEvidence(context.symbolById))) {
+    if (!context.relationFilters[relation.type]) continue;
+    if (!SEQUENCE_RELATION_TYPES.includes(relation.type)) continue;
+    if (relation.type === "imports") continue;
+    if (!relationTouchesStageScope(relation, context)) continue;
+    const scenario = projectRelationToScenario(relation, context, order++, 0);
+    if (scenario) scenarios.push(scenario);
+  }
+  return scenarios;
+}
+
+function compareArtifactCenteredRelationOrder(context: SequenceContext) {
+  const evidenceComparator = compareSequenceRelationEvidence(context.symbolById);
+  return (left: Relation, right: Relation) => {
+    const leftFocused = relationMatchesFocusedArtifact(left, context) ? 0 : 1;
+    const rightFocused = relationMatchesFocusedArtifact(right, context) ? 0 : 1;
+    if (leftFocused !== rightFocused) return leftFocused - rightFocused;
+    const leftTypeRank = left.type === "writes" ? 0 : left.type === "reads" ? 1 : 2;
+    const rightTypeRank = right.type === "writes" ? 0 : right.type === "reads" ? 1 : 2;
+    if (leftTypeRank !== rightTypeRank) return leftTypeRank - rightTypeRank;
+    return evidenceComparator(left, right);
+  };
+}
+
+function buildSequenceRelationsBySource(context: SequenceContext): Map<string, Relation[]> {
+  const bySource = new Map<string, Relation[]>();
+  for (const relation of context.graph.relations) {
+    if (!context.relationFilters[relation.type]) continue;
+    if (!SEQUENCE_RELATION_TYPES.includes(relation.type)) continue;
+    if (relation.type === "imports") continue;
+    if (relation.id.startsWith("process-edge:pipeline:")) continue;
+    if (relation.id.startsWith("stub-edge:")) continue;
+    if (!relationTouchesStageScope(relation, context) && !context.stageScopeIds.has(relation.source)) continue;
+    const bucket = bySource.get(relation.source) ?? [];
+    bucket.push(relation);
+    bySource.set(relation.source, bucket);
+  }
+  for (const bucket of bySource.values()) {
+    bucket.sort(compareSequenceRelationEvidence(context.symbolById));
+  }
+  return bySource;
+}
+
+function projectRelationToScenario(
+  relation: Relation,
+  context: SequenceContext,
+  order: number,
+  depth: number,
+): ScenarioRelation | null {
+  if (!SEQUENCE_RELATION_TYPES.includes(relation.type)) return null;
+  if (relation.type === "imports") return null;
+
+  const sourceParticipantId = resolveSemanticSequenceParticipantId(relation.source, context);
+  const targetParticipantId = resolveSemanticSequenceParticipantId(relation.target, context);
+  if (!sourceParticipantId || !targetParticipantId) return null;
+  if (relation.type === "calls" && sourceParticipantId === targetParticipantId && relation.source === relation.target) {
+    return null;
+  }
+
+  const signalScore = scoreScenarioRelation(relation, sourceParticipantId === targetParticipantId);
+  return {
+    relation,
+    sourceParticipantId,
+    targetParticipantId,
+    sourceSymbolId: relation.source,
+    targetSymbolId: relation.target,
+    order,
+    depth,
+    signalScore,
+  };
+}
+
+function scoreScenarioRelation(relation: Relation, isSelfCall: boolean): number {
+  if (relation.type === "reads" || relation.type === "writes") return 7;
+  if (relation.type === "instantiates") return 6;
+  if (relation.type === "uses_config") return 4;
+  if (isSelfCall) return 5;
+  if (relation.type === "calls") return 5;
+  return 2;
+}
+
+function relationTouchesStageScope(relation: Relation, context: SequenceContext): boolean {
+  if (context.stageScopeIds.has(relation.source) || context.stageScopeIds.has(relation.target)) return true;
+  const sourceParticipantId = resolveSemanticSequenceParticipantId(relation.source, context);
+  const targetParticipantId = resolveSemanticSequenceParticipantId(relation.target, context);
+  return (!!sourceParticipantId && context.seedParticipantIds.has(sourceParticipantId)) ||
+    (!!targetParticipantId && context.seedParticipantIds.has(targetParticipantId));
+}
+
+function relationMatchesFocusedArtifact(relation: Relation, context: SequenceContext): boolean {
+  if (context.artifactFocusIds.has(relation.source) || context.artifactFocusIds.has(relation.target)) return true;
+  const sourceSymbol = context.symbolById.get(relation.source);
+  const targetSymbol = context.symbolById.get(relation.target);
+  const sourceKey = artifactComparableKey(sourceSymbol?.label ?? relation.source);
+  const targetKey = artifactComparableKey(targetSymbol?.label ?? relation.target);
+  if (sourceKey && context.artifactFocusLabels.has(sourceKey)) return true;
+  if (targetKey && context.artifactFocusLabels.has(targetKey)) return true;
+  return false;
+}
+
+function isRelevantArtifactContextCall(relation: Relation, context: SequenceContext): boolean {
+  if (relation.type === "instantiates") return !isNoisySequenceRelation(relation, context);
+  if (relation.type !== "calls") return false;
+  const sourceParticipantId = resolveSemanticSequenceParticipantId(relation.source, context);
+  const targetParticipantId = resolveSemanticSequenceParticipantId(relation.target, context);
+  if (!sourceParticipantId || !targetParticipantId) return false;
+  if (sourceParticipantId !== targetParticipantId) return false;
+  return !isNoisySequenceRelation(relation, context);
+}
+
+function collectArtifactFocus(params: {
+  graph: ProjectGraph;
+  view: DiagramView;
+  visibleNodeIds: string[];
+  stageScopeIds: Set<string>;
+  symbolById: Map<string, Symbol>;
+  artifactCategory: ArtifactFocusCategory | null;
+  relationFilters: Record<RelationType, boolean>;
+}): { ids: Set<string>; labels: Set<string> } {
+  const { graph, view, visibleNodeIds, stageScopeIds, symbolById, artifactCategory, relationFilters } = params;
+  const ids = new Set<string>();
+  const labels = new Set<string>();
+
+  const addArtifact = (symbolId: string, symbol: Symbol | undefined) => {
+    if (!symbol || !isConcreteArtifactSymbol(symbol)) return;
+    ids.add(symbolId);
+    const key = artifactComparableKey(symbol.label);
+    if (key) labels.add(key);
+  };
+
+  for (const nodeId of visibleNodeIds) {
+    addArtifact(nodeId, symbolById.get(nodeId));
+  }
+
+  const shouldInferByCategory = ids.size === 0 && artifactCategory != null;
+  if (shouldInferByCategory) {
+    for (const relation of graph.relations) {
+      if (!relationFilters[relation.type]) continue;
+      if (relation.type !== "reads" && relation.type !== "writes") continue;
+      if (!stageScopeIds.has(relation.source) && !stageScopeIds.has(relation.target)) continue;
+      for (const endpointId of [relation.source, relation.target]) {
+        const endpoint = symbolById.get(endpointId);
+        if (!endpoint || !isConcreteArtifactSymbol(endpoint)) continue;
+        if (!artifactMatchesCategory(endpoint, artifactCategory)) continue;
+        addArtifact(endpointId, endpoint);
+      }
+    }
+  }
+
+  if (ids.size === 0 && /\bartifacts?\b|\btabular\b|\bdata files\b/i.test(view.title)) {
+    for (const relation of graph.relations) {
+      if (relation.type !== "reads" && relation.type !== "writes") continue;
+      for (const endpointId of [relation.source, relation.target]) {
+        addArtifact(endpointId, symbolById.get(endpointId));
+      }
+    }
+  }
+
+  return { ids, labels };
+}
+
+function resolveStageOwnerViewId(graph: ProjectGraph, view: DiagramView): string | null {
+  let cursor: DiagramView | undefined = view;
+  let depth = 0;
+  while (cursor && depth < 8) {
+    if (cursor.id.startsWith("view:process-stage:")) return cursor.id;
+    const parentViewId: string | null = cursor.parentViewId ?? null;
+    if (!parentViewId) break;
+    cursor = graph.views.find((candidate) => candidate.id === parentViewId);
+    depth += 1;
+  }
+  return null;
+}
+
+function resolveStageSymbol(
+  graph: ProjectGraph,
+  view: DiagramView,
+  stageOwnerViewId: string | null,
+  symbolById: Map<string, Symbol>,
+): Symbol | null {
+  const processStageSymbol = stageOwnerViewId
+    ? graph.symbols.find((symbol) => symbol.id.startsWith("proc:pkg:") && symbol.childViewId === stageOwnerViewId)
+    : null;
+  if (processStageSymbol) {
+    symbolById.set(processStageSymbol.id, processStageSymbol);
+    return processStageSymbol;
+  }
+
+  if (!stageOwnerViewId && !view.id.startsWith("view:process-stage:")) {
+    return null;
+  }
+
+  const fallbackSymbol: Symbol = {
+    id: `sequence-stage:${stageOwnerViewId ?? view.id}`,
+    label: view.title,
+    kind: "group",
+    umlType: "package",
+    tags: ["sequence-stage"],
+  };
+  symbolById.set(fallbackSymbol.id, fallbackSymbol);
+  return fallbackSymbol;
+}
+
+function buildChildrenByParent(symbols: Symbol[]): Map<string, Symbol[]> {
+  const childrenByParent = new Map<string, Symbol[]>();
+  for (const symbol of symbols) {
+    if (!symbol.parentId) continue;
+    const children = childrenByParent.get(symbol.parentId) ?? [];
+    children.push(symbol);
+    childrenByParent.set(symbol.parentId, children);
+  }
+  return childrenByParent;
+}
+
+function collectVisibleScopeIds(
+  visibleNodeIds: string[],
+  childrenByParent: Map<string, Symbol[]>,
+): Set<string> {
+  const collected = new Set<string>();
+  for (const nodeId of visibleNodeIds) {
+    collected.add(nodeId);
+    for (const descendantId of collectDescendantIds(nodeId, childrenByParent)) {
+      collected.add(descendantId);
+    }
+  }
+  return collected;
+}
+
+function collectDescendantIds(
+  rootId: string,
+  childrenByParent: Map<string, Symbol[]>,
+): string[] {
+  const descendants: string[] = [];
+  const stack = [...(childrenByParent.get(rootId) ?? [])];
+  let depth = 0;
+  while (stack.length > 0 && depth < 2000) {
+    const symbol = stack.pop();
+    if (!symbol) break;
+    descendants.push(symbol.id);
+    stack.push(...(childrenByParent.get(symbol.id) ?? []));
+    depth += 1;
+  }
+  return descendants;
+}
+
+function resolveSemanticSequenceParticipantId(
+  symbolId: string,
+  context: Pick<SequenceContext, "symbolById" | "parentMap" | "childrenByParent">,
+): string | null {
+  const symbol = context.symbolById.get(symbolId);
+  if (!symbol) return null;
+  if (isNoisySequenceSymbol(symbol)) return null;
+  if (isConcreteArtifactSymbol(symbol) || symbol.umlType === "database" || symbol.umlType === "component") {
+    return symbol.id;
+  }
+  if (symbol.kind === "class" || symbol.kind === "interface") {
+    return symbol.id;
+  }
+  if (symbol.kind === "module") {
+    return preferClassParticipantForModule(symbol.id, context);
+  }
+  if (symbol.kind === "group" || symbol.kind === "package") {
+    return symbol.id;
+  }
+
+  const classifierId = findNearestClassifierAncestorId(symbolId, context);
+  if (classifierId) {
+    return classifierId;
+  }
+  if (symbol.kind === "function" || symbol.kind === "method") {
+    return symbol.id;
+  }
+  if (symbol.kind === "external") {
+    return isNoisySequenceSymbol(symbol) ? null : symbol.id;
+  }
+  return null;
+}
+
+function findNearestClassifierAncestorId(
+  symbolId: string,
+  context: Pick<SequenceContext, "symbolById" | "parentMap" | "childrenByParent">,
+): string | null {
+  let current = context.parentMap.get(symbolId);
+  let depth = 0;
+  while (current && depth < 16) {
+    const symbol = context.symbolById.get(current);
+    if (!symbol) break;
+    if (symbol.kind === "class" || symbol.kind === "interface") return symbol.id;
+    if (symbol.kind === "module") return preferClassParticipantForModule(symbol.id, context);
+    current = context.parentMap.get(current);
+    depth += 1;
+  }
+  return null;
+}
+
+function preferClassParticipantForModule(
+  moduleId: string,
+  context: Pick<SequenceContext, "symbolById" | "childrenByParent">,
+): string {
+  const classChildren = (context.childrenByParent.get(moduleId) ?? [])
+    .filter((symbol) => symbol.kind === "class" || symbol.kind === "interface")
+    .filter((symbol) => !isNoisySequenceSymbol(symbol));
+  return classChildren.length === 1 ? classChildren[0]!.id : moduleId;
+}
+
+function isCallableSequenceSymbol(symbol: Symbol): boolean {
+  return symbol.kind === "method" || symbol.kind === "function";
+}
+
+function isPreferredEntryPointName(name: string): boolean {
+  return /^(main|run|process|execute|start|get_data|extract_data|generate|generate_arrival_table|load|save|fit|simulate)$/i.test(name);
+}
+
+function methodNameForSequenceSymbol(symbol: Symbol | undefined, fallbackId: string): string {
+  const raw = symbol?.label ?? fallbackId;
+  const normalized = raw.split(/[.:]/).pop() ?? raw;
+  return normalized.trim();
+}
+
+function safeSequenceId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "entry";
+}
+
+function sequenceEvidenceOrder(relation: Relation, context: SequenceContext): number {
+  const evidence = relation.evidence?.[0];
+  return evidence?.sequenceIndex ??
+    evidence?.startLine ??
+    context.symbolById.get(relation.source)?.location?.startLine ??
+    Number.MAX_SAFE_INTEGER;
+}
+
+function scenarioLabelMergeKey(relation: Relation, context: SequenceContext): string {
+  const target = context.symbolById.get(relation.target);
+  if (relation.type === "reads" || relation.type === "writes") {
+    return artifactComparableKey(target?.label ?? relation.target) ?? relation.target;
+  }
+  return relation.label ?? target?.label ?? relation.target;
+}
+
+function callMessageLabel(
+  relation: Relation,
+  sourceSymbol: Symbol | undefined,
+  targetSymbol: Symbol | undefined,
+  calleeName: string | undefined,
+): string {
+  const explicit = pipelineSanitizeSequenceLabel(relation.label);
+  if (explicit && !pipelineIsGenericSequenceLabel(explicit) && !/^run\b/i.test(explicit)) {
+    return explicit;
+  }
+  const rawName = calleeName || targetSymbol?.label || relation.target;
+  const methodName = methodNameForSequenceSymbol(targetSymbol, rawName);
+  if (!methodName || isGenericSequenceObjectName(methodName)) {
+    const fallback = methodNameForSequenceSymbol(sourceSymbol, relation.source);
+    return `${fallback || "call"}()`;
+  }
+  if (methodName.includes("(")) return methodName;
+  const isSelfCall = !!sourceSymbol?.parentId && sourceSymbol.parentId === targetSymbol?.parentId;
+  return isSelfCall ? `${methodName}()` : `${methodName}(...)`;
+}
+
+function artifactMessageLabel(
+  symbol: Symbol | undefined,
+  symbolId: string,
+  context: SequenceContext,
+): string {
+  const label = shortBasename(symbol?.label ?? symbolId.replace(/^ext:/, ""));
+  if (label && !isGenericSequenceObjectName(label)) {
+    return label;
+  }
+  const focus = [...context.artifactFocusLabels][0];
+  return focus ?? label ?? "artifact";
+}
+
+function fallbackSymbol(id: string): Symbol {
+  return {
+    id,
+    label: id.replace(/^ext:/, ""),
+    kind: "external",
+  };
+}
+
+function resolveArtifactFocusCategory(view: DiagramView): ArtifactFocusCategory | null {
+  const normalized = `${view.id} ${view.title}`.toLowerCase();
+  if (/\btabular\b|\bcsv\b|\bxlsx\b|\bxls\b|\btable\b|\bdata files\b/.test(normalized)) return "tabular";
+  if (/\bjson\b/.test(normalized)) return "json";
+  if (/\bbinary\b|\bpkl\b|\bpickle\b|\bparquet\b/.test(normalized)) return "binary";
+  if (/\bconfig\b|\byaml\b|\byml\b/.test(normalized)) return "config";
+  if (/\bartifacts?\b|\boutputs?\b|\binputs?\b/.test(normalized)) return "artifact";
+  return null;
+}
+
+function artifactMatchesCategory(symbol: Symbol, category: ArtifactFocusCategory): boolean {
+  if (category === "artifact") return isConcreteArtifactSymbol(symbol);
+  const normalized = `${symbol.id} ${symbol.label}`.toLowerCase();
+  if (category === "tabular") return /\.(csv|tsv|xlsx|xls|parquet)\b/.test(normalized) || /\btable\b|tabular/.test(normalized);
+  if (category === "json") return /\.json\b|\bjson\b/.test(normalized);
+  if (category === "binary") return /\.(pkl|pickle|parquet|joblib)\b|\bbinary\b/.test(normalized);
+  if (category === "config") return /\.(yaml|yml|toml|ini)\b|\bconfig\b/.test(normalized);
+  return false;
+}
+
+function isConcreteArtifactSymbol(symbol: Symbol): boolean {
+  const normalized = `${symbol.id} ${symbol.label}`.toLowerCase();
+  if (symbol.id.startsWith("proc:artifact:")) return true;
+  if (symbol.umlType === "artifact" || symbol.kind === "external") {
+    return /\.(csv|tsv|json|xlsx|xls|pkl|pickle|parquet|joblib|txt|yaml|yml|xml)\b/.test(normalized) ||
+      /\barrival\b|\bwegrezept\b|\bmaterial\b|\border\b|\bauftrag\b/.test(normalized);
+  }
+  return false;
+}
+
+function artifactComparableKey(value: string): string | null {
+  const basename = shortBasename(value.replace(/^ext:/, ""));
+  const normalized = basename.toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || null;
+}
+
+function isNoisyParticipantId(participantId: string, context: SequenceContext): boolean {
+  const symbol = context.symbolById.get(participantId);
+  return !!symbol && isNoisySequenceSymbol(symbol);
+}
+
+function isNoisySequenceRelation(relation: Relation, context: SequenceContext): boolean {
+  if (relation.id.startsWith("stub-edge:")) return true;
+  if (relation.type === "imports") return true;
+  const source = context.symbolById.get(relation.source);
+  const target = context.symbolById.get(relation.target);
+  if (relation.type === "reads" || relation.type === "writes" || relation.type === "uses_config") {
+    return !isConcreteArtifactSymbol(source ?? fallbackSymbol(relation.source)) &&
+      !isConcreteArtifactSymbol(target ?? fallbackSymbol(relation.target));
+  }
+  return isNoisySequenceSymbol(source) || isNoisySequenceSymbol(target);
+}
+
+function isNoisySequenceSymbol(symbol: Symbol | undefined): boolean {
+  if (!symbol) return false;
+  if (isConcreteArtifactSymbol(symbol)) return false;
+  const normalized = `${symbol.id} ${symbol.label}`.toLowerCase();
+  if (symbol.id.startsWith("sequence-bucket:") || symbol.id.startsWith("sequence-stage-bucket:")) return false;
+  if (symbol.id.startsWith("ext:") && isLibraryNoiseLabel(normalized)) return true;
+  return isLibraryNoiseLabel(normalized);
+}
+
+function isLibraryNoiseLabel(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (/\b(pandas|numpy|sklearn|scipy|matplotlib|seaborn|pathlib|os\.|sys\.|re\.|math\.|json\.|yaml\.|datetime)\b/.test(normalized)) {
+    return true;
+  }
+  const tokens = normalized.split(/[^a-z0-9_]+/).filter(Boolean);
+  return tokens.some((token) =>
+    [
+      "pd",
+      "np",
+      "df",
+      "dataframe",
+      "series",
+      "range",
+      "len",
+      "str",
+      "bool",
+      "dict",
+      "list",
+      "int",
+      "float",
+      "tuple",
+      "set",
+      "none",
+      "datetime",
+      "timedelta",
+      "to_timedelta",
+    ].includes(token),
+  );
+}
+
+function isGenericSequenceObjectName(value: string): boolean {
+  return /^(df|pd|np|range|len|str|bool|dict|list|int|float|series|dataframe|datetime|timedelta|none)$/i.test(value.trim());
 }
 
 function buildStageProcessSequenceMessage(params: {

@@ -148,6 +148,20 @@ export const EvidenceSchema = z.object({
   endLine: z.number().int().optional(),
   snippet: z.string().optional(),
   callKind: z.enum(["sync", "async"]).optional(),
+  receiverName: z.string().optional(),
+  calleeName: z.string().optional(),
+  enclosingSymbolId: z.string().optional(),
+  sequenceIndex: z.number().int().nonnegative().optional(),
+  messageKind: z.enum(["call", "create", "read", "write"]).optional(),
+  operationKind: z.enum(["call", "create", "read", "write", "branch", "loop", "try", "return"]).optional(),
+  nestingDepth: z.number().int().nonnegative().optional(),
+  fragmentId: z.string().optional(),
+  fragmentType: z.enum(["loop", "alt", "opt", "try", "parallel"]).optional(),
+  fragmentLabel: z.string().optional(),
+  fragmentGuard: z.string().optional(),
+  fragmentStartLine: z.number().int().optional(),
+  fragmentEndLine: z.number().int().optional(),
+  artifactResolution: z.enum(["resolved", "unresolved_dynamic_path"]).optional(),
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;
 
@@ -181,6 +195,105 @@ export const RelationSchema = z.object({
   aiGenerated: z.boolean().optional(),
 });
 export type Relation = z.infer<typeof RelationSchema>;
+
+/* ───────────── Sequence Trace ───────────── */
+
+export const SequenceParticipantRoleEnum = z.enum([
+  "actor",
+  "script",
+  "object",
+  "class",
+  "service",
+  "database",
+  "artifact",
+  "external",
+]);
+export type SequenceParticipantRole = z.infer<typeof SequenceParticipantRoleEnum>;
+
+export const SequenceParticipantLaneKindEnum = z.enum(["internal", "external", "artifact"]);
+export type SequenceParticipantLaneKind = z.infer<typeof SequenceParticipantLaneKindEnum>;
+
+export const SequenceMessageKindEnum = z.enum([
+  "sync_call",
+  "async_call",
+  "self_call",
+  "create",
+  "read",
+  "write",
+  "return",
+]);
+export type SequenceMessageKind = z.infer<typeof SequenceMessageKindEnum>;
+
+export const SequenceFragmentTypeEnum = z.enum(["loop", "alt", "opt", "try", "parallel"]);
+export type SequenceFragmentType = z.infer<typeof SequenceFragmentTypeEnum>;
+
+export const SequenceParticipantSchema = z.object({
+  id: z.string(),
+  symbolId: z.string().optional(),
+  label: z.string(),
+  role: SequenceParticipantRoleEnum,
+  laneKind: SequenceParticipantLaneKindEnum,
+  className: z.string().optional(),
+  objectName: z.string().optional(),
+  location: SymbolLocationSchema.optional(),
+});
+export type SequenceParticipant = z.infer<typeof SequenceParticipantSchema>;
+
+export const SequenceMessageSchema = z.object({
+  id: z.string(),
+  index: z.number().int().nonnegative(),
+  sourceParticipantId: z.string(),
+  targetParticipantId: z.string(),
+  sourceSymbolId: z.string().optional(),
+  targetSymbolId: z.string().optional(),
+  relationId: z.string().optional(),
+  kind: SequenceMessageKindEnum,
+  label: z.string(),
+  file: z.string().optional(),
+  startLine: z.number().int().optional(),
+  endLine: z.number().int().optional(),
+  snippet: z.string().optional(),
+  callDepth: z.number().int().nonnegative(),
+  parentMessageId: z.string().optional(),
+  returnLabel: z.string().optional(),
+  durationMs: z.number().nonnegative().optional(),
+  confidence: z.number().min(0).max(1),
+});
+export type SequenceMessage = z.infer<typeof SequenceMessageSchema>;
+
+export type SequenceFragment = {
+  id: string;
+  type: SequenceFragmentType;
+  label: string;
+  guard?: string;
+  startMessageIndex: number;
+  endMessageIndex: number;
+  children?: SequenceFragment[];
+};
+
+export const SequenceFragmentSchema: z.ZodType<SequenceFragment> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    type: SequenceFragmentTypeEnum,
+    label: z.string(),
+    guard: z.string().optional(),
+    startMessageIndex: z.number().int().nonnegative(),
+    endMessageIndex: z.number().int().nonnegative(),
+    children: z.array(SequenceFragmentSchema).optional(),
+  }),
+);
+
+export const SequenceScenarioSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  entrySymbolId: z.string(),
+  viewId: z.string().optional(),
+  participants: z.array(SequenceParticipantSchema),
+  messages: z.array(SequenceMessageSchema),
+  fragments: z.array(SequenceFragmentSchema).optional(),
+  diagnostics: z.array(z.string()).optional(),
+});
+export type SequenceScenario = z.infer<typeof SequenceScenarioSchema>;
 
 export const ViewReviewIssueTypeEnum = z.enum([
   "sparse_view",

@@ -508,6 +508,7 @@ export function Canvas() {
   const scanStatus = useAppStore((s) => s.scanStatus);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const projectionMode = useAppStore((s) => s.projectionMode);
+  const sequenceProjectionMode = useAppStore((s) => s.sequenceProjectionMode);
   const sequenceContext = useAppStore((s) => s.sequenceContext);
   const reviewHighlight = useAppStore((s) => s.reviewHighlight);
   const clearReviewHighlight = useAppStore((s) => s.clearReviewHighlight);
@@ -809,6 +810,7 @@ export function Canvas() {
               symbolOverrides,
               relationFilters: diagramSettings.relationFilters,
               labelsMode: diagramSettings.labels,
+              sequenceMode: sequenceProjectionMode,
               selectedSymbolId,
               selectedEdgeId,
             });
@@ -1065,6 +1067,7 @@ export function Canvas() {
     graph,
     currentViewId,
     projectionMode,
+    sequenceProjectionMode,
     sequenceContext,
     diagramSettings,
     nodesDraggable,

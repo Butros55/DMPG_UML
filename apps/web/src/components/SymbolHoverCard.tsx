@@ -519,6 +519,7 @@ export function SymbolHoverCard() {
   const graph = useAppStore((s) => s.graph);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const projectionMode = useAppStore((s) => s.projectionMode);
+  const sequenceProjectionMode = useAppStore((s) => s.sequenceProjectionMode);
   const sequenceContext = useAppStore((s) => s.sequenceContext);
   const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
@@ -578,6 +579,7 @@ export function SymbolHoverCard() {
       symbolOverrides: resolvedArtifactView.symbolOverrides,
       relationFilters: diagramSettings.relationFilters,
       labelsMode: diagramSettings.labels,
+      sequenceMode: sequenceProjectionMode,
       selectedSymbolId,
       selectedEdgeId,
     });
@@ -590,6 +592,7 @@ export function SymbolHoverCard() {
     resolvedArtifactView,
     selectedEdgeId,
     selectedSymbolId,
+    sequenceProjectionMode,
     sequenceContext,
     sequenceView,
   ]);
@@ -848,6 +851,7 @@ export function SymbolHoverCard() {
             {sequenceProjection && (
               <>
                 <div className="shc-preview-subsection-label" style={{ marginTop: hoveredSequenceMessage.evidenceFile ? 8 : 0 }}>Projection</div>
+                <div className="shc-parent">Mode: {sequenceProjection.sequenceMode}</div>
                 <div className="shc-parent">
                   Participants: {sequenceProjection.usedParticipants}/{sequenceProjection.participantLimit} · Messages: {sequenceProjection.usedMessages}/{sequenceProjection.messageLimit}
                 </div>
@@ -931,6 +935,7 @@ export function SymbolHoverCard() {
         {sequenceProjection && (
           <div className="shc-preview-box">
             <div className="shc-preview-subsection-label">Projection</div>
+            <div className="shc-parent">Mode: {sequenceProjection.sequenceMode}</div>
             <div className="shc-parent">
               Participants: {sequenceProjection.usedParticipants}/{sequenceProjection.participantLimit} · Messages: {sequenceProjection.usedMessages}/{sequenceProjection.messageLimit}
             </div>

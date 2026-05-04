@@ -176,6 +176,7 @@ export interface NavigateToViewOptions {
 }
 
 export type HoverSource = "canvas" | "inspector";
+export type SequenceProjectionModeState = "code" | "artifact" | "full";
 
 export type HoverTarget =
   | { kind: "symbol"; id: string; source?: HoverSource }
@@ -186,6 +187,7 @@ export interface AppState {
   currentViewId: string | null;
   /** Current projection mode for the active view context */
   projectionMode: "overview" | "class" | "sequence";
+  sequenceProjectionMode: SequenceProjectionModeState;
   sequenceContext: SequenceContextState | null;
   selectedSymbolId: string | null;
   selectedEdgeId: string | null;
@@ -292,6 +294,7 @@ export interface AppState {
   redoGraphChange: () => void;
   navigateToView: (viewId: string, options?: NavigateToViewOptions) => void;
   setProjectionMode: (mode: "overview" | "class" | "sequence") => void;
+  setSequenceProjectionMode: (mode: SequenceProjectionModeState) => void;
   openSequenceContext: (payload: Omit<SequenceContextState, "originViewId"> & { originViewId?: string }) => void;
   closeSequenceContext: () => void;
   goBack: () => void;
@@ -652,6 +655,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   graph: null,
   currentViewId: null,
   projectionMode: "overview",
+  sequenceProjectionMode: "code",
   sequenceContext: null,
   selectedSymbolId: null,
   selectedEdgeId: null,
@@ -1994,6 +1998,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       projectionMode: mode,
       sequenceContext: mode === "sequence" ? state.sequenceContext : null,
     }));
+  },
+
+  setSequenceProjectionMode: (mode) => {
+    set({ sequenceProjectionMode: mode });
   },
 
   openSequenceContext: (payload) => {
