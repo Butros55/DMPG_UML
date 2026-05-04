@@ -37,6 +37,15 @@ function hasProcessWriteEdge(graph: ProjectGraph, sourceId: string, targetId: st
   );
 }
 
+function processReadEdgeId(graph: ProjectGraph, sourceId: string, targetId: string): string | undefined {
+  return graph.relations.find((relation) =>
+    relation.type === "reads" &&
+    relation.id.startsWith("process-edge:view-artifact:") &&
+    relation.source === sourceId &&
+    relation.target === targetId,
+  )?.id;
+}
+
 test("scanProject detects concrete written artifacts and surfaces them in process views", async () => {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "dmpg-artifacts-"));
   try {
@@ -74,6 +83,8 @@ def generate_arrival_table(df_small, df_big):
 `);
 
     writeProjectFile(projectDir, "simulation_data_generator.py", `
+import pandas as pd
+
 def export_results(df):
     report = "outputs/filter_stats.xlsx"
     outliers = "outputs/outliners.xlsx"
@@ -81,6 +92,9 @@ def export_results(df):
     df.to_excel(outliers)
     with open("outputs/simulation.json", "w") as fh:
         fh.write("{}")
+
+def load_extracted():
+    return pd.read_csv("output/df_data.csv")
 `);
 
     const graph = await scanProject(projectDir);
@@ -162,6 +176,16 @@ def export_results(df):
     assert.ok(hasProcessWriteEdge(graph, "mod:data_extraction:DataExtraction.build", "proc:artifact:df_data_csv"));
     assert.ok(hasProcessWriteEdge(graph, "mod:data_extraction:DataExtraction.build", "proc:artifact:df_data_with_order_csv"));
     assert.ok(hasProcessWriteEdge(graph, "mod:data_extraction:DataExtraction.build", "proc:artifact:df_data_with_order_cluster_csv"));
+
+    const simulationModuleView = graph.views.find((view) => view.id === "view:mod:simulation_data_generator");
+    const simulationReadEdgeId = processReadEdgeId(
+      graph,
+      "proc:artifact:df_data_csv",
+      "mod:simulation_data_generator:load_extracted",
+    );
+    assert.ok(simulationReadEdgeId);
+    assert.ok(simulationModuleView?.nodeRefs.includes("proc:artifact:df_data_csv"));
+    assert.ok(simulationModuleView?.edgeRefs.includes(simulationReadEdgeId));
 
     const stageWriteEdges = graph.relations.filter((relation) => relation.id.startsWith("process-edge:stage-flow:"));
     const stageWriteTargets = new Set(stageWriteEdges.map((relation) => relation.target));

@@ -957,16 +957,16 @@ function buildStagePackagePreview(
       .filter((label): label is string => Boolean(label))),
     2,
   );
-  const consumed = summarizeList(
-    unique(flowGroups
-      .filter((group) => group.consumerStageIds.includes(stage) && !group.producerStageIds.includes(stage))
-      .map((group) => group.label)),
+  const consumed = summarizeStageFlowGroupLabels(
+    stage,
+    flowGroups
+      .filter((group) => group.consumerStageIds.includes(stage) && !group.producerStageIds.includes(stage)),
     3,
   );
-  const produced = summarizeList(
-    unique(flowGroups
-      .filter((group) => group.producerStageIds.includes(stage))
-      .map((group) => group.label)),
+  const produced = summarizeStageFlowGroupLabels(
+    stage,
+    flowGroups
+      .filter((group) => group.producerStageIds.includes(stage)),
     3,
   );
 
@@ -977,6 +977,45 @@ function buildStagePackagePreview(
   ].filter((line): line is string => Boolean(line));
 
   return lines.length > 0 ? lines : undefined;
+}
+
+function summarizeStageFlowGroupLabels(
+  stage: StageId,
+  groups: ArtifactFlowGroup[],
+  maxItems: number,
+): string {
+  const byLabel = new Map<string, ArtifactFlowGroup>();
+  for (const group of groups) {
+    const existing = byLabel.get(group.label);
+    if (
+      !existing ||
+      stagePackagePreviewPriority(stage, group) > stagePackagePreviewPriority(stage, existing)
+    ) {
+      byLabel.set(group.label, group);
+    }
+  }
+
+  const labels = [...byLabel.values()]
+    .sort((a, b) =>
+      stagePackagePreviewPriority(stage, b) - stagePackagePreviewPriority(stage, a) ||
+      a.label.localeCompare(b.label)
+    )
+    .map((group) => group.label);
+
+  return summarizeList(labels, maxItems);
+}
+
+function stagePackagePreviewPriority(stage: StageId, group: ArtifactFlowGroup): number {
+  const text = normalize(`${group.label} ${group.paths.join(" ")}`);
+  let priority = stageArtifactPriority(stage, group);
+
+  if (stage === "distribution") {
+    if (group.category === "binary") priority += 120;
+    if (/\bpkl\b|\bpickle\b/.test(text)) priority += 90;
+    if (text.includes("station") && text.includes("mat")) priority += 70;
+  }
+
+  return priority;
 }
 
 function collectArtifactFlowGroups(graph: ProjectGraph, ctx: Context): ArtifactFlowGroup[] {

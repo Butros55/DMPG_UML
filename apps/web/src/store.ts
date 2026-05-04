@@ -161,6 +161,16 @@ export interface SequenceContextState {
   title?: string;
 }
 
+export interface ProjectScanStatus {
+  running: boolean;
+  phase: string;
+  message: string | null;
+  projectPath: string | null;
+  current?: number;
+  total?: number;
+  warnings?: string[];
+}
+
 export interface NavigateToViewOptions {
   restoreViewState?: boolean;
 }
@@ -185,6 +195,7 @@ export interface AppState {
   graphHistoryFuture: GraphHistorySnapshot[];
   historyCanUndo: boolean;
   historyCanRedo: boolean;
+  scanStatus: ProjectScanStatus;
 
   // AI analysis
   aiAnalysis: AiAnalysisState | null;
@@ -275,6 +286,8 @@ export interface AppState {
   setGraph: (g: ProjectGraph) => void;
   /** Update graph data while keeping current view / breadcrumb intact */
   updateGraph: (g: ProjectGraph) => void;
+  clearGraphForScan: (projectPath?: string | null) => void;
+  updateScanStatus: (patch: Partial<ProjectScanStatus>) => void;
   undoGraphChange: () => void;
   redoGraphChange: () => void;
   navigateToView: (viewId: string, options?: NavigateToViewOptions) => void;
@@ -298,9 +311,19 @@ export interface AppState {
   updateRelation: (id: string, patch: Partial<Relation>) => void;
   /** Batch update multiple relations with same patch (single sync) */
   updateRelations: (ids: string[], patch: Partial<Relation>) => void;
+  /** Batch remove multiple relations with one state transition and sync */
+  removeRelations: (ids: string[]) => void;
   removeRelation: (id: string) => void;
   /** Save node positions for the current view (debounced sync) */
-  saveNodePositions: (positions: Array<{ symbolId: string; x: number; y: number; width?: number; height?: number }>) => void;
+  saveNodePositions: (positions: Array<{
+    symbolId: string;
+    x: number;
+    y: number;
+    width?: number;
+    height?: number;
+    parentId?: string;
+    extent?: "parent";
+  }>) => void;
   /** Confirm an AI-generated field (remove aiGenerated marker) */
   confirmAiField: (symbolId: string, field: string) => void;
   /** Reject an AI-generated field (remove the data + marker) */
@@ -482,6 +505,79 @@ function pruneViewUiSnapshots(
   return next;
 }
 
+function collectSymbolSubtreeIds(graph: ProjectGraph, rootSymbolId: string): Set<string> {
+  const childrenByParent = new Map<string, string[]>();
+  for (const symbol of graph.symbols) {
+    if (!symbol.parentId) continue;
+    const children = childrenByParent.get(symbol.parentId) ?? [];
+    children.push(symbol.id);
+    childrenByParent.set(symbol.parentId, children);
+  }
+
+  const ids = new Set<string>();
+  const stack = [rootSymbolId];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (!id || ids.has(id)) continue;
+    ids.add(id);
+    for (const childId of childrenByParent.get(id) ?? []) {
+      stack.push(childId);
+    }
+  }
+  return ids;
+}
+
+function collectOwnedViewIds(graph: ProjectGraph, removedSymbolIds: Set<string>): Set<string> {
+  const removedViewIds = new Set<string>();
+  for (const symbol of graph.symbols) {
+    if (removedSymbolIds.has(symbol.id) && symbol.childViewId) {
+      removedViewIds.add(symbol.childViewId);
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const view of graph.views) {
+      if (view.parentViewId && removedViewIds.has(view.parentViewId) && !removedViewIds.has(view.id)) {
+        removedViewIds.add(view.id);
+        changed = true;
+      }
+    }
+  }
+  return removedViewIds;
+}
+
+function removeSymbolSubtreeFromGraph(graph: ProjectGraph, rootSymbolId: string): ProjectGraph {
+  const removedSymbolIds = collectSymbolSubtreeIds(graph, rootSymbolId);
+  const removedViewIds = collectOwnedViewIds(graph, removedSymbolIds);
+  const removedRelationIds = new Set(
+    graph.relations
+      .filter((relation) => removedSymbolIds.has(relation.source) || removedSymbolIds.has(relation.target))
+      .map((relation) => relation.id),
+  );
+
+  const nextViews = graph.views
+    .filter((view) => !removedViewIds.has(view.id))
+    .map((view) => ({
+      ...view,
+      nodeRefs: view.nodeRefs.filter((nodeId) => !removedSymbolIds.has(nodeId)),
+      edgeRefs: view.edgeRefs.filter((edgeId) => !removedRelationIds.has(edgeId)),
+      nodePositions: view.nodePositions?.filter((position) => !removedSymbolIds.has(position.symbolId)),
+    }));
+  const rootViewId = removedViewIds.has(graph.rootViewId)
+    ? nextViews.find((view) => !view.parentViewId)?.id ?? nextViews[0]?.id ?? graph.rootViewId
+    : graph.rootViewId;
+
+  return {
+    ...graph,
+    rootViewId,
+    symbols: graph.symbols.filter((symbol) => !removedSymbolIds.has(symbol.id)),
+    relations: graph.relations.filter((relation) => !removedRelationIds.has(relation.id)),
+    views: nextViews,
+  };
+}
+
 function historyPatchWithCurrentSnapshot(state: Pick<AppState,
   | "graph"
   | "currentViewId"
@@ -565,6 +661,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   graphHistoryFuture: [],
   historyCanUndo: false,
   historyCanRedo: false,
+  scanStatus: {
+    running: false,
+    phase: "idle",
+    message: null,
+    projectPath: null,
+    warnings: [],
+  },
 
   aiAnalysis: null,
 
@@ -1625,10 +1728,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setGraph: (g) => {
     const normalized = normalizeGraphForFrontend(g);
     const initialViewId = resolveNavigableViewId(normalized, normalized.rootViewId, normalized.rootViewId) ?? normalized.rootViewId;
+    const initialView = normalized.views.find((view) => view.id === initialViewId) ?? null;
     set({
       graph: normalized,
       currentViewId: initialViewId,
-      projectionMode: "overview",
+      projectionMode: projectionModeForView(initialView, "overview"),
       sequenceContext: null,
       selectedSymbolId: null,
       selectedEdgeId: null,
@@ -1650,6 +1754,51 @@ export const useAppStore = create<AppState>((set, get) => ({
       viewRestoreViewId: null,
       viewRestoreSeq: 0,
     });
+  },
+
+  clearGraphForScan: (projectPath = null) => {
+    set({
+      graph: null,
+      currentViewId: null,
+      projectionMode: "overview",
+      sequenceContext: null,
+      selectedSymbolId: null,
+      selectedEdgeId: null,
+      breadcrumb: [],
+      viewUiSnapshots: {},
+      reviewHighlight: {
+        activeItemId: null,
+        nodeIds: [],
+        primaryNodeId: null,
+        viewId: null,
+        fitView: false,
+        seq: 0,
+        previewNodeIds: [],
+      },
+      graphHistoryPast: [],
+      graphHistoryFuture: [],
+      historyCanUndo: false,
+      historyCanRedo: false,
+      viewRestoreViewId: null,
+      viewRestoreSeq: 0,
+      focusNodeId: null,
+      scanStatus: {
+        running: true,
+        phase: "starting",
+        message: "Projekt wird neu gescannt",
+        projectPath: projectPath?.trim() || null,
+        warnings: [],
+      },
+    });
+  },
+
+  updateScanStatus: (patch) => {
+    set((state) => ({
+      scanStatus: {
+        ...state.scanStatus,
+        ...patch,
+      },
+    }));
   },
 
   updateGraph: (g) => {
@@ -1775,7 +1924,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (currentViewId === targetViewId) {
       set({
         currentViewId: targetViewId,
-        projectionMode: sequenceContext ? nextProjectionMode : state.projectionMode,
+        projectionMode: nextProjectionMode,
         sequenceContext: null,
         breadcrumb: snapshot?.breadcrumb ?? breadcrumb,
         selectedSymbolId: snapshot?.selectedSymbolId ?? null,
@@ -2023,27 +2172,42 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   removeSymbol: (id) => {
-    const { graph } = get();
-    if (!graph) return;
-    const updated = {
-      ...graph,
-      symbols: graph.symbols.filter((s) => s.id !== id),
-      relations: graph.relations.filter((r) => r.source !== id && r.target !== id),
-      views: graph.views.map((v) => ({
-        ...v,
-        nodeRefs: v.nodeRefs.filter((n) => n !== id),
-        edgeRefs: v.edgeRefs.filter((eId) => {
-          const rel = graph.relations.find((r) => r.id === eId);
-          return rel ? rel.source !== id && rel.target !== id : true;
-        }),
-      })),
-    };
-    set((state) => ({
-      graph: updated,
-      selectedSymbolId: null,
-      ...historyPatchWithCurrentSnapshot(state),
-    }));
-    get().syncGraphToServer();
+    let shouldSync = false;
+    set((state) => {
+      if (!state.graph || !state.graph.symbols.some((symbol) => symbol.id === id)) return {};
+      const updated = removeSymbolSubtreeFromGraph(state.graph, id);
+      const currentViewStillExists = !!state.currentViewId &&
+        updated.views.some((view) => view.id === state.currentViewId);
+      const fallbackViewId = updated.views.length > 0
+        ? resolveNavigableViewId(updated, updated.rootViewId, updated.rootViewId) ?? updated.rootViewId
+        : null;
+      const nextViewId = currentViewStillExists ? state.currentViewId : fallbackViewId;
+      const nextView = updated.views.find((view) => view.id === nextViewId) ?? null;
+      shouldSync = true;
+      return {
+        graph: updated,
+        currentViewId: nextViewId,
+        projectionMode: projectionModeForView(nextView, "overview"),
+        sequenceContext: null,
+        selectedSymbolId: null,
+        selectedEdgeId: null,
+        breadcrumb: nextViewId
+          ? (currentViewStillExists ? state.breadcrumb : buildViewPath(updated, nextViewId))
+          : [],
+        viewUiSnapshots: pruneViewUiSnapshots(updated, state.viewUiSnapshots),
+        reviewHighlight: {
+          activeItemId: null,
+          nodeIds: [],
+          primaryNodeId: null,
+          viewId: nextViewId,
+          fitView: false,
+          seq: state.reviewHighlight.seq,
+          previewNodeIds: [],
+        },
+        ...historyPatchWithCurrentSnapshot(state),
+      };
+    });
+    if (shouldSync) void get().syncGraphToServer();
   },
 
   addRelation: (rel, viewId) => {
@@ -2092,23 +2256,33 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().syncGraphToServer();
   },
 
+  removeRelations: (ids) => {
+    const relationIds = new Set(ids.filter(Boolean));
+    if (relationIds.size === 0) return;
+    let shouldSync = false;
+    set((state) => {
+      const { graph } = state;
+      if (!graph || !graph.relations.some((relation) => relationIds.has(relation.id))) return {};
+      const updated = {
+        ...graph,
+        relations: graph.relations.filter((relation) => !relationIds.has(relation.id)),
+        views: graph.views.map((view) => ({
+          ...view,
+          edgeRefs: view.edgeRefs.filter((edgeId) => !relationIds.has(edgeId)),
+        })),
+      };
+      shouldSync = true;
+      return {
+        graph: updated,
+        selectedEdgeId: state.selectedEdgeId && relationIds.has(state.selectedEdgeId) ? null : state.selectedEdgeId,
+        ...historyPatchWithCurrentSnapshot(state),
+      };
+    });
+    if (shouldSync) void get().syncGraphToServer();
+  },
+
   removeRelation: (id) => {
-    const { graph } = get();
-    if (!graph) return;
-    const updated = {
-      ...graph,
-      relations: graph.relations.filter((r) => r.id !== id),
-      views: graph.views.map((v) => ({
-        ...v,
-        edgeRefs: v.edgeRefs.filter((eId) => eId !== id),
-      })),
-    };
-    set((state) => ({
-      graph: updated,
-      selectedEdgeId: null,
-      ...historyPatchWithCurrentSnapshot(state),
-    }));
-    get().syncGraphToServer();
+    get().removeRelations([id]);
   },
 
   saveNodePositions: (positions) => {

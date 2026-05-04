@@ -293,3 +293,62 @@ test("clearManualLayoutFlags removes persisted manual layout flags but keeps sav
   assert.equal(view?.manualLayout, undefined);
   assert.deepEqual(view?.nodePositions, [{ symbolId: "sym:class", x: 320, y: 180 }]);
 });
+
+test("clearGraphForScan empties navigation state and marks the rescan as running", () => {
+  useAppStore.getState().setGraph(buildGraph());
+  useAppStore.getState().navigateToView("view:process-stage:inputs");
+  useAppStore.getState().selectSymbol("sym:class");
+
+  useAppStore.getState().clearGraphForScan("C:/tmp/sample");
+
+  const state = useAppStore.getState();
+  assert.equal(state.graph, null);
+  assert.equal(state.currentViewId, null);
+  assert.deepEqual(state.breadcrumb, []);
+  assert.equal(state.selectedSymbolId, null);
+  assert.equal(state.scanStatus.running, true);
+  assert.equal(state.scanStatus.projectPath, "C:/tmp/sample");
+});
+
+test("removeSymbol deletes descendant symbols, owned views and attached relations", () => {
+  disableGraphSync();
+  const graph = buildGraph();
+  const graphWithOwnedView: ProjectGraph = {
+    ...graph,
+    symbols: graph.symbols.map((symbol) =>
+      symbol.id === "sym:class"
+        ? { ...symbol, childViewId: "view:sym:class" }
+        : symbol,
+    ),
+    relations: [
+      {
+        id: "rel:method-artifact",
+        type: "writes",
+        source: "sym:method",
+        target: "ext:artifact",
+      },
+    ],
+    views: [
+      ...graph.views,
+      {
+        id: "view:sym:class",
+        title: "DruidConnector",
+        parentViewId: "view:process-stage:inputs",
+        scope: "class",
+        nodeRefs: ["sym:method"],
+        edgeRefs: ["rel:method-artifact"],
+      },
+    ],
+  };
+
+  useAppStore.getState().setGraph(graphWithOwnedView);
+  useAppStore.getState().navigateToView("view:sym:class");
+  useAppStore.getState().removeSymbol("sym:class");
+
+  const state = useAppStore.getState();
+  assert.equal(state.graph?.symbols.some((symbol) => symbol.id === "sym:class"), false);
+  assert.equal(state.graph?.symbols.some((symbol) => symbol.id === "sym:method"), false);
+  assert.equal(state.graph?.relations.some((relation) => relation.id === "rel:method-artifact"), false);
+  assert.equal(state.graph?.views.some((view) => view.id === "view:sym:class"), false);
+  assert.equal(state.currentViewId, "view:process-overview");
+});

@@ -94,6 +94,34 @@ test("resolveArtifactView hides the input stage package when grouped inputs are 
   );
 });
 
+test("resolveArtifactView hides the input stage package when inputs are off", () => {
+  const inputPackage: Symbol = {
+    id: "proc:pkg:inputs",
+    label: "Input Sources",
+    kind: "group",
+    umlType: "package",
+  };
+  const extractPackage: Symbol = {
+    id: "proc:pkg:extract",
+    label: "Extraction & Preprocessing",
+    kind: "group",
+    umlType: "package",
+  };
+  const { graph, view } = buildBaseGraph({
+    symbols: [inputPackage, extractPackage],
+    relations: [],
+    viewNodeRefs: [inputPackage.id, extractPackage.id],
+  });
+
+  const resolved = resolveArtifactView(graph, view, {
+    input: "hidden",
+    generated: "grouped",
+  });
+
+  assert.deepEqual(resolved.nodeRefs, [extractPackage.id]);
+  assert.ok(resolved.hiddenSymbolIds.has(inputPackage.id));
+});
+
 test("resolveArtifactView bypasses the input stage package for individual input members", () => {
   const inputPackage: Symbol = {
     id: "proc:pkg:inputs",

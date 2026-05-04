@@ -1088,13 +1088,14 @@ def _build_structural_class_relations(
                 add_relation(
                     parent_id,
                     target_id,
-                    "dependency",
+                    "association",
                     label=method_name,
                     file=symbol.get("file"),
                     start_line=symbol.get("startLine"),
                     end_line=symbol.get("endLine"),
-                    confidence=0.7,
+                    confidence=0.72,
                     target_multiplicity=target_multiplicity,
+                    target_role=method_name,
                 )
 
         for item in symbol_doc.get("outputs") or []:
@@ -1112,13 +1113,14 @@ def _build_structural_class_relations(
                 add_relation(
                     parent_id,
                     target_id,
-                    "dependency",
+                    "association",
                     label=method_name,
                     file=symbol.get("file"),
                     start_line=symbol.get("startLine"),
                     end_line=symbol.get("endLine"),
-                    confidence=0.66,
+                    confidence=0.68,
                     target_multiplicity=target_multiplicity,
+                    target_role=method_name,
                 )
 
     return relations

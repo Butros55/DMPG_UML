@@ -61,6 +61,7 @@ export function CommandPalette() {
   const selectedSymbolId = useAppStore((s) => s.selectedSymbolId);
   const selectedEdgeId = useAppStore((s) => s.selectedEdgeId);
   const removeSymbol = useAppStore((s) => s.removeSymbol);
+  const removeRelations = useAppStore((s) => s.removeRelations);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const selectSymbol = useAppStore((s) => s.selectSymbol);
   const selectEdge = useAppStore((s) => s.selectEdge);
@@ -319,7 +320,7 @@ export function CommandPalette() {
             const matches = (graph?.relations ?? []).filter((r) =>
               r.source === source && r.target === target && (!type || r.type === type),
             );
-            matches.forEach((r) => removeRelation(r.id));
+            removeRelations(matches.map((r) => r.id));
           }
           selectEdge(null);
         },
@@ -390,6 +391,7 @@ export function CommandPalette() {
     projects,
     redoGraphChange,
     removeRelation,
+    removeRelations,
     removeSymbol,
     resetDiagramSettings,
     selectEdge,

@@ -142,7 +142,8 @@ export async function deleteProjectApi(projectPath: string): Promise<{
     body: JSON.stringify({ projectPath }),
   });
   if (!res.ok) {
-    return { ok: false, projects: [], activeProject: null, graph: null };
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error ?? "Projekt konnte nicht entfernt werden");
   }
   return res.json();
 }
@@ -241,7 +242,7 @@ export async function replaceGraph(graph: ProjectGraph): Promise<ProjectGraph> {
   return (payload as { graph?: ProjectGraph }).graph ?? graph;
 }
 
-export async function scanProject(projectPath: string) {
+export async function scanProject(projectPath: string): Promise<ProjectGraph> {
   const res = await apiFetch(`${API_BASE}/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -252,6 +253,79 @@ export async function scanProject(projectPath: string) {
     throw new Error(err.error ?? "Scan failed");
   }
   return res.json();
+}
+
+export interface ScanStreamEvent {
+  phase: "start" | "python" | "pyreverse" | "graph" | "embeddings" | "class-synthesis" | "done" | "error" | "cancelled";
+  message?: string;
+  projectPath?: string;
+  graph?: ProjectGraph;
+  current?: number;
+  total?: number;
+  viewId?: string;
+  relationsAdded?: number;
+  warnings?: string[];
+}
+
+function createAbortError(message = "Scan aborted"): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+export async function scanProjectStream(
+  projectPath: string,
+  onEvent: (event: ScanStreamEvent) => void,
+  options: { signal?: AbortSignal } = {},
+): Promise<ProjectGraph> {
+  if (options.signal?.aborted) throw createAbortError();
+
+  const res = await apiFetch(`${API_BASE}/scan/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectPath }),
+    signal: options.signal,
+  });
+
+  if (options.signal?.aborted) throw createAbortError();
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error ?? "Scan failed");
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("Scan stream did not return a response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalGraph: ProjectGraph | null = null;
+
+  const handleLine = (line: string) => {
+    if (options.signal?.aborted) throw createAbortError();
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return;
+    const event = JSON.parse(trimmed.slice(6)) as ScanStreamEvent;
+    if (event.graph) finalGraph = event.graph;
+    onEvent(event);
+    if (event.phase === "error") {
+      throw new Error(event.message ?? "Scan failed");
+    }
+  };
+
+  while (true) {
+    if (options.signal?.aborted) throw createAbortError();
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) handleLine(line);
+  }
+
+  if (buffer.trim()) handleLine(buffer);
+  if (!finalGraph) throw new Error("Scan stream finished without a graph");
+  return finalGraph;
 }
 
 export async function summarizeSymbol(symbolId: string, codeSnippet?: string, context?: string) {

@@ -577,7 +577,7 @@ export const UmlClassNode = memo(function UmlClassNode({ data, selected }: NodeP
 
       {d.childViewId && (
         <div className="group-drilldown" onClick={handleDrilldown}>
-          <i className="bi bi-caret-right-fill" /> Methods detail
+          <i className="bi bi-caret-right-fill" /> {d.kind === "class" || d.kind === "interface" ? "Methods detail" : "Drill down"}
         </div>
       )}
       <Handle type="source" position={Position.Bottom} id="out-bottom" />

@@ -177,8 +177,8 @@ export function resolveArtifactView(
   };
 }
 
-function shouldHideInputStagePackage(view: DiagramView, modes: ArtifactViewModes): boolean {
-  return modes.input !== "hidden" && view.nodeRefs.includes(INPUT_STAGE_PACKAGE_ID);
+function shouldHideInputStagePackage(view: DiagramView, _modes: ArtifactViewModes): boolean {
+  return view.nodeRefs.includes(INPUT_STAGE_PACKAGE_ID);
 }
 
 function artifactModeForSymbol(

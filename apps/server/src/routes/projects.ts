@@ -93,22 +93,30 @@ projectsRouter.post("/pick-folder", async (req, res) => {
     : "";
 
   const pickerScript = [
+    "$ErrorActionPreference = 'Stop'",
     "Add-Type -AssemblyName System.Windows.Forms",
     "[System.Windows.Forms.Application]::EnableVisualStyles()",
+    "$owner = New-Object System.Windows.Forms.Form",
+    "$owner.Text = 'DMPG UML'",
+    "$owner.TopMost = $true",
+    "$owner.ShowInTaskbar = $false",
+    "$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen",
+    "$owner.WindowState = [System.Windows.Forms.FormWindowState]::Minimized",
+    "$owner.Show() | Out-Null",
+    "$owner.Activate()",
     "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
-    "$dialog.Description = 'Select Project Root'",
+    "$dialog.Description = 'Projektordner auswaehlen'",
     "$dialog.ShowNewFolderButton = $true",
-    "if ($env:DMPG_INITIAL_PATH -and (Test-Path $env:DMPG_INITIAL_PATH)) { $dialog.SelectedPath = $env:DMPG_INITIAL_PATH }",
-    "$result = $dialog.ShowDialog()",
-    "if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.SelectedPath) { [Console]::Out.Write($dialog.SelectedPath) }",
+    "if ($env:DMPG_INITIAL_PATH -and (Test-Path -LiteralPath $env:DMPG_INITIAL_PATH)) { $dialog.SelectedPath = (Resolve-Path -LiteralPath $env:DMPG_INITIAL_PATH).Path }",
+    "try { $result = $dialog.ShowDialog($owner); if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.SelectedPath) { [Console]::Out.Write($dialog.SelectedPath) } } finally { $dialog.Dispose(); $owner.Close(); $owner.Dispose() }",
   ].join("; ");
 
   try {
     const { stdout } = await execFileCapture(
       "powershell.exe",
-      ["-NoProfile", "-STA", "-Command", pickerScript],
+      ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", pickerScript],
       {
-        windowsHide: true,
+        windowsHide: false,
         env: {
           ...process.env,
           DMPG_INITIAL_PATH: resolvedInitialPath,

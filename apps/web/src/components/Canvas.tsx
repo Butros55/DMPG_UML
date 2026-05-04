@@ -12,7 +12,6 @@ import {
   type Node,
   type Edge,
   BackgroundVariant,
-  MarkerType,
   Position,
   useReactFlow,
   useUpdateNodeInternals,
@@ -48,9 +47,14 @@ import {
   type DiagramLabelMode,
 } from "../diagramSettings";
 import { resolveArtifactView } from "../artifactVisibility";
+import {
+  isUmlClassifierSymbol,
+  toClassProjectionRelation,
+} from "../classDiagramProjection";
 import { buildArtifactPreview } from "../artifactPreview";
 import { isManagedProcessLayoutViewId } from "../viewNavigation";
 import { buildEdgeContextSequenceDiagram, buildPackageSequenceDiagram } from "../sequenceDiagram";
+import { edgeMarkerEndForRelation, edgeMarkerStartForRelation } from "../umlMarkers";
 
 const nodeTypes = {
   uml: UmlNode,
@@ -75,9 +79,10 @@ const proOptions = { hideAttribution: true };
  * enough for a real UML class diagram. This component renders a hidden SVG
  * whose `<defs>` contain the shapes UML needs: a hollow triangle for
  * inheritance/realization, hollow and filled diamonds for aggregation /
- * composition, an open "V" arrowhead for dependencies and associations.
+ * composition, an open "V" arrowhead for dependencies, and a solid arrow for
+ * instantiation. Plain associations intentionally have no marker.
  *
- * Edges reference these markers via `url(#uml-...-...)` in their markerEnd.
+ * Edges reference these markers via `url(#uml-...-...)` in markerEnd/markerStart.
  */
 function UmlMarkerDefs() {
   return (
@@ -159,27 +164,6 @@ function UmlMarkerDefs() {
             d="M1,1 L12,7 L1,13"
             fill="none"
             stroke="#8a94b0"
-            strokeWidth="1.4"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        </marker>
-
-        {/* Open thin arrow — association / navigable association. */}
-        <marker
-          id="uml-association-arrow"
-          viewBox="0 0 14 14"
-          refX="12"
-          refY="7"
-          markerWidth="14"
-          markerHeight="14"
-          orient="auto-start-reverse"
-          markerUnits="userSpaceOnUse"
-        >
-          <path
-            d="M1,1 L12,7 L1,13"
-            fill="none"
-            stroke="#6c8cff"
             strokeWidth="1.4"
             strokeLinejoin="round"
             strokeLinecap="round"
@@ -367,47 +351,6 @@ function edgeLabelForMode(
     .join(", ");
 }
 
-/**
- * Custom UML marker IDs — these are defined in <UmlMarkerDefs/> and referenced
- * via markerEnd/markerStart URLs on each edge. React Flow's built-in MarkerType
- * only offers plain or closed arrows, which is not enough for a real UML class
- * diagram (hollow triangle for inheritance/realization, diamond heads for
- * aggregation/composition, open stick arrow for dependency, etc.).
- */
-const UML_MARKER = {
-  inheritsTriangle: "url(#uml-inherits-triangle)",
-  realizesTriangle: "url(#uml-realizes-triangle)",
-  aggregationDiamond: "url(#uml-aggregation-diamond)",
-  compositionDiamond: "url(#uml-composition-diamond)",
-  dependencyArrow: "url(#uml-dependency-arrow)",
-  associationArrow: "url(#uml-association-arrow)",
-  instantiatesArrow: "url(#uml-instantiates-arrow)",
-} as const;
-
-function edgeMarkerEndForRelation(type: RelationType): string | { type: MarkerType; width: number; height: number; color: string } | undefined {
-  switch (type) {
-    case "inherits":
-      return UML_MARKER.inheritsTriangle;
-    case "realizes":
-      return UML_MARKER.realizesTriangle;
-    case "aggregation":
-      return UML_MARKER.aggregationDiamond;
-    case "composition":
-      return UML_MARKER.compositionDiamond;
-    case "dependency":
-      return UML_MARKER.dependencyArrow;
-    case "association":
-      return UML_MARKER.associationArrow;
-    case "instantiates":
-      return UML_MARKER.instantiatesArrow;
-    case "imports":
-    case "uses_config":
-      return { type: MarkerType.Arrow, width: 18, height: 18, color: "#6c8cff" };
-    default:
-      return undefined;
-  }
-}
-
 function toPreparedEdges(
   projected: ProjectedEdge[],
   relationMap: Map<string, Relation>,
@@ -562,6 +505,7 @@ function summarizeRouteReason(params: {
 
 export function Canvas() {
   const graph = useAppStore((s) => s.graph);
+  const scanStatus = useAppStore((s) => s.scanStatus);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const projectionMode = useAppStore((s) => s.projectionMode);
   const sequenceContext = useAppStore((s) => s.sequenceContext);
@@ -581,6 +525,7 @@ export function Canvas() {
   const updateRelation = useAppStore((s) => s.updateRelation);
   const updateRelations = useAppStore((s) => s.updateRelations);
   const removeSymbol = useAppStore((s) => s.removeSymbol);
+  const removeRelations = useAppStore((s) => s.removeRelations);
   const removeRelation = useAppStore((s) => s.removeRelation);
   const saveNodePositions = useAppStore((s) => s.saveNodePositions);
   const clearManualLayoutFlags = useAppStore((s) => s.clearManualLayoutFlags);
@@ -589,6 +534,12 @@ export function Canvas() {
   const updateDiagramSettings = useAppStore((s) => s.updateDiagramSettings);
   const isAutoLayoutActive = diagramSettings.autoLayout;
   const nodesDraggable = !isAutoLayoutActive;
+  const scanProgressText = scanStatus.total && scanStatus.current
+    ? `${scanStatus.current}/${scanStatus.total} LLM-Batches`
+    : scanStatus.phase;
+  const showScanLoadingOverlay = scanStatus.running;
+  const showScanIdleOverlay = !graph && !scanStatus.running && !!scanStatus.projectPath;
+  const scanWarnings = scanStatus.warnings ?? [];
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -816,36 +767,25 @@ export function Canvas() {
     const isExplicitSequenceProjection = projectionMode === "sequence";
     const isClassProjection = projectionMode === "class";
 
-    // In a real UML class diagram we only want classes/interfaces. Everything
-    // else (modules, packages, scripts, standalone functions/methods, artifacts)
-    // is noise, so we hide it in class-projection mode.
-    const symbolKindById = new Map<string, Sym["kind"]>();
-    for (const sym of graph.symbols) symbolKindById.set(sym.id, sym.kind);
-    const isUmlClassSymbolId = (id: string): boolean => {
-      const kind = symbolKindById.get(id);
-      return kind === "class" || kind === "interface" || kind === "external";
+    // In UML class mode, keep UML classifiers only: real classes/interfaces and
+    // module classifiers. Functions and methods render inside compartments.
+    const symbolById = new Map<string, Sym>();
+    for (const sym of graph.symbols) symbolById.set(sym.id, sym);
+    const isUmlClassifierSymbolId = (id: string): boolean => {
+      return isUmlClassifierSymbol(symbolById.get(id));
     };
 
     const baseVisibleNodeRefs = resolvedArtifactView.nodeRefs.filter((id) => !hiddenSymbolIds.has(id));
     const visibleViewNodeRefs = isClassProjection
-      ? baseVisibleNodeRefs.filter(isUmlClassSymbolId)
+      ? baseVisibleNodeRefs.filter(isUmlClassifierSymbolId)
       : baseVisibleNodeRefs;
     const visibleViewNodeRefSet = new Set(visibleViewNodeRefs);
 
-    // For a proper class diagram only structural UML relations should be shown.
-    const relationWhitelist = isClassProjection
-      ? new Set<RelationType>([
-        "inherits",
-        "realizes",
-        "dependency",
-        "association",
-        "aggregation",
-        "composition",
-      ])
-      : null;
-    const visibleRelations = resolvedArtifactView.relations.filter(
-      (rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target),
-    ).filter((rel) => !relationWhitelist || relationWhitelist.has(rel.type));
+    // For class diagrams, Python calls/imports are displayed as UML dependencies.
+    const visibleRelations = resolvedArtifactView.relations
+      .filter((rel) => !hiddenSymbolIds.has(rel.source) && !hiddenSymbolIds.has(rel.target))
+      .map((rel) => isClassProjection ? toClassProjectionRelation(rel) : rel)
+      .filter((rel): rel is Relation => Boolean(rel));
     const relationMap = new Map(visibleRelations.map((rel) => [rel.id, rel]));
 
     if (isExplicitSequenceProjection) {
@@ -909,6 +849,7 @@ export function Canvas() {
       const sym = symbolOverrides.get(symId) ?? graph.symbols.find((s) => s.id === symId);
       if (!sym) return null;
       const artifactPreview = buildArtifactPreview(sym);
+      const childViewId = sym.childViewId && sym.childViewId !== view.id ? sym.childViewId : undefined;
 
       const savedPos = view.nodePositions?.find((p) => p.symbolId === symId);
 
@@ -916,9 +857,7 @@ export function Canvas() {
       // In class-projection mode we always render proper UML class boxes,
       // so the ad-hoc scope checks are bypassed for classes/interfaces.
       let nodeType = "uml";
-      if (isClassProjection && (sym.kind === "class" || sym.kind === "interface")) {
-        nodeType = "umlClass";
-      } else if (isClassProjection && sym.kind === "external") {
+      if (isClassProjection && (sym.kind === "class" || sym.kind === "interface" || sym.kind === "module")) {
         nodeType = "umlClass";
       } else if (sym.umlType === "database" || sym.umlType === "artifact" || sym.umlType === "component" || sym.umlType === "note") {
         nodeType = "umlArtifact";
@@ -931,9 +870,17 @@ export function Canvas() {
       else if (sym.kind === "function" || sym.kind === "method") nodeType = "umlFunction";
 
       // Gather children for class nodes (show members inline)
-      const children = (sym.kind === "class" || sym.kind === "module")
+      const children = (sym.kind === "class" || sym.kind === "interface")
         ? graph.symbols.filter((s) => s.parentId === sym.id && !hiddenSymbolIds.has(s.id))
-        : [];
+        : isClassProjection && sym.kind === "module"
+          ? graph.symbols.filter((s) =>
+              s.parentId === sym.id &&
+              !hiddenSymbolIds.has(s.id) &&
+              (s.kind === "function" || s.kind === "method" || s.kind === "variable" || s.kind === "constant"),
+            )
+          : sym.kind === "module"
+            ? graph.symbols.filter((s) => s.parentId === sym.id && !hiddenSymbolIds.has(s.id))
+            : [];
 
       // Extra CSS classes
       const isDeadCode = sym.tags?.includes("dead-code");
@@ -972,15 +919,23 @@ export function Canvas() {
         selected: sym.id === selectedSymbolId,
         draggable: nodesDraggable,
         position: savedPos ? { x: savedPos.x, y: savedPos.y } : { x: i * 250, y: i * 120 },
+        parentId: isClassProjection ? undefined : savedPos?.parentId,
+        extent: isClassProjection ? undefined : savedPos?.extent,
+        style: savedPos?.width || savedPos?.height
+          ? {
+              ...(savedPos.width ? { width: savedPos.width } : {}),
+              ...(savedPos.height ? { height: savedPos.height } : {}),
+            }
+          : undefined,
         className: nodeClasses.join(" ") || undefined,
         data: {
           label: sym.label,
           kind: sym.kind,
           umlType: sym.umlType,
-          stereotype: sym.stereotype,
+          stereotype: isClassProjection && sym.kind === "module" ? "module" : sym.stereotype,
           summary: sym.doc?.summary,
           symbolId: sym.id,
-          childViewId: sym.childViewId,
+          childViewId,
           inputs: sym.doc?.inputs,
           outputs: sym.doc?.outputs,
           children,
@@ -1089,6 +1044,7 @@ export function Canvas() {
             : undefined
           : pe.label,
         animated: pe.animated,
+        markerStart: edgeMarkerStartForRelation(pe.type),
         markerEnd: edgeMarkerEndForRelation(pe.type),
         className: `${pe.className}${edgeVisibilityClass}${edgeReviewClass}`,
         style: { strokeWidth: diagramSettings.edgeStrokeWidth },
@@ -1322,6 +1278,9 @@ export function Canvas() {
             type: updated.type,
             selected: updated.selected,
             draggable: updated.draggable,
+            parentId: updated.parentId,
+            extent: updated.extent,
+            style: n.style,
             // Do NOT overwrite position — keep ELK/user-dragged position from prev
             data: { ...updated.data, dynamicPorts: prevPorts },
             className: updated.className,
@@ -2065,7 +2024,7 @@ export function Canvas() {
               const rels = graph?.relations.filter(
                 (r) => r.type === parts[2] && r.source === parts[0] && r.target === parts[1],
               ) ?? [];
-              rels.forEach((r) => removeRelation(r.id));
+              removeRelations(rels.map((r) => r.id));
             } else if (parts.length === 4) {
               const rel = graph?.relations.find((r) => r.id === parts[3]);
               if (rel) {
@@ -2074,13 +2033,13 @@ export function Canvas() {
                 const rels = graph?.relations.filter(
                   (r) => r.type === parts[2] && r.source === parts[0] && r.target === parts[1],
                 ) ?? [];
-                rels.forEach((r) => removeRelation(r.id));
+                removeRelations(rels.map((r) => r.id));
               }
             } else if (parts.length === 2) {
               const rels = graph?.relations.filter(
                 (r) => r.source === parts[0] && r.target === parts[1],
               ) ?? [];
-              rels.forEach((r) => removeRelation(r.id));
+              removeRelations(rels.map((r) => r.id));
             }
           }
           selectEdge(null);
@@ -2093,6 +2052,7 @@ export function Canvas() {
     selectedSymbolId,
     selectedEdgeId,
     removeSymbol,
+    removeRelations,
     removeRelation,
     selectSymbol,
     selectEdge,
@@ -2255,19 +2215,33 @@ export function Canvas() {
         manualLayoutViewIdsRef.current.add(currentViewId);
       }
       suppressNextGraphResetRef.current = true;
-      const positions = draggedNodes.map((n) => ({
-        symbolId: (n.data as UmlNodeData).symbolId,
-        x: n.position.x,
-        y: n.position.y,
-        width: n.measured?.width,
-        height: n.measured?.height,
-      }));
+      const nodesById = new Map(nodes.map((n) => [n.id, n]));
+      for (const draggedNode of draggedNodes) {
+        nodesById.set(draggedNode.id, draggedNode);
+      }
+      const nodesToPersist = projectionMode === "class"
+        ? [...nodesById.values()]
+        : draggedNodes;
+      const positions = nodesToPersist.map((n) => {
+        const style = n.style as { width?: unknown; height?: unknown } | undefined;
+        const styleWidth = typeof style?.width === "number" ? style.width : undefined;
+        const styleHeight = typeof style?.height === "number" ? style.height : undefined;
+        return {
+          symbolId: (n.data as UmlNodeData).symbolId,
+          x: n.position.x,
+          y: n.position.y,
+          width: n.measured?.width ?? styleWidth,
+          height: n.measured?.height ?? styleHeight,
+          parentId: n.parentId,
+          extent: n.extent === "parent" ? "parent" as const : undefined,
+        };
+      });
       saveNodePositions(positions);
       setIsNodeDragActive(false);
       // Prevent immediate hover re-open right after drag release.
       setHoverInteractionBlocked(false, 240);
     },
-    [currentViewId, isAutoLayoutActive, saveNodePositions],
+    [currentViewId, isAutoLayoutActive, nodes, projectionMode, saveNodePositions],
   );
 
   const onMoveStart = useCallback(() => {
@@ -2393,6 +2367,44 @@ export function Canvas() {
           <span className={`ai-phase-badge ai-phase-badge--${aiPhase}`}>{aiPhase || "starting…"}</span>
           {aiThought && <span className="ai-canvas-overlay__thought">{aiThought}</span>}
           {aiNavPaused && <span className="ai-canvas-overlay__paused"><i className="bi bi-compass" /> Nav pausiert</span>}
+        </div>
+      )}
+
+      {showScanLoadingOverlay && (
+        <div className="scan-canvas-loading" aria-live="polite">
+          <div className="scan-canvas-loading__panel">
+            <span className="ai-spinner scan-canvas-loading__spinner" />
+            <div className="scan-canvas-loading__content">
+              <div className="scan-canvas-loading__title">Projekt wird neu gescannt</div>
+              <div className="scan-canvas-loading__message">
+                {scanStatus.message ?? "AST-Scanner und Pyreverse-Klassendiagramm laufen"}
+              </div>
+              {scanWarnings.length > 0 && (
+                <div className="scan-canvas-loading__warnings">
+                  {scanWarnings.slice(0, 2).map((warning) => (
+                    <div key={warning} className="scan-canvas-loading__warning">
+                      <i className="bi bi-exclamation-triangle" /> {warning}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="scan-canvas-loading__meta">{scanProgressText}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showScanIdleOverlay && (
+        <div className="scan-canvas-loading scan-canvas-loading--idle" aria-live="polite">
+          <div className="scan-canvas-loading__panel">
+            <div className="scan-canvas-loading__content">
+              <div className="scan-canvas-loading__title">Noch kein Scan geladen</div>
+              <div className="scan-canvas-loading__message">
+                {scanStatus.message ?? "Projekt auswaehlen oder Rescan starten"}
+              </div>
+              <div className="scan-canvas-loading__meta">{scanStatus.projectPath}</div>
+            </div>
+          </div>
         </div>
       )}
 

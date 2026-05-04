@@ -10,12 +10,18 @@ import {
   pickProjectFolder,
   openProjectFolder,
   replaceGraph,
+  scanProjectStream,
 } from "../api";
 import type { ProjectMeta } from "../api";
 import type { DiagramView, Symbol as Sym } from "@dmpg/shared";
 import { AiWorkspacePanel } from "./AiWorkspacePanel";
 import { exportProjectPackage, importProjectPackageFile } from "../projectTransfer";
 import { formatViewTitle } from "../viewTitles";
+import {
+  collectInputSourceTreeSymbols,
+  isInputSourcesViewId,
+  type InputSourceTreeSymbol,
+} from "../inputSources";
 
 const NODE_KINDS = [
   { kind: "module", label: "Module", color: "#6c8cff" },
@@ -52,6 +58,16 @@ const SCOPE_ICONS: Record<string, string> = {
 
 type SidebarTab = "views" | "nodes" | "ai" | "project";
 const SIDEBAR_TAB_STORAGE_KEY = "dmpg.sidebar.active-tab.v1";
+
+type TreeSymbol = Sym | InputSourceTreeSymbol;
+
+function treeSymbolKey(sym: TreeSymbol): string {
+  return "treeKey" in sym ? sym.treeKey : sym.id;
+}
+
+function treeSymbolNavigationId(sym: TreeSymbol): string | null {
+  return "navigationSymbolId" in sym ? sym.navigationSymbolId : sym.id;
+}
 
 /** Navigate to the deepest view containing a symbol and focus it */
 function goToSymbol(symbolId: string, preferredViewId?: string | null) {
@@ -110,6 +126,40 @@ function formatProjectTimestamp(value: string | undefined): string {
   return parsed.toLocaleString("de-DE", {
     dateStyle: "medium",
     timeStyle: "short",
+  });
+}
+
+function formatProjectSymbolCount(project: ProjectMeta | null | undefined): string {
+  if (!project?.lastScanned) return "Noch kein gespeicherter Scan";
+  return `${project.symbolCount} Symbole`;
+}
+
+function clearWorkspaceGraphState() {
+  useAppStore.setState({
+    graph: null,
+    currentViewId: null,
+    projectionMode: "overview",
+    sequenceContext: null,
+    selectedSymbolId: null,
+    selectedEdgeId: null,
+    breadcrumb: [],
+    viewUiSnapshots: {},
+    reviewHighlight: {
+      activeItemId: null,
+      nodeIds: [],
+      primaryNodeId: null,
+      viewId: null,
+      fitView: false,
+      seq: 0,
+      previewNodeIds: [],
+    },
+    graphHistoryPast: [],
+    graphHistoryFuture: [],
+    historyCanUndo: false,
+    historyCanRedo: false,
+    focusNodeId: null,
+    aiAnalysis: null,
+    validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
   });
 }
 
@@ -227,7 +277,7 @@ function ViewTreeItem({
 }: {
   view: DiagramView;
   childMap: Map<string, DiagramView[]>;
-  symbolsByView: Map<string, Sym[]>;
+  symbolsByView: Map<string, TreeSymbol[]>;
   currentViewId: string | null;
   navigateToView: (id: string) => void;
   collapsed: Record<string, boolean>;
@@ -249,10 +299,13 @@ function ViewTreeItem({
   const viewSymbols = symbolsByView.get(view.id) ?? [];
   const hasChildren = childViews.length > 0 || viewSymbols.length > 0;
   const isCollapsed = searchActive ? false : (collapsed[view.id] ?? (level > 1));
-  const isActive = view.id === currentViewId;
+  const isInputSourcesCollection = isInputSourcesViewId(view.id);
+  const isActive = !isInputSourcesCollection && view.id === currentViewId;
   const isSearchMatch = searchActive && matchedViewIds.has(view.id);
   const scope = (view as any).scope as string | undefined;
-  const icon = SCOPE_ICONS[scope ?? ""] ?? "bi-folder";
+  const icon = isInputSourcesCollection
+    ? "bi-inboxes"
+    : SCOPE_ICONS[scope ?? ""] ?? "bi-folder";
 
   // Check if this view contains dead-code nodes
   const hasDeadCode = view.nodeRefs.some((id) => deadSymbolIds.has(id));
@@ -260,9 +313,15 @@ function ViewTreeItem({
   return (
     <>
       <div
-        className={`view-tree-item ${isActive ? "view-tree-item--active" : ""} ${hasDeadCode ? "view-tree-item--has-dead" : ""}${isSearchMatch ? " view-tree-item--search-match" : ""}`}
+        className={`view-tree-item ${isActive ? "view-tree-item--active" : ""} ${hasDeadCode ? "view-tree-item--has-dead" : ""}${isSearchMatch ? " view-tree-item--search-match" : ""}${isInputSourcesCollection ? " view-tree-item--collection" : ""}`}
         style={{ paddingLeft: 8 + level * 16 }}
-        onClick={() => navigateToView(view.id)}
+        onClick={() => {
+          if (isInputSourcesCollection) {
+            if (hasChildren) toggleCollapse(view.id);
+            return;
+          }
+          navigateToView(view.id);
+        }}
       >
         {hasChildren ? (
           <span
@@ -278,6 +337,9 @@ function ViewTreeItem({
         <span className="view-tree-label">
           <HighlightText text={formatViewTitle(view.title, view.id)} query={searchQuery} />
         </span>
+        {isInputSourcesCollection && (
+          <span className="view-tree-collection-badge">Quellen</span>
+        )}
       </div>
       {hasChildren && !isCollapsed && (
         <>
@@ -302,23 +364,35 @@ function ViewTreeItem({
             />
           ))}
           {/* Then symbols belonging to this view that are NOT sub-views */}
-          {viewSymbols.map((sym) => (
-            <div
-              key={sym.id}
-              className={`view-tree-item view-tree-symbol ${deadSymbolIds.has(sym.id) ? "view-tree-symbol--dead" : ""}${searchActive && matchedSymbolIds.has(sym.id) ? " view-tree-item--search-match" : ""}`}
-              style={{ paddingLeft: 8 + (level + 1) * 16 }}
-              onClick={(e) => {
-                e.stopPropagation();
-                goToSymbol(sym.id, view.id);
-              }}
-            >
-              <span className="view-tree-chevron view-tree-chevron--leaf" />
-              <KindBadge kind={sym.kind} />
-              <span className="view-tree-label">
-                <HighlightText text={sym.label.split(".").pop() ?? sym.label} query={searchQuery} />
-              </span>
-            </div>
-          ))}
+          {viewSymbols.map((sym) => {
+            const navigationSymbolId = treeSymbolNavigationId(sym);
+            const isDeadSymbol = navigationSymbolId ? deadSymbolIds.has(navigationSymbolId) : false;
+            const displayLabel = isInputSourcesCollection
+              ? sym.label
+              : sym.label.split(".").pop() ?? sym.label;
+            return (
+              <div
+                key={treeSymbolKey(sym)}
+                className={`view-tree-item view-tree-symbol ${isDeadSymbol ? "view-tree-symbol--dead" : ""}${searchActive && matchedSymbolIds.has(treeSymbolKey(sym)) ? " view-tree-item--search-match" : ""}`}
+                style={{ paddingLeft: 8 + (level + 1) * 16 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!navigationSymbolId) return;
+                  if (isInputSourcesCollection) {
+                    useAppStore.getState().selectSymbol(navigationSymbolId);
+                    return;
+                  }
+                  goToSymbol(navigationSymbolId, view.id);
+                }}
+              >
+                <span className="view-tree-chevron view-tree-chevron--leaf" />
+                <KindBadge kind={sym.kind} />
+                <span className="view-tree-label">
+                  <HighlightText text={displayLabel} query={searchQuery} />
+                </span>
+              </div>
+            );
+          })}
         </>
       )}
     </>
@@ -409,6 +483,10 @@ function FolderBrowser({ onSelect, onClose }: { onSelect: (path: string) => void
 export function Sidebar() {
   const graph = useAppStore((s) => s.graph);
   const setGraph = useAppStore((s) => s.setGraph);
+  const updateGraph = useAppStore((s) => s.updateGraph);
+  const clearGraphForScan = useAppStore((s) => s.clearGraphForScan);
+  const updateScanStatus = useAppStore((s) => s.updateScanStatus);
+  const scanStatus = useAppStore((s) => s.scanStatus);
   const currentViewId = useAppStore((s) => s.currentViewId);
   const navigateToView = useAppStore((s) => s.navigateToView);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
@@ -432,6 +510,8 @@ export function Sidebar() {
   const [aiProvider, setAiProvider] = useState("");
   const [ollamaModel, setOllamaModel] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
+  const scanAbortRef = useRef<AbortController | null>(null);
+  const projectLoadRunRef = useRef(0);
   const [viewSearchQuery, setViewSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SidebarTab>("views");
 
@@ -494,6 +574,20 @@ export function Sidebar() {
     return sortedProjects.filter((project) => !sameProjectPath(project.projectPath, activeProjectMeta.projectPath));
   }, [activeProjectMeta, configuredProjectPath, projects]);
 
+  const cancelActiveProjectScan = useCallback((message = "Scan abgebrochen") => {
+    projectLoadRunRef.current += 1;
+    scanAbortRef.current?.abort();
+    scanAbortRef.current = null;
+    setScanning(false);
+    updateScanStatus({
+      running: false,
+      phase: "cancelled",
+      message,
+      current: undefined,
+      total: undefined,
+    });
+  }, [updateScanStatus]);
+
   const handleActivityTabClick = useCallback((tab: SidebarTab) => {
     if (!sidebarCollapsed && activeTab === tab) {
       setSidebarCollapsed(true);
@@ -505,39 +599,173 @@ export function Sidebar() {
 
   const loadProjectWorkspace = useCallback(async (
     projectPath: string,
-    options?: { forceRescan?: boolean },
+    options?: { forceRescan?: boolean; scanIfMissing?: boolean },
   ) => {
     const targetPath = projectPath.trim();
     if (!targetPath) return null;
 
+    scanAbortRef.current?.abort();
+    scanAbortRef.current = null;
+    const runId = ++projectLoadRunRef.current;
+    const isCurrentRun = () => projectLoadRunRef.current === runId;
+
     setScanning(true);
     setScanError("");
+    setScanPath(targetPath);
+    setActiveProjectPath(targetPath);
+    updateScanStatus({
+      running: true,
+      phase: options?.forceRescan ? "start" : "loading",
+      message: options?.forceRescan ? "Rescan wird vorbereitet" : "Projekt wird geladen",
+      projectPath: targetPath,
+      current: undefined,
+      total: undefined,
+      warnings: [],
+    });
     try {
       exitValidateMode();
       resetPlaybackQueue();
 
       let graphResult = null as Awaited<ReturnType<typeof scanProject>> | null;
-      if (!options?.forceRescan) {
+      if (options?.forceRescan) {
+        await switchProjectApi(targetPath);
+        if (!isCurrentRun()) return null;
+        await refreshProjects();
+        if (!isCurrentRun()) return null;
+      } else {
         const { graph } = await switchProjectApi(targetPath);
+        if (!isCurrentRun()) return null;
         graphResult = graph;
       }
+      if (!graphResult && !options?.forceRescan && !options?.scanIfMissing) {
+        clearWorkspaceGraphState();
+        setScanPath(targetPath);
+        const refreshedActiveProject = await refreshProjects();
+        if (!isCurrentRun()) return null;
+        setActiveProjectPath(refreshedActiveProject ?? targetPath);
+        updateScanStatus({
+          running: false,
+          phase: "idle",
+          message: "Kein gespeicherter Scan fuer dieses Projekt",
+          projectPath: targetPath,
+          current: undefined,
+          total: undefined,
+          warnings: [],
+        });
+        return null;
+      }
       if (!graphResult) {
-        graphResult = await scanProject(targetPath);
+        let appliedGraphFromStream = false;
+        clearGraphForScan(targetPath);
+        updateScanStatus({
+          running: true,
+          phase: "start",
+          message: "Scanner startet",
+          projectPath: targetPath,
+          current: undefined,
+          total: undefined,
+          warnings: [],
+        });
+        const scanController = new AbortController();
+        scanAbortRef.current = scanController;
+        graphResult = await scanProjectStream(targetPath, (event) => {
+          if (!isCurrentRun() || scanController.signal.aborted) return;
+          const eventWarnings = (event.warnings ?? []).map((warning) => warning.trim()).filter(Boolean);
+          const previousWarnings = useAppStore.getState().scanStatus.warnings ?? [];
+          const warnings = eventWarnings.length > 0
+            ? [...new Set([...previousWarnings, ...eventWarnings])]
+            : previousWarnings;
+          updateScanStatus({
+            running: event.phase !== "done" && event.phase !== "error" && event.phase !== "cancelled",
+            phase: event.phase,
+            message: event.message ?? null,
+            projectPath: event.projectPath ?? targetPath,
+            current: event.current,
+            total: event.total,
+            warnings,
+          });
+          if (!event.graph || event.phase === "error" || event.phase === "cancelled") return;
+          const shouldApplyGraph =
+            event.phase === "graph" ||
+            event.phase === "done" ||
+            !useAppStore.getState().graph ||
+            (event.phase === "class-synthesis" && (event.relationsAdded ?? 0) > 0);
+          if (!shouldApplyGraph) return;
+          if (appliedGraphFromStream || useAppStore.getState().graph) {
+            updateGraph(event.graph);
+          } else {
+            setGraph(event.graph);
+          }
+          appliedGraphFromStream = true;
+        }, { signal: scanController.signal });
+        if (scanAbortRef.current === scanController) {
+          scanAbortRef.current = null;
+        }
+        if (!isCurrentRun()) return null;
+        if (appliedGraphFromStream) {
+          updateGraph(graphResult);
+        } else {
+          setGraph(graphResult);
+        }
+      } else {
+        if (!isCurrentRun()) return null;
+        setGraph(graphResult);
       }
 
-      setGraph(graphResult);
+      if (!graphResult || !isCurrentRun()) return null;
       const effectiveProjectPath = graphResult.sourceProjectPath ?? graphResult.projectPath ?? targetPath;
       setScanPath(effectiveProjectPath);
       const refreshedActiveProject = await refreshProjects();
+      if (!isCurrentRun()) return null;
       setActiveProjectPath(refreshedActiveProject ?? effectiveProjectPath);
+      updateScanStatus({
+        running: false,
+        phase: "done",
+        message: "Scan abgeschlossen",
+        projectPath: effectiveProjectPath,
+        current: undefined,
+        total: undefined,
+      });
       return graphResult;
     } catch (err: any) {
-      setScanError(err.message);
+      if (err?.name === "AbortError") {
+        if (isCurrentRun()) {
+          updateScanStatus({
+            running: false,
+            phase: "cancelled",
+            message: "Scan abgebrochen",
+            projectPath: targetPath,
+            current: undefined,
+            total: undefined,
+          });
+        }
+        return null;
+      }
+      if (isCurrentRun()) {
+        setScanError(err.message);
+        updateScanStatus({
+          running: false,
+          phase: "error",
+          message: err.message ?? "Scan fehlgeschlagen",
+          projectPath: targetPath,
+        });
+      }
       return null;
     } finally {
-      setScanning(false);
+      if (isCurrentRun()) {
+        scanAbortRef.current = null;
+        setScanning(false);
+      }
     }
-  }, [exitValidateMode, refreshProjects, resetPlaybackQueue, setGraph]);
+  }, [
+    clearGraphForScan,
+    exitValidateMode,
+    refreshProjects,
+    resetPlaybackQueue,
+    setGraph,
+    updateGraph,
+    updateScanStatus,
+  ]);
 
   // Load configured project path and open the preferred project on mount.
   useEffect(() => {
@@ -559,9 +787,9 @@ export function Sidebar() {
         setProjects(initialProjects);
         setActiveProjectPath(activeProject);
 
-        const preferredProjectPath = configuredPath || activeProject || initialProjects[0]?.projectPath || "";
+        const preferredProjectPath = activeProject || initialProjects[0]?.projectPath || "";
         if (!preferredProjectPath) {
-          setScanPath("");
+          setScanPath(configuredPath);
           return;
         }
 
@@ -577,6 +805,8 @@ export function Sidebar() {
     void bootstrapProjectWorkspace();
     return () => {
       cancelled = true;
+      scanAbortRef.current?.abort();
+      scanAbortRef.current = null;
     };
   }, [loadProjectWorkspace]);
 
@@ -598,9 +828,11 @@ export function Sidebar() {
       const pickedProjectPath = await pickProjectFolder(currentProjectPath || configuredProjectPath || undefined);
       if (!pickedProjectPath) return;
       setShowBrowser(false);
-      await loadProjectWorkspace(pickedProjectPath);
-    } catch {
-      setShowBrowser(true);
+      setScanError("");
+      await loadProjectWorkspace(pickedProjectPath, { scanIfMissing: true });
+    } catch (err: any) {
+      setShowBrowser(false);
+      setScanError(err.message ?? "Windows-Ordnerauswahl konnte nicht geoeffnet werden");
     }
   }, [configuredProjectPath, currentProjectPath, loadProjectWorkspace]);
 
@@ -640,7 +872,9 @@ export function Sidebar() {
   }, [exitValidateMode, refreshProjects, resetPlaybackQueue, setGraph]);
 
   const handleDeleteProject = useCallback(async (projectPath: string) => {
+    cancelActiveProjectScan("Scan abgebrochen, Projekt wird entfernt");
     try {
+      setScanError("");
       exitValidateMode();
       resetPlaybackQueue();
       const result = await deleteProjectApi(projectPath);
@@ -654,38 +888,31 @@ export function Sidebar() {
         setScanPath(result.graph.sourceProjectPath ?? result.activeProject);
       } else {
         // No project left — clear everything
-        useAppStore.getState().selectSymbol(null);
-        useAppStore.getState().selectEdge(null);
-        // setGraph with a null-like empty state: use the raw setter
-        useAppStore.setState({
-          graph: null,
-          currentViewId: null,
-          selectedSymbolId: null,
-          selectedEdgeId: null,
-          breadcrumb: [],
-          reviewHighlight: {
-            activeItemId: null,
-            nodeIds: [],
-            primaryNodeId: null,
-            viewId: null,
-            fitView: false,
-            seq: 0,
-            previewNodeIds: [],
-          },
-          graphHistoryPast: [],
-          graphHistoryFuture: [],
-          historyCanUndo: false,
-          historyCanRedo: false,
-          focusNodeId: null,
-          aiAnalysis: null,
-          validateState: { active: false, changes: [], currentIndex: -1, baselineRunId: null },
-        });
+        clearWorkspaceGraphState();
         setScanPath((result.activeProject ?? configuredProjectPath) || "");
-        setActiveProjectPath(result.activeProject ?? (configuredProjectPath || null));
+        setActiveProjectPath(result.activeProject ?? null);
       }
+      updateScanStatus({
+        running: false,
+        phase: "idle",
+        message: null,
+        projectPath: result.activeProject ?? null,
+        current: undefined,
+        total: undefined,
+        warnings: [],
+      });
       setScanError("");
-    } catch { /* ignore */ }
-  }, [configuredProjectPath, setGraph, exitValidateMode, resetPlaybackQueue]);
+    } catch (err: any) {
+      setScanError(err.message ?? "Projekt konnte nicht entfernt werden");
+    }
+  }, [
+    cancelActiveProjectScan,
+    configuredProjectPath,
+    setGraph,
+    exitValidateMode,
+    resetPlaybackQueue,
+    updateScanStatus,
+  ]);
 
   useEffect(() => {
     const onSidebarCommand = (event: Event) => {
@@ -761,11 +988,16 @@ export function Sidebar() {
 
   // Build view tree structure
   const views = graph?.views ?? [];
+  const showScanTreeLoading = scanStatus.running && !graph;
   const sidebarViews = useMemo(
     () => views.filter((view) => !view.hiddenInSidebar),
     [views],
   );
   const allSymbols = graph?.symbols ?? [];
+  const inputSourceTreeSymbols = useMemo(
+    () => graph ? collectInputSourceTreeSymbols(graph) : [],
+    [graph],
+  );
   const searchableSymbols = useMemo(() => {
     if (!graph) return [] as Sym[];
     const navigableIds = collectNavigableSymbolIds(graph);
@@ -788,7 +1020,7 @@ export function Sidebar() {
 
   // Build symbol list per view: only symbols that are direct children (not sub-view owners)
   const symbolsByView = useMemo(() => {
-    const map = new Map<string, Sym[]>();
+    const map = new Map<string, TreeSymbol[]>();
     // A symbol that owns any child view should not be rendered as a leaf item.
     const viewOwnerIds = new Set(
       allSymbols
@@ -796,7 +1028,12 @@ export function Sidebar() {
         .map((sym) => sym.id),
     );
     for (const v of sidebarViews) {
-      const syms: Sym[] = [];
+      if (isInputSourcesViewId(v.id)) {
+        if (inputSourceTreeSymbols.length > 0) map.set(v.id, inputSourceTreeSymbols);
+        continue;
+      }
+
+      const syms: TreeSymbol[] = [];
       for (const nid of v.nodeRefs) {
         if (viewOwnerIds.has(nid)) continue; // skip — shown as sub-view
         const sym = allSymbols.find((s) => s.id === nid);
@@ -808,7 +1045,7 @@ export function Sidebar() {
       if (syms.length > 0) map.set(v.id, syms);
     }
     return map;
-  }, [sidebarViews, allSymbols]);
+  }, [sidebarViews, allSymbols, inputSourceTreeSymbols]);
   const normalizedViewSearch = viewSearchQuery.trim().toLowerCase();
   const viewSearchActive = normalizedViewSearch.length > 0;
   const {
@@ -831,7 +1068,7 @@ export function Sidebar() {
     const isViewMatch = (view: DiagramView) =>
       queryMatches(view.title, normalizedViewSearch) ||
       queryMatches((view as any).scope as string | undefined, normalizedViewSearch);
-    const isSymbolMatch = (sym: Sym) =>
+    const isSymbolMatch = (sym: TreeSymbol) =>
       queryMatches(sym.label, normalizedViewSearch) ||
       queryMatches(sym.kind, normalizedViewSearch) ||
       queryMatches(sym.doc?.summary ?? "", normalizedViewSearch);
@@ -843,7 +1080,7 @@ export function Sidebar() {
     }
 
     const visibleViewIds = new Set<string>();
-    const filteredSymbolsByView = new Map<string, Sym[]>();
+    const filteredSymbolsByView = new Map<string, TreeSymbol[]>();
 
     const visit = (view: DiagramView): boolean => {
       const selfMatch = isViewMatch(view);
@@ -853,7 +1090,11 @@ export function Sidebar() {
       const childVisible = children.some((child) => visit(child));
 
       const viewSymbols = symbolsByView.get(view.id) ?? [];
-      const visibleSymbols = viewSymbols.filter((sym) => matchedSymbolIds.has(sym.id));
+      const visibleSymbols = viewSymbols.filter((sym) => {
+        const match = matchedSymbolIds.has(sym.id) || isSymbolMatch(sym);
+        if (match) matchedSymbolIds.add(treeSymbolKey(sym));
+        return match;
+      });
       if (visibleSymbols.length > 0) filteredSymbolsByView.set(view.id, visibleSymbols);
 
       const visible = selfMatch || childVisible || visibleSymbols.length > 0;
@@ -913,6 +1154,12 @@ export function Sidebar() {
   const handleViewTreeClick = useCallback((viewId: string) => {
     navigateToView(viewId);
   }, [navigateToView]);
+  const scanWarnings = scanStatus.warnings ?? [];
+  const showActiveProjectScanStatus =
+    !!currentProjectPath &&
+    !!scanStatus.projectPath &&
+    sameProjectPath(currentProjectPath, scanStatus.projectPath) &&
+    (scanStatus.running || scanWarnings.length > 0);
 
   return (
     <div className={`sidebar sidebar--vscode${sidebarCollapsed ? " sidebar--collapsed" : ""}`}>
@@ -1005,7 +1252,19 @@ export function Sidebar() {
         </h2>
         {!sectionCollapsed.views && (
           <div className="view-tree">
-            {filteredRootViews.length === 0 ? (
+            {showScanTreeLoading ? (
+              <div className="view-tree-scan-loading">
+                <span className="ai-spinner" />
+                <div>
+                  <div className="view-tree-scan-loading__title">Scan baut Ansichten neu auf</div>
+                  <div className="view-tree-scan-loading__meta">
+                    {scanStatus.total && scanStatus.current
+                      ? `${scanStatus.current}/${scanStatus.total} LLM-Batches`
+                      : scanStatus.message ?? "Projekt wird analysiert"}
+                  </div>
+                </div>
+              </div>
+            ) : filteredRootViews.length === 0 ? (
               <div className="view-tree-empty">Keine passenden Ansichten</div>
             ) : (
               filteredRootViews.map((v) => (
@@ -1045,7 +1304,7 @@ export function Sidebar() {
             <div className="project-hero__title">Aktives Projekt</div>
             <div className="project-hero__description">
               {configuredProjectPath
-                ? "Das konfigurierte Default-Projekt wird beim Neuladen automatisch geoeffnet und nur gescannt, wenn noch kein Scan vorliegt."
+                ? "Das konfigurierte Default-Projekt fuellt nur die Auswahl vor. Scans laufen erst bei Rescan oder neuer Ordnerauswahl."
                 : "Waehle ein Projekt ueber den Windows-Explorer und lade es direkt in den Workspace."}
             </div>
 
@@ -1065,17 +1324,28 @@ export function Sidebar() {
                   </div>
                 </div>
                 <div className="project-card__meta">
-                  <span>{activeProjectMeta ? `${activeProjectMeta.symbolCount} Symbole` : "Noch kein gespeicherter Scan"}</span>
+                  <span>{formatProjectSymbolCount(activeProjectMeta)}</span>
                   <span>{formatProjectTimestamp(activeProjectMeta?.lastScanned)}</span>
                 </div>
+                {showActiveProjectScanStatus && (
+                  <div className={`project-card__scan-status${scanWarnings.length > 0 ? " project-card__scan-status--warning" : ""}`}>
+                    <div className="project-card__scan-status-line">
+                      {scanStatus.running ? "Scan laeuft" : "Scan-Hinweis"}: {scanStatus.message ?? scanStatus.phase}
+                    </div>
+                    {scanWarnings.slice(0, 2).map((warning) => (
+                      <div key={warning} className="project-card__scan-warning">
+                        <i className="bi bi-exclamation-triangle" /> {warning}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="project-card__actions">
                   <button
                     className="btn btn-sm"
                     onClick={() => void handlePickProject()}
-                    disabled={scanning}
                     type="button"
                   >
-                    <i className="bi bi-folder2-open" /> Projekt waehlen
+                    <i className="bi bi-folder2-open" /> Projekt wechseln
                   </button>
                   <button
                     className="btn btn-sm btn-outline"
@@ -1088,24 +1358,52 @@ export function Sidebar() {
                   <button
                     className="btn btn-sm btn-outline"
                     onClick={() => void handleRescanProject(currentProjectPath)}
-                    disabled={!currentProjectPath || scanning}
+                    disabled={!currentProjectPath}
                     type="button"
                   >
                     <i className="bi bi-arrow-repeat" /> Rescan
+                  </button>
+                  {scanning && (
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => cancelActiveProjectScan()}
+                      type="button"
+                    >
+                      <i className="bi bi-stop-circle" /> Scan stoppen
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-sm btn-ghost-danger"
+                    onClick={() => {
+                      if (activeProjectMeta) void handleDeleteProject(activeProjectMeta.projectPath);
+                    }}
+                    disabled={!activeProjectMeta}
+                    title={activeProjectMeta ? "Gespeicherten Scan entfernen" : "Noch kein gespeicherter Scan vorhanden"}
+                    type="button"
+                  >
+                    <i className="bi bi-trash3" /> Entfernen
                   </button>
                 </div>
               </div>
             ) : (
               <div className="project-empty">
-                Noch kein Projekt aktiv. Waehle ein Verzeichnis ueber den Explorer, um den ersten Scan zu starten.
+                <div>Noch kein Projekt aktiv. Waehle ein Verzeichnis ueber den Explorer, um den ersten Scan zu starten.</div>
+                <button
+                  className="btn btn-sm btn-primary"
+                  onClick={() => void handlePickProject()}
+                  disabled={scanning}
+                  type="button"
+                >
+                  <i className="bi bi-folder2-open" /> Projekt auswaehlen
+                </button>
               </div>
             )}
           </div>
 
           <div className="project-library">
             <div className="project-library__header">
-              <div className="project-library__title">Gespeicherte Projekte</div>
-              <span className="project-library__count">{projects.length}</span>
+              <div className="project-library__title">Weitere gespeicherte Projekte</div>
+              <span className="project-library__count">{libraryProjects.length}</span>
             </div>
 
             {libraryProjects.length > 0 ? (
@@ -1129,7 +1427,7 @@ export function Sidebar() {
                       </div>
                     </div>
                     <div className="project-card__meta">
-                      <span>{project.symbolCount} Symbole</span>
+                      <span>{formatProjectSymbolCount(project)}</span>
                       <span>{formatProjectTimestamp(project.lastScanned)}</span>
                     </div>
                     <div className="project-card__actions">
@@ -1139,7 +1437,6 @@ export function Sidebar() {
                           event.stopPropagation();
                           void handleSwitchProject(project.projectPath);
                         }}
-                        disabled={scanning}
                         type="button"
                       >
                         <i className="bi bi-box-arrow-in-right" /> Oeffnen
@@ -1160,7 +1457,6 @@ export function Sidebar() {
                           event.stopPropagation();
                           void handleRescanProject(project.projectPath);
                         }}
-                        disabled={scanning}
                         type="button"
                       >
                         <i className="bi bi-arrow-repeat" /> Rescan
@@ -1232,7 +1528,7 @@ export function Sidebar() {
 
       {showBrowser && (
         <FolderBrowser
-          onSelect={(p) => { void handleSwitchProject(p); }}
+          onSelect={(p) => { void loadProjectWorkspace(p, { scanIfMissing: true }); }}
           onClose={() => setShowBrowser(false)}
         />
       )}

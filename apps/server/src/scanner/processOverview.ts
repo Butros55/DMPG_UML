@@ -9,6 +9,7 @@ import type {
 } from "@dmpg/shared";
 import { isManagedProcessLayoutViewId } from "@dmpg/shared";
 import { buildProcessDiagramConfigFromGraph, describeProcessArtifact } from "./processOverview.auto.js";
+import { ensureClassDiagramViewNodePools } from "./classDiagramViews.js";
 
 const PROCESS_TAG = "process-overview";
 const STUB_TAG = "external-stub";
@@ -123,7 +124,9 @@ export function augmentGraphWithUmlOverlays(graph: ProjectGraph): ProjectGraph {
   const withProcess = createProcessOverviewView(withBaseUmlTypes);
   const withStubs = addExternalContextStubs(withProcess);
   const pruned = pruneManagedArchitectureViews(withStubs);
-  return addManagedViewArtifactOverlay(pruned);
+  const withArtifacts = addManagedViewArtifactOverlay(pruned);
+  ensureClassDiagramViewNodePools(withArtifacts);
+  return withArtifacts;
 }
 
 function createProcessOverviewView(graph: ProjectGraph): ProjectGraph {
@@ -493,8 +496,8 @@ function addManagedViewArtifactOverlay(graph: ProjectGraph): ProjectGraph {
   const viewsById = new Map(graph.views.map((view) => [view.id, view]));
   const symbolsById = new Map(graph.symbols.map((symbol) => [symbol.id, symbol]));
   const ancestorIndex = buildAncestorIndex(graph.symbols);
-  const artifactWriteRelations = graph.relations.filter((relation) =>
-    relation.type === "writes" &&
+  const artifactRelations = graph.relations.filter((relation) =>
+    (relation.type === "writes" || relation.type === "reads") &&
     !relation.id.startsWith(PROCESS_REL_PREFIX) &&
     !relation.id.startsWith(STUB_REL_PREFIX),
   );
@@ -507,9 +510,9 @@ function addManagedViewArtifactOverlay(graph: ProjectGraph): ProjectGraph {
     const visible = new Set(view.nodeRefs.filter((nodeId) => !nodeId.startsWith("proc:artifact:")));
     if (visible.size === 0) continue;
 
-    for (const relation of artifactWriteRelations) {
-      const writerRef = findNearestVisible(relation.source, visible, ancestorIndex);
-      if (!writerRef) continue;
+    for (const relation of artifactRelations) {
+      const visibleRef = findNearestVisible(relation.source, visible, ancestorIndex);
+      if (!visibleRef) continue;
 
       const targetSymbol = symbolsById.get(relation.target);
       if (!targetSymbol || targetSymbol.kind !== "external") continue;
@@ -535,14 +538,19 @@ function addManagedViewArtifactOverlay(graph: ProjectGraph): ProjectGraph {
         view.nodeRefs.push(artifact.id);
       }
 
-      const edgeId = `${PROCESS_REL_PREFIX}view-artifact:${sanitizeId(view.id)}:${sanitizeId(writerRef)}:${sanitizeId(artifact.id)}`;
+      const edgeSource = relation.type === "reads" ? artifact.id : visibleRef;
+      const edgeTarget = relation.type === "reads" ? visibleRef : artifact.id;
+      const edgeSuffix = relation.type === "reads" ? ":read" : "";
+      const edgeId = `${PROCESS_REL_PREFIX}view-artifact:${sanitizeId(view.id)}:${sanitizeId(edgeSource)}:${sanitizeId(edgeTarget)}${edgeSuffix}`;
       if (!relationIds.has(edgeId)) {
         graph.relations.push({
           id: edgeId,
-          type: "writes",
-          source: writerRef,
-          target: artifact.id,
-          label: summarizeArtifactWrite(targetSymbol.label),
+          type: relation.type,
+          source: edgeSource,
+          target: edgeTarget,
+          label: relation.type === "reads"
+            ? summarizeArtifactRead(targetSymbol.label)
+            : summarizeArtifactWrite(targetSymbol.label),
           confidence: 1,
         });
         relationIds.add(edgeId);
@@ -564,6 +572,15 @@ function summarizeArtifactWrite(label: string): string {
   if (normalized.endsWith(".xlsx") || normalized.endsWith(".xls")) return "writes xlsx";
   if (normalized.endsWith(".pickle") || normalized.endsWith(".pkl")) return "writes pickle";
   return "writes";
+}
+
+function summarizeArtifactRead(label: string): string {
+  const normalized = label.replace(/\\/g, "/").toLowerCase();
+  if (normalized.endsWith(".csv")) return "reads csv";
+  if (normalized.endsWith(".json")) return "reads json";
+  if (normalized.endsWith(".xlsx") || normalized.endsWith(".xls")) return "reads xlsx";
+  if (normalized.endsWith(".pickle") || normalized.endsWith(".pkl")) return "reads pickle";
+  return "reads";
 }
 
 /**

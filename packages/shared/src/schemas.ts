@@ -311,6 +311,10 @@ export const AiRelationSuggestionSchema = z.object({
   label: z.string().optional(),
   rationale: z.string().optional(),
   confidence: z.number().min(0).max(1),
+  sourceMultiplicity: UmlMultiplicitySchema.optional(),
+  targetMultiplicity: UmlMultiplicitySchema.optional(),
+  sourceRole: z.string().optional(),
+  targetRole: z.string().optional(),
 });
 export type AiRelationSuggestion = z.infer<typeof AiRelationSuggestionSchema>;
 
@@ -842,8 +846,26 @@ export type UmlReferenceAutorefactorUndoRequest = z.infer<typeof UmlReferenceAut
 
 /* ───────────── Scan Request ───────────── */
 
+export const ScanFeatureModeEnum = z.enum(["auto", "on", "off"]);
+export type ScanFeatureMode = z.infer<typeof ScanFeatureModeEnum>;
+
+export const ScanFeatureOptionSchema = z.union([z.boolean(), ScanFeatureModeEnum]);
+export type ScanFeatureOption = z.infer<typeof ScanFeatureOptionSchema>;
+
+export const LlmClassDiagramModeEnum = z.enum([
+  "auto",
+  "validated_auto_apply",
+  "validated_auto",
+  "review_only",
+  "off",
+]);
+export type LlmClassDiagramMode = z.infer<typeof LlmClassDiagramModeEnum>;
+
 export const ScanRequestSchema = z.object({
   projectPath: z.string(),
+  usePyreverse: ScanFeatureOptionSchema.optional(),
+  useEmbeddings: ScanFeatureOptionSchema.optional(),
+  llmClassDiagramMode: LlmClassDiagramModeEnum.optional(),
 });
 export type ScanRequest = z.infer<typeof ScanRequestSchema>;
 

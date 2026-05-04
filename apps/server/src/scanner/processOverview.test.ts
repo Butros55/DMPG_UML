@@ -8,8 +8,9 @@ import {
   buildProcessDiagramConfigFromGraph,
 } from "./processOverview.js";
 
-function loadPipelineGraph(): ProjectGraph {
+function loadPipelineGraph(): ProjectGraph | null {
   const graphPath = path.resolve(import.meta.dirname, "../../projects/a845846712dc/graph.json");
+  if (!fs.existsSync(graphPath)) return null;
   const raw = fs.readFileSync(graphPath, "utf8");
   return JSON.parse(raw) as ProjectGraph;
 }
@@ -27,8 +28,13 @@ function isStageStructuralNodeRef(nodeRef: string): boolean {
     !nodeRef.startsWith("proc:import-cluster:");
 }
 
-test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 dataflow overview", () => {
-  const config = buildProcessDiagramConfigFromGraph(loadPipelineGraph());
+test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 dataflow overview", (t) => {
+  const graph = loadPipelineGraph();
+  if (!graph) {
+    t.skip("pipeline graph fixture is not present in this workspace");
+    return;
+  }
+  const config = buildProcessDiagramConfigFromGraph(graph);
 
   assert.deepEqual(
     config.packages.map((pkg) => pkg.label),
@@ -150,8 +156,12 @@ test("buildProcessDiagramConfigFromGraph builds a semantically grouped Layer-1 d
   }
 });
 
-test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated stage views", () => {
+test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated stage views", (t) => {
   const graph = loadPipelineGraph();
+  if (!graph) {
+    t.skip("pipeline graph fixture is not present in this workspace");
+    return;
+  }
   const augmented = augmentGraphWithUmlOverlays(JSON.parse(JSON.stringify(graph)) as ProjectGraph);
 
   assert.equal(augmented.rootViewId, "view:process-overview");
@@ -200,24 +210,27 @@ test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated sta
   const stageExtract = augmented.views.find((view) => view.id === "view:process-stage:extract");
   assert.equal(stageExtract?.hiddenInSidebar, false);
   assert.ok(stageExtract?.nodeRefs.includes("mod:data_extraction:DataExtraction"));
-  assert.ok(stageExtract?.nodeRefs.includes("proc:artifact:df_data_csv"));
-  assert.ok(stageExtract?.nodeRefs.includes("proc:import-cluster:extract"));
+  assert.ok(!stageExtract?.nodeRefs.includes("proc:artifact:df_data_csv"));
+  assert.ok(!stageExtract?.nodeRefs.includes("proc:import-cluster:extract"));
 
   const stageTransform = augmented.views.find((view) => view.id === "view:process-stage:transform");
-  assert.ok(stageTransform?.nodeRefs.includes("mod:color_change"));
-  assert.ok(stageTransform?.nodeRefs.includes("proc:artifact:color_change_json"));
-  assert.ok(stageTransform?.nodeRefs.includes("proc:import-cluster:transform"));
+  assert.ok(stageTransform?.nodeRefs.includes("mod:data_analyzer:DataAnalyzer"));
+  assert.ok(!stageTransform?.nodeRefs.includes("mod:color_change"));
+  assert.ok(!stageTransform?.nodeRefs.includes("proc:artifact:color_change_json"));
+  assert.ok(!stageTransform?.nodeRefs.includes("proc:import-cluster:transform"));
 
   const stageDistribution = augmented.views.find((view) => view.id === "view:process-stage:distribution");
-  assert.ok(stageDistribution?.nodeRefs.includes("mod:distribution.fit_distribution"));
-  assert.ok(stageDistribution?.nodeRefs.includes("proc:artifact:distribution_json"));
-  assert.ok(stageDistribution?.nodeRefs.includes("proc:import-cluster:distribution"));
+  assert.ok(stageDistribution?.nodeRefs.includes("mod:distribution:Distribution"));
+  assert.ok(stageDistribution?.nodeRefs.includes("mod:save_object:SaveObject"));
+  assert.ok(!stageDistribution?.nodeRefs.includes("mod:distribution.fit_distribution"));
+  assert.ok(!stageDistribution?.nodeRefs.includes("proc:artifact:distribution_json"));
+  assert.ok(!stageDistribution?.nodeRefs.includes("proc:import-cluster:distribution"));
 
   const stageSimulation = augmented.views.find((view) => view.id === "view:process-stage:simulation");
   assert.ok(stageSimulation?.nodeRefs.includes("mod:simulation_data_generator:SimulationDataGenerator"));
-  assert.ok(stageSimulation?.nodeRefs.includes("mod:arrival_table.generate_arrival_table"));
-  assert.ok(stageSimulation?.nodeRefs.includes("proc:artifact:arrival_gro_csv"));
-  assert.ok(stageSimulation?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
+  assert.ok(!stageSimulation?.nodeRefs.includes("mod:arrival_table.generate_arrival_table"));
+  assert.ok(!stageSimulation?.nodeRefs.includes("proc:artifact:arrival_gro_csv"));
+  assert.ok(!stageSimulation?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
 
   assert.equal(augmented.views.find((view) => view.id === "view:mod:data_extraction")?.hiddenInSidebar, true);
   assert.equal(augmented.views.find((view) => view.id === "view:mod:data_extraction:DataExtraction")?.parentViewId, "view:process-stage:extract");
@@ -231,20 +244,20 @@ test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated sta
   assert.ok(extractionModuleView?.nodeRefs.includes("mod:data_extraction:DataExtraction"));
 
   const extractionClassView = augmented.views.find((view) => view.id === "view:mod:data_extraction:DataExtraction");
-  assert.ok((extractionClassView?.nodeRefs.length ?? 0) > 5);
-  assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_csv"));
-  assert.ok(extractionClassView?.nodeRefs.includes("proc:artifact:df_data_with_order_cluster_csv"));
+  assert.deepEqual(extractionClassView?.nodeRefs, ["mod:data_extraction:DataExtraction"]);
 
   const distributionModuleView = augmented.views.find((view) => view.id === "view:mod:distribution.fit_distribution");
-  assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:distribution_json"));
-  assert.ok(distributionModuleView?.nodeRefs.includes("proc:artifact:fallback_json"));
+  assert.deepEqual(distributionModuleView?.nodeRefs, []);
 
   const simulationClassView = augmented.views.find((view) => view.id === "view:mod:simulation_data_generator:SimulationDataGenerator");
-  assert.ok(simulationClassView?.nodeRefs.includes("proc:artifact:filter_stats_fallback_xlsx"));
-  assert.ok(simulationClassView?.nodeRefs.includes("proc:artifact:filter_stats_xlsx"));
-  assert.ok(simulationClassView?.nodeRefs.includes("proc:artifact:outliners_xlsx"));
-  assert.ok(simulationClassView?.nodeRefs.includes("proc:artifact:distribution_xlsx"));
-  assert.ok(simulationClassView?.nodeRefs.includes("proc:artifact:effency_json"));
+  assert.deepEqual(simulationClassView?.nodeRefs, ["mod:simulation_data_generator:SimulationDataGenerator"]);
+  const simulationReadEdge = augmented.relations.find((relation) =>
+    relation.type === "reads" &&
+    relation.id.startsWith("process-edge:view-artifact:") &&
+    relation.source === "proc:artifact:df_data_csv" &&
+    relation.target === "mod:simulation_data_generator:SimulationDataGenerator.extract_data",
+  );
+  assert.equal(simulationReadEdge, undefined);
 
   const stageViews = augmented.views.filter((view) => view.id.startsWith("view:process-stage:"));
   const classStageViews = stageViews.filter((view) => view.diagramType === "class");
@@ -254,7 +267,12 @@ test("augmentGraphWithUmlOverlays renders the simplified Layer-1 and updated sta
   assert.ok(!augmented.views.some((view) => view.id === "view:process-stage:outputs"));
 
   const assignedStageByNodeRef = new Map<string, string>();
+  const symbolsById = new Map(augmented.symbols.map((symbol) => [symbol.id, symbol]));
   for (const stageView of classStageViews) {
+    assert.ok(stageView.nodeRefs.every((nodeRef) => {
+      const symbol = symbolsById.get(nodeRef);
+      return symbol?.kind === "class" || symbol?.kind === "interface";
+    }));
     for (const nodeRef of stageView.nodeRefs.filter(isStageStructuralNodeRef)) {
       assert.equal(
         assignedStageByNodeRef.get(nodeRef),

@@ -2,6 +2,7 @@ import type { ProjectGraph } from "@dmpg/shared";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { augmentGraphWithUmlOverlays } from "./scanner/processOverview.js";
 
 /**
@@ -10,7 +11,14 @@ import { augmentGraphWithUmlOverlays } from "./scanner/processOverview.js";
  * Supports switching between projects while preserving all data.
  */
 
-const DATA_DIR = path.resolve(process.env.DMPG_DATA_DIR ?? path.join(process.cwd(), ".dmpg-data"));
+function resolveOptionalPath(value: string | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed ? path.resolve(trimmed) : null;
+}
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_DATA_DIR = path.resolve(MODULE_DIR, "..", ".dmpg-data");
+const DATA_DIR = resolveOptionalPath(process.env.DMPG_DATA_DIR) ?? DEFAULT_DATA_DIR;
 const PROJECTS_DIR = path.join(DATA_DIR, "projects");
 const META_FILE = path.join(DATA_DIR, "projects-meta.json");
 const SNAPSHOTS_DIR_NAME = "snapshots";
@@ -24,6 +32,29 @@ const LEGACY_AI_FILE = path.join(DATA_DIR, "ai-progress.json");
 for (const dir of [DATA_DIR, PROJECTS_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
+
+function migrateBlankEnvDataDir(): void {
+  const legacyDataDir = path.resolve(process.cwd());
+  if (comparableProjectPath(DATA_DIR) === comparableProjectPath(legacyDataDir)) return;
+
+  const legacyMetaFile = path.join(legacyDataDir, "projects-meta.json");
+  const legacyProjectsDir = path.join(legacyDataDir, "projects");
+  if (!fs.existsSync(legacyMetaFile)) return;
+  if (fs.existsSync(META_FILE)) return;
+
+  try {
+    fs.copyFileSync(legacyMetaFile, META_FILE);
+    const targetHasProjects = fs.existsSync(PROJECTS_DIR) && fs.readdirSync(PROJECTS_DIR).length > 0;
+    if (fs.existsSync(legacyProjectsDir) && !targetHasProjects) {
+      fs.cpSync(legacyProjectsDir, PROJECTS_DIR, { recursive: true });
+    }
+    console.log(`[store] Migrated legacy blank-DMPG_DATA_DIR project data to ${DATA_DIR}`);
+  } catch (err) {
+    console.warn("[store] Legacy blank-DMPG_DATA_DIR migration failed:", (err as Error).message);
+  }
+}
+
+migrateBlankEnvDataDir();
 
 /* ── Project metadata ──────────────────────────── */
 
@@ -60,17 +91,62 @@ function projectDir(hash: string): string {
   return path.join(PROJECTS_DIR, hash);
 }
 
+function projectNameFromPath(projectPath: string): string {
+  return path.basename(projectPath) || projectPath;
+}
+
 function graphDisplayName(graph: Pick<ProjectGraph, "projectName" | "projectPath">): string {
   const explicit = graph.projectName?.trim();
   if (explicit) return explicit;
   const fromPath = graph.projectPath?.trim();
-  if (fromPath) return path.basename(fromPath);
+  if (fromPath) return projectNameFromPath(fromPath);
   return "Imported Project";
 }
 
+function createUnscannedProjectMeta(projectPath: string): ProjectMeta {
+  const resolvedProjectPath = path.resolve(projectPath);
+  return {
+    projectPath: resolvedProjectPath,
+    name: projectNameFromPath(resolvedProjectPath),
+    symbolCount: 0,
+    lastScanned: "",
+    hash: hashPath(resolvedProjectPath),
+  };
+}
+
+function upsertProjectMeta(
+  idx: ProjectsIndex,
+  projectPath: string,
+  patch: Partial<Omit<ProjectMeta, "projectPath" | "hash">> = {},
+): ProjectMeta {
+  const resolvedProjectPath = path.resolve(projectPath);
+  const hash = hashPath(resolvedProjectPath);
+  const comparable = comparableProjectPath(resolvedProjectPath);
+  const existing = idx.projects.find((project) =>
+    project.hash === hash || comparableProjectPath(project.projectPath) === comparable,
+  );
+
+  if (existing) {
+    existing.projectPath = resolvedProjectPath;
+    existing.hash = hash;
+    existing.name = patch.name ?? existing.name ?? projectNameFromPath(resolvedProjectPath);
+    existing.symbolCount = patch.symbolCount ?? existing.symbolCount ?? 0;
+    existing.lastScanned = patch.lastScanned ?? existing.lastScanned ?? "";
+    return existing;
+  }
+
+  const next = {
+    ...createUnscannedProjectMeta(resolvedProjectPath),
+    ...patch,
+    projectPath: resolvedProjectPath,
+    hash,
+  };
+  idx.projects.push(next);
+  return next;
+}
+
 export function getConfiguredProjectPath(): string | null {
-  const raw = (process.env.FSCAN_PROJECT_PATH ?? process.env.SCAN_PROJECT_PATH ?? "").trim();
-  return raw ? path.resolve(raw) : null;
+  return resolveOptionalPath(process.env.FSCAN_PROJECT_PATH) ?? resolveOptionalPath(process.env.SCAN_PROJECT_PATH);
 }
 
 export function normalizePersistedGraph(graph: ProjectGraph): {
@@ -99,9 +175,41 @@ function loadNormalizedGraphFile(gFile: string): { graph: ProjectGraph; changed:
 }
 
 function loadProjectsIndex(): ProjectsIndex {
+  const normalizeIndex = (idx: ProjectsIndex): ProjectsIndex => {
+    const projects: ProjectMeta[] = [];
+    const seen = new Set<string>();
+
+    for (const project of idx.projects ?? []) {
+      if (!project?.projectPath) continue;
+      const projectPath = path.resolve(project.projectPath);
+      const hash = project.hash?.trim() || hashPath(projectPath);
+      const comparable = comparableProjectPath(projectPath);
+      if (seen.has(comparable)) continue;
+      seen.add(comparable);
+      projects.push({
+        ...project,
+        projectPath,
+        hash,
+      });
+    }
+
+    const activeComparable = idx.activeProject ? comparableProjectPath(idx.activeProject) : null;
+    let activeProject = activeComparable
+      ? projects.find((project) => comparableProjectPath(project.projectPath) === activeComparable)?.projectPath ?? null
+      : null;
+
+    if (idx.activeProject && activeComparable && !activeProject) {
+      const placeholder = createUnscannedProjectMeta(idx.activeProject);
+      projects.unshift(placeholder);
+      activeProject = placeholder.projectPath;
+    }
+
+    return { activeProject, projects };
+  };
+
   try {
     if (fs.existsSync(META_FILE)) {
-      return JSON.parse(fs.readFileSync(META_FILE, "utf-8")) as ProjectsIndex;
+      return normalizeIndex(JSON.parse(fs.readFileSync(META_FILE, "utf-8")) as ProjectsIndex);
     }
   } catch { /* ignore */ }
   return { activeProject: null, projects: [] };
@@ -173,7 +281,7 @@ export interface GraphSnapshotInfo {
 // Load the active project on startup
 {
   const idx = loadProjectsIndex();
-  const preferredProjectPath = getConfiguredProjectPath() ?? idx.activeProject;
+  const preferredProjectPath = idx.activeProject ?? getConfiguredProjectPath();
   if (preferredProjectPath) {
     const resolvedProjectPath = path.resolve(preferredProjectPath);
     const preferredComparablePath = comparableProjectPath(resolvedProjectPath);
@@ -201,10 +309,6 @@ export interface GraphSnapshotInfo {
       } catch (err) {
         console.warn(`[store] Failed to load project "${meta.name}":`, (err as Error).message);
       }
-    } else if (getConfiguredProjectPath() === resolvedProjectPath) {
-      currentProjectPath = resolvedProjectPath;
-      idx.activeProject = resolvedProjectPath;
-      saveProjectsIndex(idx);
     }
   }
 }
@@ -327,22 +431,11 @@ export function setGraph(g: ProjectGraph): void {
     currentProjectPath = path.resolve(g.projectPath);
     // Update or add project metadata
     const idx = loadProjectsIndex();
-    const hash = hashPath(currentProjectPath);
-    const existing = idx.projects.find((p) => p.hash === hash);
-    if (existing) {
-      existing.name = graphDisplayName(g);
-      existing.symbolCount = g.symbols.length;
-      existing.lastScanned = new Date().toISOString();
-      existing.projectPath = currentProjectPath;
-    } else {
-      idx.projects.push({
-        projectPath: currentProjectPath,
-        name: graphDisplayName(g),
-        symbolCount: g.symbols.length,
-        lastScanned: new Date().toISOString(),
-        hash,
-      });
-    }
+    upsertProjectMeta(idx, currentProjectPath, {
+      name: graphDisplayName(g),
+      symbolCount: g.symbols.length,
+      lastScanned: new Date().toISOString(),
+    });
     idx.activeProject = currentProjectPath;
     saveProjectsIndex(idx);
   }
@@ -353,7 +446,9 @@ export function setGraph(g: ProjectGraph): void {
 
 /** Force immediate save (e.g. on graceful shutdown) */
 export function flushGraph(): void {
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
   persistToDisk();
 }
 
@@ -378,6 +473,19 @@ export function switchProject(projectPath: string): ProjectGraph | null {
   flushGraph();
 
   const normalizedProjectPath = path.resolve(projectPath);
+  if (
+    currentGraph &&
+    currentProjectPath &&
+    comparableProjectPath(currentProjectPath) === comparableProjectPath(normalizedProjectPath)
+  ) {
+    const idx = loadProjectsIndex();
+    if (!idx.activeProject || comparableProjectPath(idx.activeProject) !== comparableProjectPath(normalizedProjectPath)) {
+      idx.activeProject = normalizedProjectPath;
+      saveProjectsIndex(idx);
+    }
+    return currentGraph;
+  }
+
   const hash = hashPath(normalizedProjectPath);
   const gFile = path.join(projectDir(hash), "graph.json");
 
@@ -408,6 +516,7 @@ export function switchProject(projectPath: string): ProjectGraph | null {
   currentGraph = null;
   currentProjectPath = normalizedProjectPath;
   const idx = loadProjectsIndex();
+  upsertProjectMeta(idx, normalizedProjectPath);
   idx.activeProject = normalizedProjectPath;
   saveProjectsIndex(idx);
 
@@ -416,26 +525,34 @@ export function switchProject(projectPath: string): ProjectGraph | null {
 
 /** Remove a project from the index and delete its data */
 export function deleteProject(projectPath: string): boolean {
+  flushGraph();
+
   const normalizedProjectPath = path.resolve(projectPath);
   const idx = loadProjectsIndex();
   const hash = hashPath(normalizedProjectPath);
-  const i = idx.projects.findIndex((p) => p.hash === hash);
+  const targetComparablePath = comparableProjectPath(normalizedProjectPath);
+  const i = idx.projects.findIndex((p) =>
+    p.hash === hash || comparableProjectPath(p.projectPath) === targetComparablePath,
+  );
   if (i === -1) return false;
 
-  idx.projects.splice(i, 1);
-  if (idx.activeProject === normalizedProjectPath) {
+  const [removedProject] = idx.projects.splice(i, 1);
+  const removedHash = removedProject?.hash || hash;
+  if (idx.activeProject && comparableProjectPath(idx.activeProject) === targetComparablePath) {
     idx.activeProject = idx.projects[0]?.projectPath ?? null;
   }
   saveProjectsIndex(idx);
 
   // Delete data directory
-  const dir = projectDir(hash);
-  const aiFile = path.join(dir, "ai-progress.json");
-  if (fs.existsSync(aiFile)) {
-    try { fs.unlinkSync(aiFile); } catch { /* ignore */ }
-  }
-  if (fs.existsSync(dir)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+  const candidateDirs = new Set([projectDir(hash), projectDir(removedHash)]);
+  for (const dir of candidateDirs) {
+    const aiFile = path.join(dir, "ai-progress.json");
+    if (fs.existsSync(aiFile)) {
+      try { fs.unlinkSync(aiFile); } catch { /* ignore */ }
+    }
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   // If we deleted the current project, switch to another

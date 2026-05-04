@@ -1,0 +1,4 @@
+# Optional Python scanner extras.
+# The TypeScript scanner bridge uses Pyreverse when this package is installed;
+# scans continue with the AST scanner when it is absent.
+pylint>=4,<5

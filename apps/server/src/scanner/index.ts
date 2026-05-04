@@ -9,9 +9,21 @@ import type {
   DiagramView,
   SectionConfig,
   ProjectConfig,
+  ScanFeatureOption,
+  LlmClassDiagramMode,
 } from "@dmpg/shared";
 import { buildCodingGuidelinesForSymbol } from "./codingGuidelines.js";
 import { augmentGraphWithUmlOverlays } from "./processOverview.js";
+import {
+  mergePyreverseModelIntoGraph,
+  scanPyreverse,
+  type PyreverseModel,
+} from "./pyreverse.js";
+import { buildProjectEmbeddingIndex } from "../ai/embeddings.js";
+import {
+  resolveClassDiagramLlmSynthesisStatus,
+  synthesizeClassDiagramsForGraph,
+} from "../ai/classDiagramSynthesis.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,11 +47,35 @@ interface RawEdge {
   label?: string;
   confidence?: number;
   evidence?: Record<string, unknown>;
+  sourceMultiplicity?: string;
+  targetMultiplicity?: string;
+  sourceRole?: string;
+  targetRole?: string;
+  aiGenerated?: boolean;
 }
 interface ScanResult {
   symbols: RawSymbol[];
   edges: RawEdge[];
   meta?: Record<string, unknown>;
+}
+
+export interface ScanProjectOptions {
+  usePyreverse?: ScanFeatureOption;
+  useEmbeddings?: ScanFeatureOption;
+  llmClassDiagramMode?: LlmClassDiagramMode;
+  onProgress?: (event: ScanProjectProgressEvent) => void | Promise<void>;
+  signal?: AbortSignal;
+}
+
+export interface ScanProjectProgressEvent {
+  phase: "python" | "pyreverse" | "graph" | "embeddings" | "class-synthesis";
+  message?: string;
+  graph?: ProjectGraph;
+  current?: number;
+  total?: number;
+  viewId?: string;
+  relationsAdded?: number;
+  warnings?: string[];
 }
 
 /** Title-case a directory/project name: "data_pipeline" → "Data Pipeline" */
@@ -49,22 +85,70 @@ function toTitleCase(s: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+type NormalizedFeatureMode = "auto" | "on" | "off";
+
+function normalizeFeatureOption(option: ScanFeatureOption | string | undefined): NormalizedFeatureMode {
+  if (option === true) return "on";
+  if (option === false) return "off";
+  if (typeof option !== "string") return "auto";
+  const normalized = option.trim().toLowerCase();
+  if (["1", "true", "yes", "on", "enabled"].includes(normalized)) return "on";
+  if (["0", "false", "no", "off", "disabled"].includes(normalized)) return "off";
+  return "auto";
+}
+
+function shouldRunFeature(option: ScanFeatureOption | undefined, envName: string): boolean {
+  const requestMode = normalizeFeatureOption(option);
+  const envMode = normalizeFeatureOption(process.env[envName]);
+  const effectiveMode = requestMode === "auto" ? envMode : requestMode;
+  return effectiveMode !== "off";
+}
+
+function logScanWarnings(label: string, warnings: readonly string[]): void {
+  const uniqueWarnings = [...new Set(warnings.map((warning) => warning.trim()).filter(Boolean))];
+  if (uniqueWarnings.length === 0) return;
+  console.warn(`[scanner:${label}] ${uniqueWarnings.join("\n[scanner:" + label + "] ")}`);
+}
+
+function assertNotAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Scan aborted");
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return (error as { name?: string })?.name === "AbortError" ||
+    /aborted/i.test(error instanceof Error ? error.message : String(error ?? ""));
+}
+
 /**
  * Scan a project directory. Currently supports Python projects.
  */
-export async function scanProject(projectPath: string): Promise<ProjectGraph> {
+export async function scanProject(
+  projectPath: string,
+  options: ScanProjectOptions = {},
+): Promise<ProjectGraph> {
+  const effectiveOptions: ScanProjectOptions = {
+    ...options,
+    usePyreverse: options.usePyreverse ?? "on",
+    useEmbeddings: options.useEmbeddings ?? "off",
+    llmClassDiagramMode: options.llmClassDiagramMode ?? "off",
+  };
   const absPath = path.resolve(projectPath);
   if (!fs.existsSync(absPath)) {
     throw new Error(`Path does not exist: ${absPath}`);
   }
+  assertNotAborted(effectiveOptions.signal);
 
   // Try Python scanner
+  await effectiveOptions.onProgress?.({ phase: "python", message: "Scanning Python AST and project files" });
   const pyScript = path.join(import.meta.dirname ?? __dirname, "python_scanner.py");
   let result: ScanResult;
   try {
     const { stdout, stderr } = await execFileAsync("python", [pyScript, absPath], {
       maxBuffer: 100 * 1024 * 1024,
       timeout: 300_000,
+      signal: effectiveOptions.signal,
     });
     if (stderr) console.warn("[scanner] Python stderr:", stderr);
     result = JSON.parse(stdout);
@@ -72,12 +156,14 @@ export async function scanProject(projectPath: string): Promise<ProjectGraph> {
       throw new Error(`Scanner error: ${(result as any).error}`);
     }
   } catch (err: any) {
+    if (isAbortError(err) || effectiveOptions.signal?.aborted) throw err;
     // If the first attempt failed, try python3
     if (err.code === "ENOENT" || (err.message && err.message.includes("ENOENT"))) {
       try {
         const { stdout, stderr } = await execFileAsync("python3", [pyScript, absPath], {
           maxBuffer: 100 * 1024 * 1024,
           timeout: 300_000,
+          signal: effectiveOptions.signal,
         });
         if (stderr) console.warn("[scanner] Python3 stderr:", stderr);
         result = JSON.parse(stdout);
@@ -85,6 +171,7 @@ export async function scanProject(projectPath: string): Promise<ProjectGraph> {
           throw new Error(`Scanner error: ${(result as any).error}`);
         }
       } catch (err2: any) {
+        if (isAbortError(err2) || effectiveOptions.signal?.aborted) throw err2;
         const stderr2 = err2.stderr ? `\nstderr: ${err2.stderr}` : "";
         throw new Error(`Failed to run Python scanner: ${err2.message}${stderr2}`);
       }
@@ -105,11 +192,120 @@ export async function scanProject(projectPath: string): Promise<ProjectGraph> {
       throw new Error(`Failed to run Python scanner: ${err.message}${stderrMsg}`);
     }
   }
+  assertNotAborted(effectiveOptions.signal);
 
   // Load project config if available
   const config = loadProjectConfig(absPath);
+  await effectiveOptions.onProgress?.({ phase: "pyreverse", message: "Running Pyreverse UML parser" });
+  const pyreverseModel = await runOptionalPyreverse(absPath, effectiveOptions);
+  assertNotAborted(effectiveOptions.signal);
 
-  return buildGraphFromScan(result, absPath, config);
+  const graph = buildGraphFromScan(result, absPath, config, pyreverseModel);
+  await effectiveOptions.onProgress?.({
+    phase: "graph",
+    message: "Class graph prepared",
+    graph,
+  });
+  return runOptionalClassDiagramSynthesis(graph, absPath, effectiveOptions);
+}
+
+async function runOptionalPyreverse(
+  projectPath: string,
+  options: ScanProjectOptions,
+): Promise<PyreverseModel | null> {
+  if (!shouldRunFeature(options.usePyreverse, "PYREVERSE_ENABLED")) {
+    await options.onProgress?.({
+      phase: "pyreverse",
+      message: "Pyreverse disabled; AST fallback active",
+    });
+    return null;
+  }
+
+  try {
+    const model = await scanPyreverse(projectPath, { signal: options.signal });
+    logScanWarnings("pyreverse", model.warnings);
+    if (model.warnings.length > 0) {
+      await options.onProgress?.({
+        phase: "pyreverse",
+        message: model.classes.length > 0 || model.relations.length > 0
+          ? "Pyreverse parsed UML data with warnings"
+          : "Pyreverse unavailable; AST fallback active",
+        warnings: model.warnings,
+      });
+    }
+    if (model.classes.length === 0 && model.relations.length === 0) return null;
+    return model;
+  } catch (error) {
+    if (isAbortError(error) || options.signal?.aborted) throw error;
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.warn(`[scanner:pyreverse] Pyreverse failed; AST fallback active: ${message}`);
+    await options.onProgress?.({
+      phase: "pyreverse",
+      message: "Pyreverse failed; AST fallback active",
+      warnings: [message],
+    });
+    return null;
+  }
+}
+
+async function runOptionalClassDiagramSynthesis(
+  graph: ProjectGraph,
+  projectPath: string,
+  options: ScanProjectOptions,
+): Promise<ProjectGraph> {
+  assertNotAborted(options.signal);
+  const llmStatus = resolveClassDiagramLlmSynthesisStatus(options.llmClassDiagramMode);
+  const shouldBuildEmbeddingIndex =
+    llmStatus.enabled && shouldRunFeature(options.useEmbeddings, "UML_EMBEDDINGS_ENABLED");
+  const embeddingIndex = shouldBuildEmbeddingIndex
+    ? await buildProjectEmbeddingIndex(projectPath, { useEmbeddings: options.useEmbeddings })
+    : null;
+  assertNotAborted(options.signal);
+  if (embeddingIndex) logScanWarnings("embeddings", embeddingIndex.warnings);
+  await options.onProgress?.({
+    phase: "embeddings",
+    message: !llmStatus.enabled
+      ? `Embedding context skipped for class synthesis (${llmStatus.reason})`
+      : embeddingIndex?.entries.length
+        ? `Embedding context ready (${embeddingIndex.entries.length} chunks)`
+        : "Embedding context unavailable or disabled",
+    warnings: embeddingIndex?.warnings,
+  });
+
+  const stats = await synthesizeClassDiagramsForGraph(graph, projectPath, {
+    useEmbeddings: options.useEmbeddings,
+    llmClassDiagramMode: options.llmClassDiagramMode,
+    embeddingIndex,
+    onBatch: async (event) => {
+      assertNotAborted(options.signal);
+      await options.onProgress?.({
+        phase: "class-synthesis",
+        message: event.message,
+        graph,
+        current: event.current,
+        total: event.total,
+        viewId: event.viewId,
+        relationsAdded: event.relationsAdded,
+        warnings: event.warnings,
+      });
+    },
+  });
+  logScanWarnings("class-synthesis", stats.warnings);
+  if (stats.warnings.length > 0 && stats.viewsAnalyzed === 0) {
+    await options.onProgress?.({
+      phase: "class-synthesis",
+      message: stats.warnings[0],
+      graph,
+      warnings: stats.warnings,
+    });
+  }
+  if (stats.viewsPrepared > 0 || stats.viewsAnalyzed > 0 || stats.relationsAdded > 0) {
+    console.log(
+      `[scanner:class-synthesis] preparedViews=${stats.viewsPrepared} ` +
+      `analyzedViews=${stats.viewsAnalyzed} relations+=${stats.relationsAdded}`,
+    );
+  }
+  return graph;
 }
 
 /* ── Config loading ─────────────────────────────── */
@@ -136,6 +332,7 @@ function buildGraphFromScan(
   raw: ScanResult,
   projectPath: string,
   config: ProjectConfig | null,
+  pyreverseModel: PyreverseModel | null,
 ): ProjectGraph {
   const DOMAIN_DEFS = [
     { id: "data-sources", title: "Datenquellen" },
@@ -191,8 +388,21 @@ function buildGraphFromScan(
     else rel.confidence = 1;
     if (e.label) rel.label = e.label;
     if (e.evidence) rel.evidence = [e.evidence as any];
+    if (e.sourceMultiplicity) rel.sourceMultiplicity = e.sourceMultiplicity as any;
+    if (e.targetMultiplicity) rel.targetMultiplicity = e.targetMultiplicity as any;
+    if (e.sourceRole) rel.sourceRole = e.sourceRole;
+    if (e.targetRole) rel.targetRole = e.targetRole;
+    if (typeof e.aiGenerated === "boolean") rel.aiGenerated = e.aiGenerated;
     return rel;
   });
+
+  if (pyreverseModel) {
+    const stats = mergePyreverseModelIntoGraph({ symbols, relations }, pyreverseModel);
+    console.log(
+      `[scanner:pyreverse] merged classes=${stats.classesMatched} members+=${stats.membersAdded} ` +
+      `relations+=${stats.relationsAdded} relations~=${stats.relationsUpdated} unmatched=${stats.unmatchedRelations}`,
+    );
+  }
 
   // Build symbol lookup maps
   const symById = new Map(symbols.map((s) => [s.id, s]));
@@ -496,19 +706,12 @@ function buildGraphFromScan(
     // Determine parentViewId: if this group has a parent group, point to that group's view; else root
     const parentViewId = g.parentId ? `view:${g.parentId}` : "view:root";
 
-    // Groups that directly contain modules/classes get "class" diagram type (UML class diagram),
-    // groups that contain only sub-groups get "overview".
-    const hasDirectModulesOrClasses = groupModules.some(
-      (m) => m.kind === "module" || m.kind === "class",
-    );
-    const groupDiagramType = hasDirectModulesOrClasses ? "class" as const : "overview" as const;
-
     return {
       id: `view:${g.id}`,
       title: g.label,
       parentViewId,
       scope: "group" as const,
-      diagramType: groupDiagramType,
+      diagramType: "class" as const,
       nodeRefs: childIds,
       edgeRefs: viewEdgeRefs,
     };
